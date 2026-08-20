@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+venv/
+.venv/
+env/
+
+# Never. The real configuration lives in %LOCALAPPDATA% and holds a bot token;
+# examples/config.example.json is the only config file in this repository.
+config.json
+state.json
+maintenance.json
+*.env
+.env
+
+# Keys and credentials of any shape
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Local logs and scratch
+logs/
+*.log
+scratch/

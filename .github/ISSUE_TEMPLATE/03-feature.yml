@@ -1,0 +1,61 @@
+name: Feature request
+description: Suggest something the bot should do
+title: "[idea] "
+labels: ["enhancement", "needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas are welcome. Two things worth knowing before you write:
+
+        - This project deliberately has **no third-party dependencies** and no
+          telemetry. Suggestions needing either start from a long way behind.
+        - **Support for another printer** cannot be added without a machine to
+          test it on. Saying a printer is supported when nobody has tried it
+          would be a lie, and an expensive one.
+
+        If you are not sure it is a feature request yet, a
+        [discussion](../discussions) is a better place to start.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is the problem
+      description: |
+        Describe the situation, not the solution. What are you trying to do, and
+        what makes it awkward today?
+      placeholder: |
+        I print overnight and want to know if the printer stopped, but I do not
+        want to be woken by a message for every ordinary progress step.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you have in mind
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you have tried or considered
+      description: Including existing settings that nearly do it.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Which part of the bot
+      multiple: true
+      options:
+        - Notifications
+        - The status message and its buttons
+        - Control commands
+        - Camera
+        - Setup wizard
+        - Autostart
+        - Documentation
+        - Something else
+    validations:
+      required: true

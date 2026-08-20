@@ -1,0 +1,82 @@
+name: Installation problem
+description: The setup wizard or a launcher does not work
+title: "[setup] "
+labels: ["installation", "needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Most setup problems are one of four things, and
+        [docs/troubleshooting.md](../blob/main/docs/troubleshooting.md) covers
+        all four. Worth thirty seconds before filling this in.
+
+        **Never paste your token here**, and never attach a screenshot with it
+        visible.
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Where it stops
+      options:
+        - Python is not found
+        - The token is rejected
+        - The wizard cannot find my chat id
+        - The printer does not answer
+        - The wizard finishes but the bot will not start
+        - Autostart does not work
+        - Something else
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Application version
+      placeholder: v1.0.0
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 10 22H2
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: Run `py -3 --version` in a terminal. If that fails, say so.
+      placeholder: Python 3.12.2
+    validations:
+      required: true
+
+  - type: input
+    id: path
+    attributes:
+      label: Where you unpacked the program
+      description: |
+        Paths with spaces and non-Latin characters are supported and tested. If
+        yours has either, saying so helps — replace your user name with `USER`.
+      placeholder: C:\Users\USER\Downloads\Centauri-Bot-v1.0.0-windows
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: What the window showed
+      description: Copy the text from the console window, or attach a screenshot with the token removed.
+      render: text
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Before submitting
+      options:
+        - label: There is no BotFather token in this report or in any attachment.
+          required: true

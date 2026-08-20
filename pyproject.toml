@@ -1,0 +1,50 @@
+# The project is distributed as a ZIP you unpack, not as a package you install:
+# the target user has Python and nothing else, and "pip install" is a step that
+# loses people. This file exists so the metadata has one home, and so the test
+# and lint tooling is configured in the conventional place.
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "centauri-carbon-telegram-bot"
+version = "1.0.0"
+description = "Telegram bot for the Elegoo Centauri Carbon 3D printer, running locally with no server."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "ValenokMC"}]
+keywords = ["elegoo", "centauri-carbon", "3d-printing", "windows"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Printing",
+]
+
+# Deliberately empty. Every runtime dependency here would be one the user has to
+# acquire, and the whole point is that they do not have to.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.urls]
+Homepage = "https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot"
+Documentation = "https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/blob/main/docs/installation.md"
+Changelog = "https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/blob/main/CHANGELOG.md"
+Issues = "https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/issues"
+Funding = "https://web.tribute.tg/d/P54"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["error::SyntaxWarning"]

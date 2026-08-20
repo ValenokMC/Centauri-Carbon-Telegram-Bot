@@ -1,0 +1,4 @@
+# Shown as a "Sponsor" button once Sponsorships are enabled in the repository
+# settings. Tribute is not one of GitHub's built-in platforms, so it goes under
+# `custom`, which takes a list of URLs.
+custom: ["https://web.tribute.tg/d/P54"]

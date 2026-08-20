@@ -1,0 +1,18 @@
+{
+    "allow_control": true,
+    "chat_id": "",
+    "keepalive_sec": 20,
+    "light_off_at_night": true,
+    "log_level": "INFO",
+    "maintenance_days": 60,
+    "maintenance_hours": 150,
+    "night_from": 22,
+    "night_to": 8,
+    "offline_grace_sec": 60,
+    "printer_ip": "",
+    "printer_name": "Centauri Carbon",
+    "progress_every_pct": 0,
+    "send_photo": true,
+    "status_refresh_sec": 120,
+    "telegram_token": ""
+}

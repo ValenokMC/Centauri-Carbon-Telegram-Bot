@@ -1,0 +1,235 @@
+# -*- coding: utf-8 -*-
+"""Access control, dangerous-command confirmation, and keyboard layout."""
+import pytest
+
+from centauri_bot import handlers, sdcp, ui
+
+from conftest import status
+
+
+OWNER = "555000111"
+STRANGER = "999888777"
+
+
+def message(text, chat=OWNER, is_bot=False):
+    return {"message_id": 5, "chat": {"id": chat},
+            "from": {"id": chat, "is_bot": is_bot}, "text": text}
+
+
+def callback(data, chat=OWNER, with_photo=False):
+    msg = {"message_id": 42, "chat": {"id": chat}}
+    if with_photo:
+        msg["photo"] = [{"file_id": "x"}]
+    return {"id": "cb-1", "data": data, "message": msg,
+            "from": {"id": chat, "is_bot": False}}
+
+
+@pytest.fixture
+def online_bot(bot):
+    """A bot that believes the printer is connected and answering."""
+    bot.status = status(13, "Demo_Print.gcode", progress=50)
+    bot.online = True
+    bot.ws = object()
+    bot.run_command = lambda *a, **k: (True, "Ack=0")
+    return bot
+
+
+# ------------------------------------------------------------ authorisation
+
+def test_stranger_sending_a_message_is_refused(bot):
+    handlers.handle_message(bot, message("/status", chat=STRANGER))
+    assert len(bot.api.sent) == 1
+    chat, text, _, _ = bot.api.sent[0]
+    assert chat == STRANGER
+    assert "личный" in text
+
+
+def test_stranger_gets_no_printer_information(bot):
+    handlers.handle_message(bot, message("/status", chat=STRANGER))
+    body = bot.api.sent[0][1]
+    assert bot.cfg["printer_ip"] not in body
+    assert "Demo_Print" not in body
+
+
+def test_stranger_pressing_a_button_is_refused_and_nothing_is_edited(bot):
+    handlers.handle_callback(bot, callback("do:stop", chat=STRANGER))
+    assert bot.api.answers == [("cb-1", "Не для тебя.")]
+    assert bot.api.edited == []
+    assert bot.api.sent == []
+
+
+def test_stranger_cannot_stop_a_print(online_bot):
+    commands = []
+    online_bot.run_command = lambda cmd, *a, **k: (commands.append(cmd), (True, ""))[1]
+    handlers.handle_callback(online_bot, callback("do:stop", chat=STRANGER))
+    assert commands == []
+
+
+def test_owner_is_served(bot):
+    bot.refresh_main = lambda **k: 99
+    handlers.handle_message(bot, message("/help"))
+    assert bot.api.sent
+    assert "Что умею" in bot.api.sent[0][1]
+
+
+def test_messages_from_other_bots_are_ignored(bot):
+    """Service messages loop: pin -> service message -> reply -> pin again."""
+    handlers.handle_message(bot, message("anything", is_bot=True))
+    assert bot.api.sent == []
+
+
+def test_messages_without_text_are_ignored(bot):
+    handlers.handle_message(bot, {"message_id": 1, "chat": {"id": OWNER},
+                                  "from": {"id": OWNER, "is_bot": False}})
+    assert bot.api.sent == []
+
+
+# ------------------------------------------------------ dangerous commands
+
+def test_stop_asks_for_confirmation_before_acting(online_bot):
+    sent_commands = []
+    online_bot.run_command = lambda cmd, *a, **k: (
+        sent_commands.append(cmd), (True, "Ack=0"))[1]
+
+    handlers.handle_callback(online_bot, callback("ask:stop"))
+    assert sent_commands == []                       # nothing happened yet
+
+    _, _, text, keyboard = online_bot.api.edited[-1]
+    assert "Остановить печать?" in text
+    assert "Отменить это будет нельзя" in text
+    labels = [b["text"] for row in keyboard for b in row]
+    assert any("Да" in l for l in labels)
+    assert any("Отмена" in l for l in labels)
+
+
+def test_confirmed_stop_sends_the_stop_command(online_bot):
+    sent_commands = []
+    online_bot.run_command = lambda cmd, *a, **k: (
+        sent_commands.append(cmd), (True, "Ack=0"))[1]
+    handlers.handle_callback(online_bot, callback("do:stop"))
+    assert sdcp.CMD_STOP in sent_commands
+
+
+def test_pause_asks_for_confirmation(online_bot):
+    handlers.handle_callback(online_bot, callback("ask:pause"))
+    text = online_bot.api.edited[-1][2]
+    assert "паузу" in text
+
+
+def test_resume_needs_no_confirmation(online_bot):
+    """Resuming is not destructive, and an extra tap on a paused print at 3am
+    helps nobody."""
+    sent_commands = []
+    online_bot.run_command = lambda cmd, *a, **k: (
+        sent_commands.append(cmd), (True, "Ack=0"))[1]
+    handlers.handle_callback(online_bot, callback("do:resume"))
+    assert sdcp.CMD_RESUME in sent_commands
+
+
+def test_control_commands_are_refused_in_monitoring_only_mode(online_bot):
+    online_bot.cfg["allow_control"] = False
+    sent_commands = []
+    online_bot.run_command = lambda cmd, *a, **k: (
+        sent_commands.append(cmd), (True, "Ack=0"))[1]
+    handlers.handle_callback(online_bot, callback("do:stop"))
+    assert sent_commands == []
+    assert "выключено" in online_bot.api.answers[-1][1]
+
+
+# ------------------------------------------------------------- keyboards
+
+def test_monitoring_only_mode_shows_no_control_buttons():
+    keyboard = ui.kb_main(status(13, "demo.gcode", progress=50), allow_control=False)
+    labels = [b["text"] for row in keyboard for b in row]
+    assert not any("Пауза" in l or "Стоп" in l or "Свет" in l for l in labels)
+    assert any("Обновить" in l for l in labels)
+
+
+def test_printing_shows_pause_and_stop():
+    keyboard = ui.kb_main(status(13, "demo.gcode", progress=50))
+    labels = [b["text"] for row in keyboard for b in row]
+    assert any("Пауза" in l for l in labels)
+    assert any("Стоп" in l for l in labels)
+    assert not any("Продолжить" in l for l in labels)
+
+
+def test_paused_shows_resume_not_pause():
+    keyboard = ui.kb_main(status(6, "demo.gcode", progress=50))
+    labels = [b["text"] for row in keyboard for b in row]
+    assert any("Продолжить" in l for l in labels)
+    assert not any("Пауза" in l for l in labels)
+
+
+def test_idle_shows_neither_pause_nor_stop():
+    keyboard = ui.kb_main(status(0))
+    labels = [b["text"] for row in keyboard for b in row]
+    assert not any("Пауза" in l or "Стоп" in l or "Продолжить" in l for l in labels)
+
+
+def test_maintenance_button_appears_only_when_due():
+    without = ui.kb_main(status(0), maintenance=(False, False))
+    with_it = ui.kb_main(status(0), maintenance=(True, True))
+    assert not any("🧰" in b["text"] for row in without for b in row)
+    assert any("🧰" in b["text"] for row in with_it for b in row)
+
+
+def test_every_callback_button_has_data_and_every_link_has_a_url():
+    """A button with neither is a button that does nothing when pressed."""
+    keyboards = [ui.kb_main(status(13, "demo.gcode", progress=50)),
+                 ui.kb_speed(100), ui.kb_temp(),
+                 ui.kb_fans({"ModelFan": 50, "BoxFan": 0, "AuxiliaryFan": 0}),
+                 ui.kb_confirm("stop", "остановить"),
+                 ui.kb_files(["/local/a.gcode"]),
+                 ui.help_screen()[1]]
+    for keyboard in keyboards:
+        for row in keyboard:
+            for button in row:
+                assert "text" in button
+                assert ("callback_data" in button) or ("url" in button)
+
+
+def test_fan_draft_marks_changes_and_counts_them():
+    current = {"ModelFan": 100, "BoxFan": 0, "AuxiliaryFan": 0}
+    keyboard = ui.kb_fans(current, {"ModelFan": 50})
+    labels = [b["text"] for row in keyboard for b in row]
+    assert any("✎" in l for l in labels)
+    assert any("Отправить (1)" in l for l in labels)
+
+
+# --------------------------------------------------------------- rendering
+
+def test_render_shows_progress_and_file(bot):
+    text = ui.render(status(13, "Demo_Print.gcode", progress=42), True, "Demo Centauri")
+    assert "Demo_Print.gcode" in text
+    assert "42%" in text
+    assert "Demo Centauri" in text
+
+
+def test_render_says_connection_lost_when_offline():
+    text = ui.render(status(13, "demo.gcode", progress=42), False, "Demo")
+    assert "связь потеряна" in text.lower() or "нет связи" in text.lower()
+
+
+def test_render_without_a_status_is_still_a_message():
+    text = ui.render(None, False, "Demo Centauri")
+    assert "Demo Centauri" in text
+    assert "Нет данных" in text
+
+
+def test_render_detailed_adds_fans_and_chamber():
+    brief = ui.render(status(13, "demo.gcode", progress=10), True, "Demo")
+    detailed = ui.render(status(13, "demo.gcode", progress=10), True, "Demo",
+                         detailed=True)
+    assert "обдув" not in brief
+    assert "обдув" in detailed
+    assert "камера" in detailed
+
+
+def test_unknown_status_code_is_described_not_hidden():
+    text = ui.render(status(77, "demo.gcode", progress=50), True, "Demo")
+    assert "77" in text
+
+
+def test_progress_bar_turns_yellow_when_stalled():
+    assert "🟩" in ui.bar(50, code=13)
+    assert "🟨" in ui.bar(50, code=6)

@@ -1,0 +1,19 @@
+# Normalise line endings so a clone on Windows and one on Linux agree.
+* text=auto eol=lf
+
+# Windows launchers must have CRLF: cmd.exe mis-parses a batch file with bare
+# LF endings in some configurations, and a broken launcher is the first thing a
+# new user would hit.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary, never diffed, never line-ending-converted.
+*.3mf binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary
+
+# Rendered as text in diffs even though they are XML-ish.
+*.svg text

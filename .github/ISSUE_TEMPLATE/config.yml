@@ -1,0 +1,26 @@
+# Blank issues are off on purpose. Every form above asks for the printer model
+# and firmware, and a report without those cannot be acted on - so the forms
+# save a round trip rather than adding friction.
+blank_issues_enabled: false
+
+contact_links:
+  - name: Question or idea
+    url: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/discussions
+    about: >
+      Anything that is not a reproducible bug. Setup questions, "is this
+      supposed to happen", ideas, or showing what you printed.
+
+  - name: Documentation
+    url: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/blob/main/docs/installation.md
+    about: Installation, configuration and troubleshooting.
+
+  - name: Write to the author on Telegram
+    url: https://t.me/SupporBiBot?start=centauri_bot
+    about: >
+      If you do not have a GitHub account, or would rather not write in public.
+      Do not send your bot token here either.
+
+  - name: Report a security vulnerability
+    url: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/security/policy
+    about: >
+      Do NOT open a public issue for a vulnerability. Use private reporting.

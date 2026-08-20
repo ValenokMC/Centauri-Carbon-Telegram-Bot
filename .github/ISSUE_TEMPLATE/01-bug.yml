@@ -1,0 +1,111 @@
+name: Bug report
+description: Something works differently from how it is documented
+title: "[bug] "
+labels: ["bug", "needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        **Before you paste anything:** never include your BotFather token, and
+        never attach your whole `config.json` — the token is inside it. The log
+        file is written with the token redacted, so the log is safe to attach.
+
+        If you have already posted a token somewhere, revoke it now: open
+        [@BotFather](https://t.me/BotFather), send `/revoke`, pick the bot, take
+        the new token, and run `Setup.cmd` again.
+
+  - type: input
+    id: version
+    attributes:
+      label: Application version
+      description: Shown at the top of `Check.cmd`, or the name of the ZIP you downloaded.
+      placeholder: v1.0.0
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+
+  - type: dropdown
+    id: printer
+    attributes:
+      label: Printer model
+      options:
+        - Elegoo Centauri Carbon (1st generation)
+        - Elegoo Centauri Carbon 2 (not supported)
+        - Other (not supported)
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: Printer firmware version
+      description: On the printer, Settings → About.
+      placeholder: V1.4.49
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - Monitoring and control
+        - Monitoring only
+    validations:
+      required: true
+
+  - type: textarea
+    id: did
+    attributes:
+      label: What you did
+      description: The steps, in order, so somebody else can repeat them.
+      placeholder: |
+        1. Started a print from the printer's screen
+        2. Waited until it reached about 40 per cent
+        3. Pressed "Пауза" in the bot, then confirmed
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: |
+        From `%LOCALAPPDATA%\CentauriCarbonTelegramBot\logs\centauri-bot.log`.
+        The lines around the moment it went wrong are usually enough.
+      render: text
+
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have checked this text and my attachments, and there is no BotFather token in them (including inside a screenshot).
+          required: true
+        - label: I am not attaching my whole `config.json`.
+          required: true
+        - label: I have blurred or removed my printer's IP address and my chat id, if they appear in a screenshot.
+          required: true
