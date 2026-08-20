@@ -245,6 +245,22 @@ def scan_file(path, display, allowed_map):
     return scan_text(text, display, allowed)
 
 
+def archive_exemptions(name, allowed_map):
+    """The allow-list entry for a file inside an archive.
+
+    A release archive wraps everything in one top-level directory, so an entry
+    is "Centauri-Bot-v1.0.0-windows/docs/installation.md" while the allow-list
+    is keyed on the repository path "docs/installation.md". Without stripping
+    that prefix the allow-list silently does not apply inside an archive, and
+    the release job fails on documentation that the repository scan accepted.
+    """
+    path = name.replace("\\", "/")
+    if path in allowed_map:
+        return allowed_map[path]
+    _, _, without_prefix = path.partition("/")
+    return allowed_map.get(without_prefix, set())
+
+
 def scan_archive(path, display, allowed_map):
     """A .3mf is a ZIP. So is a release archive. Both get opened and read."""
     findings = []
@@ -262,8 +278,8 @@ def scan_archive(path, display, allowed_map):
                 except (OSError, zipfile.BadZipFile):
                     continue
                 inner = "%s!%s" % (display, name)
-                allowed = allowed_map.get(name.replace("\\", "/"), set())
-                findings.extend(scan_text(text, inner, allowed))
+                findings.extend(scan_text(text, inner,
+                                          archive_exemptions(name, allowed_map)))
     except (OSError, zipfile.BadZipFile) as e:
         findings.append(Finding(display, None, "unreadable-archive",
                                 "cannot be opened: %s" % e, ""))
@@ -318,7 +334,10 @@ def main(argv=None):
         if os.path.isdir(target):
             findings.extend(scan_tree(target))
         elif os.path.isfile(target):
-            findings.extend(scan_file(target, os.path.basename(target), {}))
+            # ALLOWED, not {}: scanning a release archive has to accept the same
+            # documentation the repository scan accepts, or the release job
+            # fails on an example IP address that CI just approved.
+            findings.extend(scan_file(target, os.path.basename(target), ALLOWED))
         else:
             print("not found: %s" % target)
             return 2
