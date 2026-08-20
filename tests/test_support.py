@@ -48,6 +48,15 @@ def test_help_screen_has_all_five_promised_entries():
     assert any("Вернуться" in t for t in texts)
 
 
+def test_monitoring_only_help_does_not_promise_control_buttons():
+    text, _ = ui.help_screen(allow_control=False)
+    for unavailable in ("пауза", "продолжить", "стоп", "свет",
+                        "скорость", "нагрев"):
+        assert unavailable not in text.lower()
+    for available in ("обновить", "подробнее", "файлы"):
+        assert available in text.lower()
+
+
 # ------------------------------------------- where the button must NOT appear
 
 def test_status_keyboard_never_carries_the_support_button(bot):

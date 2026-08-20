@@ -307,14 +307,16 @@ def files_text(files, limit=8):
     return "\n".join(lines)
 
 
-HELP_TEXT = (
+HELP_TEXT_HEADER = (
     "<b>Что умею</b>\n\n"
     "/status — состояние со снимком и кнопками\n"
     "/snap — только кадр с камеры\n"
     "/files — файлы на принтере\n"
     "/help — эта справка\n\n"
     "<b>Кнопки под статусом</b>\n"
-    "обновить · подробнее · пауза/продолжить · стоп · свет · скорость · нагрев · файлы\n"
+)
+
+HELP_TEXT_FOOTER = (
     "Все правят одно и то же сообщение, новых не досылают — статус остаётся на месте.\n\n"
     "В чате всегда ровно одно сообщение со статусом: оно правится на месте и "
     "переезжает вниз, когда я пишу что-то ещё.\n\n"
@@ -323,6 +325,9 @@ HELP_TEXT = (
 )
 
 
-def help_screen():
+def help_screen(allow_control=True):
     """Text and keyboard for /help — the permanent home of the support button."""
-    return HELP_TEXT, support.help_keyboard()
+    buttons = ("обновить · подробнее · пауза/продолжить · стоп · свет · "
+               "скорость · нагрев · файлы\n" if allow_control else
+               "обновить · подробнее · файлы\n")
+    return HELP_TEXT_HEADER + buttons + HELP_TEXT_FOOTER, support.help_keyboard()

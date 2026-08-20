@@ -76,7 +76,7 @@ def handle_callback(bot, query):
 
     if data == "help":
         bot.api.answer_callback(query["id"])
-        text, keyboard = ui.help_screen()
+        text, keyboard = ui.help_screen(bot.cfg.get("allow_control", True))
         bot.api.edit_message(chat, mid, text, keyboard=keyboard, is_photo=is_photo)
         return
 
@@ -307,7 +307,7 @@ def handle_message(bot, message):
     elif text.startswith("/files"):
         show_files(bot, chat)
     elif text.startswith("/help") or text.startswith("/start"):
-        body, keyboard = ui.help_screen()
+        body, keyboard = ui.help_screen(bot.cfg.get("allow_control", True))
         bot.api.send_message(chat, body, keyboard=keyboard)
         _maybe_help_reminder(bot, chat)
         return

@@ -72,6 +72,15 @@ def test_owner_is_served(bot):
     assert "Что умею" in bot.api.sent[0][1]
 
 
+def test_monitoring_only_help_hides_control_descriptions(bot):
+    bot.cfg["allow_control"] = False
+    handlers.handle_message(bot, message("/help"))
+    body = bot.api.sent[0][1].lower()
+    for unavailable in ("пауза", "продолжить", "стоп", "свет",
+                        "скорость", "нагрев"):
+        assert unavailable not in body
+
+
 def test_messages_from_other_bots_are_ignored(bot):
     """Service messages loop: pin -> service message -> reply -> pin again."""
     handlers.handle_message(bot, message("anything", is_bot=True))
