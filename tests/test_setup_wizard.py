@@ -132,6 +132,29 @@ def test_full_wizard_writes_a_usable_config(monkeypatch):
     assert cfg["printer_ip"] == "10.0.0.5"
     assert cfg["printer_name"] == "Demo Centauri"
     assert cfg["allow_control"] is True
+    assert cfg["anonymous_statistics"] is True
+
+
+def test_declining_statistics_still_saves_a_fully_working_bot(monkeypatch):
+    api = FakeTelegram(updates=[update_from(555000111)])
+    monkeypatch.setattr(wiz, "ask_secret", lambda prompt: VALID_TOKEN)
+
+    def answer(prompt, default=True):
+        return False if "анонимную статистику" in prompt else True
+
+    monkeypatch.setattr(wiz, "ask_yes", answer)
+    monkeypatch.setattr(wiz, "ask_choice", lambda prompt, options: options[1][0])
+    monkeypatch.setattr(wiz, "ask", lambda prompt, default=None: {
+        "IP-адрес или имя принтера": "10.0.0.5",
+        "Понятное имя": "Demo Centauri",
+    }.get(prompt, default or "10.0.0.5"))
+    monkeypatch.setattr(wiz.sdcp, "tcp_reachable", lambda *a, **k: True)
+
+    assert wiz.run(api_factory=factory_for(api)) == 0
+    cfg = config_mod.load_valid()
+    assert cfg["anonymous_statistics"] is False
+    assert cfg["allow_control"] is True
+    assert cfg["telegram_token"] == VALID_TOKEN
 
 
 def test_wizard_stamps_the_install_date_for_the_support_interval(monkeypatch):

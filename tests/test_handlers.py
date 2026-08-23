@@ -2,7 +2,7 @@
 """Access control, dangerous-command confirmation, and keyboard layout."""
 import pytest
 
-from centauri_bot import handlers, sdcp, ui
+from centauri_bot import handlers, sdcp, storage, ui
 
 from conftest import status
 
@@ -91,6 +91,48 @@ def test_messages_without_text_are_ignored(bot):
     handlers.handle_message(bot, {"message_id": 1, "chat": {"id": OWNER},
                                   "from": {"id": OWNER, "is_bot": False}})
     assert bot.api.sent == []
+
+
+def test_files_command_replaces_the_tracked_message_and_back_edits_it(bot):
+    """``/files`` and Back must still leave exactly one bot message."""
+    storage.set_message_id(77)
+    bot.files = ["/local/Calibration Cube.gcode"]
+    bot.run_command = lambda *a, **k: (True, "Ack=0")
+
+    handlers.handle_message(bot, message("/files"))
+
+    assert bot.api.deleted == [(OWNER, 77)]
+    assert len(bot.api.sent) == 1
+    assert "Файлы на принтере" in bot.api.sent[0][1]
+    file_message_id = storage.message_id()
+
+    back = callback("refresh")
+    back["message"]["message_id"] = file_message_id
+    handlers.handle_callback(bot, back)
+
+    assert len(bot.api.sent) == 1
+    assert bot.api.deleted == [(OWNER, 77)]
+    assert bot.api.edited[-1][1] == file_message_id
+    assert "Demo Centauri" in bot.api.edited[-1][2]
+
+
+def test_files_command_keeps_photo_message_editable_on_back(bot):
+    """With snapshots enabled the file list remains the same photo message."""
+    bot.cfg["send_photo"] = True
+    bot.grab = lambda max_age=0: b"jpeg"
+    bot.files = ["/local/Calibration Cube.gcode"]
+    bot.run_command = lambda *a, **k: (True, "Ack=0")
+
+    handlers.handle_message(bot, message("/files"))
+
+    assert len(bot.api.sent) == 1
+    assert bot.api.sent[0][3] is True
+    file_message_id = storage.message_id()
+    back = callback("refresh", with_photo=True)
+    back["message"]["message_id"] = file_message_id
+    handlers.handle_callback(bot, back)
+    assert len(bot.api.sent) == 1
+    assert bot.api.edited[-1][1] == file_message_id
 
 
 # ------------------------------------------------------ dangerous commands

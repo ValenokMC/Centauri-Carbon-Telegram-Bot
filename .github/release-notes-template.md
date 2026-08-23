@@ -1,26 +1,19 @@
-## What this is
+## What changed
 
-The first public release of a Telegram bot for the Elegoo Centauri Carbon.
-It runs on your own Windows PC, talks directly to the printer on the local
-network, and does not require a server or cloud account.
+This release fixes the duplicate status left after opening files with `/files`
+and adds optional anonymous installation statistics.
 
 ## Changes
 
-- Guided `Setup.cmd`: enter the Telegram token and printer IP, then let the
-  wizard discover your chat ID and verify the printer connections.
-- Live printer status, camera snapshots, print notifications and optional
-  controls from Telegram.
-- Monitoring-only mode for installations where remote control must be disabled.
-- Optional per-user Windows autostart, read-only diagnostics and rotating logs
-  with Telegram tokens removed.
-- Project support and Tribute links in `/help`, plus one unobtrusive note after
-  a successful print at most once per month.
+- Statistics are disabled by default and require an explicit Yes in `Setup.cmd`.
+- No keeps every bot feature working.
+- If enabled, only a random installation id, project code and version are sent,
+  at most once every 30 days. See `PRIVACY.md` for the exact contract.
 
 ## Fixes
 
-- Configuration and runtime state are stored outside the program folder and
-  written atomically, so updates do not overwrite user settings.
-- Public-safety checks cover both the repository and the downloadable archive.
+- `/files` now replaces the tracked main message, so Back returns to that same
+  message instead of leaving a second status behind.
 
 ## Compatibility
 
@@ -35,10 +28,11 @@ network, and does not require a server or cloud account.
   yet been verified.
 - One bot installation controls one printer.
 
-## Updating from the previous version
+## Updating from v1.0.0
 
-This is the first public release. For later updates, unpack the new ZIP over the
-old program folder; settings in `%LOCALAPPDATA%` are not touched.
+Unpack the new ZIP over the old program folder. Settings in `%LOCALAPPDATA%` are
+not touched. Run `Setup.cmd` only if you want to choose whether to contribute
+anonymous statistics; the default for existing installs remains No.
 
 ## Verifying the download
 

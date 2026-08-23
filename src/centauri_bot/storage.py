@@ -51,6 +51,8 @@ STATE_DEFAULT = {
     "message_id": None,
     "installed_at": None,
     "last_support_reminder_at": None,
+    "telemetry_installation_id": None,
+    "last_telemetry_at": None,
 }
 
 
@@ -96,6 +98,11 @@ def message_id():
 
 def set_message_id(mid):
     update_state(message_id=mid)
+
+
+def clear_telemetry():
+    """Forget the local anonymous id when the user withdraws consent."""
+    update_state(telemetry_installation_id=None, last_telemetry_at=None)
 
 
 # ------------------------------------------------------- maintenance.json

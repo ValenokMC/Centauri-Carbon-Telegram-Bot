@@ -81,7 +81,8 @@ id and your printer's address never leave your machine.
    `/newbot`, follow the prompts, copy the token it gives you.
 2. **Download and unpack** the [Windows ZIP](https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/releases/latest).
 3. **Run `Setup.cmd`.** It checks Python, takes your token (without showing it),
-   asks for the printer's address, and tests both.
+   asks for the printer's address, tests both, and separately offers optional
+   anonymous statistics. Declining changes nothing else.
 4. **Press `/start`** in your new bot when the wizard asks. It finds your chat id
    by itself — no third-party "what is my id" bot involved.
 5. **Run `Run.cmd`.** Send `/status` to your bot.
@@ -94,6 +95,14 @@ shows you exactly what it will register and asks first; `Remove-Autostart.cmd`
 removes it.
 
 Full walkthrough: **[docs/installation.md](docs/installation.md)**
+
+### Privacy
+
+Anonymous statistics are off by default. If a person explicitly opts in, the
+bot sends only a random installation id, the application version and project
+code, at most once every 30 days. It sends no Telegram token or id, printer IP,
+filenames, print status or images. Declining leaves the complete bot working.
+Consent can be withdrawn by re-running `Setup.cmd`. Details: [PRIVACY.md](PRIVACY.md).
 
 ---
 
