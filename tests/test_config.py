@@ -95,6 +95,7 @@ def test_load_fills_in_defaults_for_missing_keys(base_config):
     loaded = config_mod.load()
     assert loaded["keepalive_sec"] == config_mod.DEFAULTS["keepalive_sec"]
     assert loaded["maintenance_hours"] == config_mod.DEFAULTS["maintenance_hours"]
+    assert loaded["anonymous_statistics"] is False
 
 
 def test_validate_lists_every_problem_at_once():

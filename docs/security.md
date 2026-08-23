@@ -78,9 +78,11 @@ machine running unattended. It is not going to be made optional.
 
 ## What the bot does not do
 
-- **No telemetry.** Nothing is counted, measured, or sent anywhere. The author
-  cannot tell whether you use the bot, or whether you ever pressed the support
-  button. That is by design, not by omission.
+- **No telemetry unless you explicitly opt in.** The wizard defaults to No and
+  declining disables no feature. If enabled, one minimal report is sent at most
+  once per 30 days; it contains only a random installation id, project code and
+  application version. It never contains Telegram or printer data. See
+  [PRIVACY.md](../PRIVACY.md) for the exact fields, endpoint and withdrawal.
 - **No inbound connections.** Nothing listens on a port. There is nothing to
   firewall and nothing to scan.
 - **No third-party runtime dependencies.** The whole supply chain is the Python

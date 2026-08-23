@@ -7,6 +7,17 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-08-23
+
+### Added
+
+- Optional anonymous installation statistics, disabled by default and offered
+  separately by the setup wizard. When enabled, the bot reports only a random
+  installation id, project code and version at most once per 30 days. Declining
+  disables no feature, failures never affect the bot, and consent can be
+  withdrawn by re-running the wizard.
+- A complete bilingual privacy description in `PRIVACY.md`.
+
 ### Fixed
 
 - Opening the printer file list with `/files` and then pressing Back no longer
@@ -62,5 +73,6 @@ personal is baked into the code.
 - `config.json` cannot reach the repository: it is not there, it is gitignored,
   and `tools/check_public_safety.py` fails the build if one appears.
 
-[Unreleased]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/releases/tag/v1.0.0

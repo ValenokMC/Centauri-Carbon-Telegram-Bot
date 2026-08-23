@@ -36,6 +36,7 @@ INCLUDE_FILES = [
     "LICENSE",
     "SUPPORT.md",
     "SECURITY.md",
+    "PRIVACY.md",
     "THIRD_PARTY_NOTICES.md",
     "examples/config.example.json",
     "examples/README.md",
@@ -60,7 +61,8 @@ FORBIDDEN_IN_ARCHIVE = (
 REQUIRED_IN_ARCHIVE = (
     "Setup.cmd", "Run.cmd", "VERSION",
     "src/centauri_bot/__main__.py", "src/centauri_bot/app.py",
-    "examples/config.example.json", "LICENSE",
+    "src/centauri_bot/telemetry.py", "examples/config.example.json",
+    "LICENSE", "PRIVACY.md",
 )
 
 
