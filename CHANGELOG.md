@@ -7,7 +7,10 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- Opening the printer file list with `/files` and then pressing Back no longer
+  leaves a duplicate status message in the Telegram chat.
 
 ## [1.0.0] — 2026-08-23
 

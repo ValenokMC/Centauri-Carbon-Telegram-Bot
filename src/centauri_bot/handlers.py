@@ -38,14 +38,21 @@ def _is_owner(bot, chat):
     return str(chat) == bot.owner
 
 
-def show_files(bot, chat, mid=None, is_photo=False):
-    """File list. Arriving from a button edits the same message."""
+def show_files(bot, chat, mid=None, is_photo=False, force_new=False):
+    """Show the file list without leaving a second status message behind.
+
+    A callback edits the message whose button was pressed.  ``/files`` has no
+    such message id, so it recreates the tracked main message as the file list;
+    the Back button can then turn that very message back into the status.
+    """
     ok, info = bot.run_command(sdcp.CMD_FILE_LIST, {"Url": "/local"}, wait=6)
     with bot.lock:
         files = list(bot.files or [])
     if not files:
         text = "Список файлов получить не вышло (%s)." % info
-        if mid:
+        if force_new:
+            bot.refresh_main(force_new=True, text=text, keyboard=bot.keyboard())
+        elif mid:
             bot.api.edit_message(chat, mid, text, keyboard=bot.keyboard(),
                                  is_photo=is_photo)
         else:
@@ -53,7 +60,9 @@ def show_files(bot, chat, mid=None, is_photo=False):
         return
     body = ui.files_text(files)
     rows = ui.kb_files(files, allow_control=bot.cfg.get("allow_control", True))
-    if mid:
+    if force_new:
+        bot.refresh_main(force_new=True, text=body, keyboard=rows)
+    elif mid:
         bot.api.edit_message(chat, mid, body, keyboard=rows, is_photo=is_photo)
     else:
         bot.api.send_message(chat, body, keyboard=rows)
@@ -305,7 +314,8 @@ def handle_message(bot, message):
     if text.startswith("/snap"):
         bot.api.send_message(chat, "📷 " + time.strftime("%H:%M:%S"), photo=bot.grab())
     elif text.startswith("/files"):
-        show_files(bot, chat)
+        show_files(bot, chat, force_new=True)
+        return
     elif text.startswith("/help") or text.startswith("/start"):
         body, keyboard = ui.help_screen(bot.cfg.get("allow_control", True))
         bot.api.send_message(chat, body, keyboard=keyboard)
