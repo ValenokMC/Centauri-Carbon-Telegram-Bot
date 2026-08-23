@@ -1,18 +1,20 @@
 ## What changed
 
-This patch fixes duplicate bot panels caused by pressing Files or Back on an
-older Telegram message whose inline keyboard was still active.
+This patch keeps printer connection notices inside the bot's single main panel
+instead of leaving separate messages above it.
 
 ## Changes
 
-- The bot now recognises when a button belongs to a stale message.
-- It updates the currently tracked panel and removes the older one.
-- If neither panel can be edited, it safely recreates one clean panel.
+- After the configured grace period, connection loss replaces the main panel
+  with a clear offline view and removes the stale camera frame.
+- When the printer reconnects, the offline view is replaced by a current status
+  at the bottom of the chat, with a fresh frame when the camera is available.
+- Brief network interruptions below the grace period remain silent.
 
 ## Fixes
 
-- Files and Back preserve the one-message interface even when an old inline
-  keyboard is pressed.
+- Telegram errors while drawing a network notice cannot stop the printer
+  reconnection loop.
 
 ## Compatibility
 
@@ -27,7 +29,7 @@ older Telegram message whose inline keyboard was still active.
   yet been verified.
 - One bot installation controls one printer.
 
-## Updating from v1.1.0
+## Updating from v1.1.1
 
 Unpack the new ZIP over the old program folder. Settings in `%LOCALAPPDATA%` are
 not touched; there is no need to run `Setup.cmd` again.
