@@ -135,6 +135,54 @@ def test_files_command_keeps_photo_message_editable_on_back(bot):
     assert bot.api.edited[-1][1] == file_message_id
 
 
+def test_files_button_on_stale_message_uses_tracked_main_and_deletes_stale(bot):
+    """A still-clickable old keyboard must not create a second UI message."""
+    storage.set_message_id(77)
+    bot.files = ["/local/Calibration Cube.gcode"]
+    bot.run_command = lambda *a, **k: (True, "Ack=0")
+
+    handlers.handle_callback(bot, callback("files"))
+
+    assert storage.message_id() == 77
+    assert bot.api.sent == []
+    assert bot.api.edited[-1][1] == 77
+    assert "Файлы на принтере" in bot.api.edited[-1][2]
+    assert bot.api.deleted == [(OWNER, 42)]
+
+    back = callback("refresh")
+    back["message"]["message_id"] = 77
+    handlers.handle_callback(bot, back)
+
+    assert bot.api.edited[-1][1] == 77
+    assert "Demo Centauri" in bot.api.edited[-1][2]
+    assert bot.api.deleted == [(OWNER, 42)]
+
+
+def test_back_on_stale_file_message_removes_it_and_updates_tracked_main(bot):
+    """Regression for a file list left above a newer status message."""
+    storage.set_message_id(77)
+
+    handlers.handle_callback(bot, callback("refresh"))
+
+    assert storage.message_id() == 77
+    assert bot.api.sent == []
+    assert bot.api.edited[-1][1] == 77
+    assert "Demo Centauri" in bot.api.edited[-1][2]
+    assert bot.api.deleted == [(OWNER, 42)]
+
+
+def test_back_recreates_one_message_when_both_edits_fail(bot):
+    storage.set_message_id(77)
+    bot.api.fail_edits = True
+
+    handlers.handle_callback(bot, callback("refresh"))
+
+    assert set(bot.api.deleted) == {(OWNER, 42), (OWNER, 77)}
+    assert len(bot.api.sent) == 1
+    assert storage.message_id() == 1001
+    assert "Demo Centauri" in bot.api.sent[0][1]
+
+
 # ------------------------------------------------------ dangerous commands
 
 def test_stop_asks_for_confirmation_before_acting(online_bot):
