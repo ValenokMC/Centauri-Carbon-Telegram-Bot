@@ -315,6 +315,26 @@ class Bot(object):
             shot, self.print_frame, self.print_frame_time = self.print_frame, None, 0.0
         return shot
 
+    def show_connection_lost(self, elapsed):
+        """Replace the main panel with an offline view, without a stale photo."""
+        text = self.render(
+            "⚠️ <b>Связь с принтером потеряна</b>\n"
+            "Нет ответа уже %d с, продолжаю переподключаться.\n" % elapsed)
+        try:
+            return self.refresh_main(force_new=True, text=text, photo=False)
+        except Exception as e:
+            log.warning("connection-loss panel did not go out: %r", e)
+            return None
+
+    def show_connection_restored(self):
+        """Put the live main panel back at the bottom after reconnection."""
+        text = self.render("🔌 <b>Связь с принтером восстановлена</b>\n")
+        try:
+            return self.refresh_main(force_new=True, text=text)
+        except Exception as e:
+            log.warning("connection-restored panel did not go out: %r", e)
+            return None
+
     # -------------------------------------------------------------- loops
 
     def printer_loop(self):
@@ -325,10 +345,7 @@ class Bot(object):
             if since and not reported and self.clock() - since > grace:
                 with self.lock:
                     self.loss_reported = True
-                self.api.send_message(
-                    self.owner,
-                    "⚠️ <b>Связь с принтером потеряна</b>\nНет ответа уже %d с, "
-                    "продолжаю переподключаться." % int(self.clock() - since))
+                self.show_connection_lost(int(self.clock() - since))
             ws = None
             try:
                 ws = sdcp.WS(self.host)
@@ -338,8 +355,7 @@ class Bot(object):
                     had_reported, self.loss_reported = self.loss_reported, False
                 log.info("printer: connected")
                 if had_reported:
-                    self.api.send_message(self.owner,
-                                          "🔌 <b>Связь с принтером восстановлена</b>")
+                    self.show_connection_restored()
                 for raw in ws.messages():
                     self._handle_printer_message(raw, ws)
             except Exception as e:

@@ -72,7 +72,7 @@ class FakeTelegram(object):
 
     def send_message(self, chat, text, keyboard=None, photo=None):
         self._next_id += 1
-        self.sent.append((str(chat), text, keyboard, photo is not None))
+        self.sent.append((str(chat), text, keyboard, bool(photo)))
         return {"ok": True, "result": {"message_id": self._next_id}}
 
     def edit_message(self, chat, message_id, text, keyboard=None,

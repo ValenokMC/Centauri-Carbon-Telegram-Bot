@@ -183,6 +183,40 @@ def test_back_recreates_one_message_when_both_edits_fail(bot):
     assert "Demo Centauri" in bot.api.sent[0][1]
 
 
+def test_connection_loss_and_recovery_replace_the_one_main_panel(bot):
+    """Network notices must never sit above a separate stale status panel."""
+    storage.set_message_id(77)
+    bot.online = False
+
+    bot.show_connection_lost(75)
+
+    assert bot.api.deleted == [(OWNER, 77)]
+    assert len(bot.api.sent) == 1
+    assert bot.api.sent[-1][3] is False
+    assert "Связь с принтером потеряна" in bot.api.sent[-1][1]
+    offline_mid = storage.message_id()
+
+    bot.online = True
+    bot.grab = lambda max_age=0: b"jpeg"
+    bot.show_connection_restored()
+
+    assert bot.api.deleted == [(OWNER, 77), (OWNER, offline_mid)]
+    assert len(bot.api.sent) == 2
+    assert bot.api.sent[-1][3] is True
+    assert "Связь с принтером восстановлена" in bot.api.sent[-1][1]
+    assert storage.message_id() != offline_mid
+
+
+def test_telegram_failure_cannot_stop_printer_reconnection_loop(bot):
+    def fail_refresh(**kwargs):
+        raise OSError("telegram unavailable")
+
+    bot.refresh_main = fail_refresh
+
+    assert bot.show_connection_lost(75) is None
+    assert bot.show_connection_restored() is None
+
+
 # ------------------------------------------------------ dangerous commands
 
 def test_stop_asks_for_confirmation_before_acting(online_bot):

@@ -103,7 +103,11 @@ def render(status, online, printer_name, header="", detailed=False,
     in detailed mode seven solid lines are unreadable.
     """
     if not status:
-        return "<b>%s</b>\nНет данных от принтера." % printer_name
+        lines = []
+        if header:
+            lines.append(header)
+        lines.append("<b>%s</b>\nНет данных от принтера." % printer_name)
+        return "\n".join(lines)
 
     print_info = status.get("PrintInfo") or {}
     code = print_info.get("Status")

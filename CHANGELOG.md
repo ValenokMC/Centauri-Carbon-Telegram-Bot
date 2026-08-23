@@ -7,6 +7,17 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.2] — 2026-08-23
+
+### Fixed
+
+- Connection-lost and connection-restored notices now replace the single main
+  bot panel instead of accumulating as separate Telegram messages. The offline
+  view drops the stale camera frame, and the restored status returns to the
+  bottom of the chat with a fresh frame when available.
+- A Telegram failure while showing a network notice can no longer interrupt
+  the printer reconnection loop.
+
 ## [1.1.1] — 2026-08-23
 
 ### Fixed
@@ -81,7 +92,8 @@ personal is baked into the code.
 - `config.json` cannot reach the repository: it is not there, it is gitignored,
   and `tools/check_public_safety.py` fails the build if one appears.
 
-[Unreleased]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.2...HEAD
+[1.1.2]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/releases/tag/v1.0.0
