@@ -1,19 +1,18 @@
 ## What changed
 
-This release fixes the duplicate status left after opening files with `/files`
-and adds optional anonymous installation statistics.
+This patch fixes duplicate bot panels caused by pressing Files or Back on an
+older Telegram message whose inline keyboard was still active.
 
 ## Changes
 
-- Statistics are disabled by default and require an explicit Yes in `Setup.cmd`.
-- No keeps every bot feature working.
-- If enabled, only a random installation id, project code and version are sent,
-  at most once every 30 days. See `PRIVACY.md` for the exact contract.
+- The bot now recognises when a button belongs to a stale message.
+- It updates the currently tracked panel and removes the older one.
+- If neither panel can be edited, it safely recreates one clean panel.
 
 ## Fixes
 
-- `/files` now replaces the tracked main message, so Back returns to that same
-  message instead of leaving a second status behind.
+- Files and Back preserve the one-message interface even when an old inline
+  keyboard is pressed.
 
 ## Compatibility
 
@@ -28,11 +27,10 @@ and adds optional anonymous installation statistics.
   yet been verified.
 - One bot installation controls one printer.
 
-## Updating from v1.0.0
+## Updating from v1.1.0
 
 Unpack the new ZIP over the old program folder. Settings in `%LOCALAPPDATA%` are
-not touched. Run `Setup.cmd` only if you want to choose whether to contribute
-anonymous statistics; the default for existing installs remains No.
+not touched; there is no need to run `Setup.cmd` again.
 
 ## Verifying the download
 

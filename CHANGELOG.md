@@ -7,6 +7,14 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.1] — 2026-08-23
+
+### Fixed
+
+- Opening Files or pressing Back from a still-clickable older bot message now
+  updates the tracked main message and removes the stale one instead of leaving
+  two bot panels in the chat.
+
 ## [1.1.0] — 2026-08-23
 
 ### Added
@@ -73,6 +81,7 @@ personal is baked into the code.
 - `config.json` cannot reach the repository: it is not there, it is gitignored,
   and `tools/check_public_safety.py` fails the build if one appears.
 
-[Unreleased]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/releases/tag/v1.0.0

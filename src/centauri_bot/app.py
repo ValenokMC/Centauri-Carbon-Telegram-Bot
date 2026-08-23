@@ -158,6 +158,49 @@ class Bot(object):
             storage.set_message_id(mid)
             return mid
 
+    def edit_main_from_callback(self, clicked_mid, text, keyboard=None,
+                                photo=None, is_photo=False):
+        """Edit the one tracked UI message after a button press.
+
+        Telegram keeps old inline keyboards usable.  A user can therefore
+        press a button on a stale status message while a newer message is the
+        one stored in ``message_id``.  Prefer the tracked message and delete
+        the stale one; if that edit is no longer possible, adopt the clicked
+        message instead.  This preserves the one-message invariant for both
+        the Files screen and its Back button.
+        """
+        with self.main_lock:
+            tracked_mid = storage.message_id()
+
+            if tracked_mid and tracked_mid != clicked_mid:
+                answer = self.api.edit_message(
+                    self.owner, tracked_mid, text, keyboard=keyboard,
+                    photo=photo, is_photo=is_photo)
+                if answer.get("ok"):
+                    self.api.delete_message(self.owner, clicked_mid)
+                    return tracked_mid
+
+            answer = self.api.edit_message(
+                self.owner, clicked_mid, text, keyboard=keyboard,
+                photo=photo, is_photo=is_photo)
+            if not answer.get("ok"):
+                for stale_mid in {tracked_mid, clicked_mid}:
+                    if stale_mid:
+                        self.api.delete_message(self.owner, stale_mid)
+                storage.set_message_id(None)
+                answer = self.api.send_message(
+                    self.owner, text, keyboard=keyboard, photo=photo)
+                if not answer.get("ok"):
+                    return None
+                new_mid = answer["result"]["message_id"]
+                storage.set_message_id(new_mid)
+                return new_mid
+
+            if tracked_mid and tracked_mid != clicked_mid:
+                self.api.delete_message(self.owner, tracked_mid)
+            storage.set_message_id(clicked_mid)
+            return clicked_mid
+
     # ------------------------------------------------------------- commands
 
     def run_command(self, cmd, data=None, wait=4.0):

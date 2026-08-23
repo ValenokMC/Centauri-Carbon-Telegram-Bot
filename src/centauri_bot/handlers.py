@@ -53,8 +53,8 @@ def show_files(bot, chat, mid=None, is_photo=False, force_new=False):
         if force_new:
             bot.refresh_main(force_new=True, text=text, keyboard=bot.keyboard())
         elif mid:
-            bot.api.edit_message(chat, mid, text, keyboard=bot.keyboard(),
-                                 is_photo=is_photo)
+            bot.edit_main_from_callback(
+                mid, text, keyboard=bot.keyboard(), is_photo=is_photo)
         else:
             bot.api.send_message(chat, text)
         return
@@ -63,7 +63,8 @@ def show_files(bot, chat, mid=None, is_photo=False, force_new=False):
     if force_new:
         bot.refresh_main(force_new=True, text=body, keyboard=rows)
     elif mid:
-        bot.api.edit_message(chat, mid, body, keyboard=rows, is_photo=is_photo)
+        bot.edit_main_from_callback(
+            mid, body, keyboard=rows, is_photo=is_photo)
     else:
         bot.api.send_message(chat, body, keyboard=rows)
 
@@ -102,9 +103,10 @@ def handle_callback(bot, query):
     if data in ("refresh", "details", "brief", "snap"):
         detailed = (data == "details")
         bot.api.answer_callback(query["id"])
-        bot.api.edit_message(chat, mid, bot.render(detailed=detailed),
-                             keyboard=bot.keyboard(detailed),
-                             photo=bot.grab(max_age=5), is_photo=is_photo)
+        bot.edit_main_from_callback(
+            mid, bot.render(detailed=detailed),
+            keyboard=bot.keyboard(detailed), photo=bot.grab(max_age=5),
+            is_photo=is_photo)
         return
 
     if data == "files":
