@@ -37,7 +37,9 @@ SETTLE_AFTER_ACTION_SEC = 1.5
 def _is_owner(bot, chat, sender=None):
     if str(chat) != bot.owner:
         return False
-    return sender is None or str(sender) == bot.owner
+    if not bot.owner_user:
+        return True
+    return sender is not None and str(sender) == bot.owner_user
 
 
 def show_files(bot, chat, mid=None, is_photo=False, force_new=False):

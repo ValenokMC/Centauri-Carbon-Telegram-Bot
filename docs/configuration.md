@@ -26,14 +26,34 @@ stopped. It is plain JSON.
 |---|---|
 | `telegram_token` | From BotFather. Format `digits:letters`. Never share it. |
 | `chat_id` | The one chat the bot obeys. A number, sometimes negative. |
+| `owner_user_id` | The Telegram user allowed to press buttons in that chat. The wizard fills it for private chats. |
 | `printer_ip` | IP address or hostname on your LAN. |
 | `printer_name` | The label in messages. Cosmetic. |
+
+## Printer backend
+
+| Key | Default | What it does |
+|---|---|---|
+| `backend` | `"sdcp"` | `"sdcp"` for stock Elegoo V1.4.x; `"moonraker"` for OpenCentauri/COSMOS. |
+| `moonraker_url` | `""` | Full Moonraker base URL. If blank in Moonraker mode, `http://<printer_ip>` is used. |
+| `moonraker_api_key` | `""` | Optional API key, sent only in the `X-Api-Key` header. Treat this file as secret. |
+| `moonraker_poll_sec` | `2` | Status polling interval. Moonraker documents one to two seconds for polling clients. |
+| `moonraker_timeout_sec` | `5` | Per-request timeout. |
+| `moonraker_camera_url` | `""` | Optional snapshot URL. Blank asks Moonraker for its enabled webcam. |
+| `moonraker_allow_external_camera` | `false` | Allows a camera URL on a host different from Moonraker. Keep false unless the camera is deliberately separate. |
+| `moonraker_allow_job_control` | `false` | Enables pause, resume and cancel. Separate from the global `allow_control` switch. |
+| `moonraker_allow_remote_start` | `false` | Enables starting a selected G-code file after a one-use confirmation. Separate because it starts a hot machine. |
+
+Moonraker mode does not expose arbitrary G-code, macros, restarts, firmware
+restarts, emergency stop, heater targets, fans, light or speed controls. Those
+operations either have installation-specific names or a larger consequence
+than this first backend can safely infer.
 
 ## Behaviour
 
 | Key | Default | What it does |
 |---|---|---|
-| `allow_control` | `true` | `false` makes the bot read-only: no pause, no stop, no light, no heating. The control buttons disappear, and a command arriving anyway is refused. |
+| `allow_control` | `true` | Global control switch. `false` makes either backend read-only. Moonraker still requires the two narrower opt-ins above. |
 | `send_photo` | `true` | `false` turns off camera frames everywhere. Useful if the camera is disabled, or you would rather not have photos in a chat. |
 | `progress_every_pct` | `0` | `0` is off. `25` sends a progress report at each quarter. Off by default because most people find it noise. |
 | `anonymous_statistics` | `false` | Explicit opt-in. If `true`, sends only a random installation id, project code and version at most once per 30 days. `false` disables no bot feature. Re-run `Setup.cmd` to change it; see [PRIVACY.md](../PRIVACY.md). |

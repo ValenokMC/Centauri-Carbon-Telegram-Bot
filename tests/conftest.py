@@ -128,6 +128,7 @@ def base_config():
     cfg.update({
         "telegram_token": VALID_TOKEN,
         "chat_id": "555000111",
+        "owner_user_id": "555000111",
         "printer_ip": "10.0.0.5",
         "printer_name": "Demo Centauri",
         "send_photo": False,        # keeps the fake printer out of the way

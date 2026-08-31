@@ -19,6 +19,7 @@
     "night_from": 22,
     "night_to": 8,
     "offline_grace_sec": 60,
+    "owner_user_id": "",
     "printer_ip": "",
     "printer_name": "Centauri Carbon",
     "progress_every_pct": 0,

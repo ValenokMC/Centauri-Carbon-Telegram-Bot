@@ -124,6 +124,13 @@ def test_validate_lists_every_problem_at_once():
     assert len(problems) == 3
 
 
+def test_owner_user_id_must_be_a_positive_number_when_present(base_config):
+    base_config["owner_user_id"] = "-100123"
+    assert any("owner_user_id" in item for item in config_mod.validate(base_config))
+    base_config["owner_user_id"] = "555000111"
+    assert config_mod.validate(base_config) == []
+
+
 def test_load_valid_refuses_an_incomplete_config():
     config_mod.save({"telegram_token": "", "chat_id": "", "printer_ip": ""})
     with pytest.raises(config_mod.ConfigError):

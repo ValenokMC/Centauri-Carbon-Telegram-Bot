@@ -12,13 +12,15 @@ Written for someone about to change the code. If you only want to run the bot,
                         └───────────────┬──────────────┘
                                         │  Bot (shared state, RLock)
                         ┌───────────────┴──────────────┐
-   printer :3030   ◄──► │  printer_loop                 │
-                        │    sdcp.WS → printer_state    │
+   printer         ◄──► │  printer_loop                 │
+                        │    SDCP WS or Moonraker HTTP  │
+                        │          ↓ normalized status  │
+                        │       printer_state           │
                         ├──────────────────────────────┤
                         │  keepalive_loop               │
                         │  refresh_loop                 │
                         └──────────────────────────────┘
-   printer :3031   ◄──── sdcp.grab_frame (on demand)
+   camera          ◄──── SDCP MJPEG or Moonraker snapshot (on demand)
    stats endpoint  ◄──── telemetry_loop (only after explicit opt-in, monthly)
 ```
 
@@ -36,6 +38,8 @@ parts. No inbound sockets: everything is an outgoing connection.
 | `logging_setup.py` | Rotating logs with the token scrubbed | filesystem |
 | `telegram_api.py` | Bot API over a persistent HTTPS connection | network |
 | `sdcp.py` | WebSocket framing, SDCP commands, MJPEG grab | network |
+| `moonraker.py` | Moonraker HTTP polling, job/file API, webcam discovery, normalized status | network |
+| `backend.py` | Backend capabilities, fail-closed permissions, one-use confirmation tokens | no |
 | `printer_state.py` | **Pure.** Status codes → lifecycle events | no |
 | `ui.py` | **Pure.** Status text and keyboards | no |
 | `support.py` | **Pure.** Links and the 30-day rule | no |
@@ -50,6 +54,22 @@ tested by calling a function and looking at what comes back. That is deliberate:
 they were extracted from a single 1300-line script, and the extraction was only
 safe because characteristic tests were written against the original behaviour
 first.
+
+## Backend boundary
+
+The UI and handlers use named capabilities such as `pause`, `cancel`, `start`
+and `files`. They never assume that selecting a backend makes all of its API
+available. `backend.allowed_actions()` combines protocol capability with user
+policy immediately before every command and also decides which buttons exist.
+
+Stock SDCP retains the established `allow_control` behaviour. A new Moonraker
+configuration is read-only by default. Job control and remote file start are
+separate opt-ins; arbitrary G-code, macros, service restarts, heaters, fans,
+light and speed are not exposed.
+
+Moonraker objects are translated into the same internal status shape already
+used by the UI and lifecycle. This keeps the event rules below independent of
+the wire protocol.
 
 ## The state machine
 
@@ -145,7 +165,7 @@ If a change breaks one of those, the change is wrong.
   readable by someone who does not know asyncio.
 - **No dependency injection framework.** Handlers take the `Bot` as their first
   argument. That is the whole mechanism.
-- **No abstraction over Telegram or SDCP.** There is one of each and there will
-  be one of each.
+- **No framework around the backend boundary.** A capability set, two small
+  clients and a normalized status dictionary are enough.
 - **No config hot-reload.** Stop, edit, start. A printer control tool that
   changes behaviour under you is not a nice thing to own.

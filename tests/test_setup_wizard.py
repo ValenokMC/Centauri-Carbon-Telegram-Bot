@@ -116,7 +116,9 @@ def test_full_wizard_writes_a_usable_config(monkeypatch):
     api = FakeTelegram(updates=[update_from(555000111)])
     monkeypatch.setattr(wiz, "ask_secret", lambda prompt: VALID_TOKEN)
     monkeypatch.setattr(wiz, "ask_yes", lambda *a, **k: True)
-    monkeypatch.setattr(wiz, "ask_choice", lambda prompt, options: options[1][0])
+    monkeypatch.setattr(
+        wiz, "ask_choice",
+        lambda prompt, options: "sdcp" if "установлено" in prompt else options[1][0])
     monkeypatch.setattr(wiz, "ask", lambda prompt, default=None: {
         "IP-адрес или имя принтера": "10.0.0.5",
         "Понятное имя": "Demo Centauri",
@@ -135,6 +137,49 @@ def test_full_wizard_writes_a_usable_config(monkeypatch):
     assert cfg["anonymous_statistics"] is True
 
 
+def test_cosmos_wizard_probes_moonraker_and_keeps_remote_start_off(monkeypatch):
+    api = FakeTelegram(updates=[update_from(555000111)])
+    monkeypatch.setattr(wiz, "ask_secret", lambda prompt: VALID_TOKEN)
+
+    def answer(prompt, default=True):
+        if "API key" in prompt or "удалённый запуск" in prompt:
+            return False
+        return True
+
+    def choose(prompt, options):
+        if "установлено" in prompt:
+            return "moonraker"
+        return "control"
+
+    class FakeMoonraker(object):
+        def __init__(self, url, api_key=""):
+            assert url == "http://10.0.0.5"
+            assert api_key == ""
+
+        def status(self):
+            return {"PrintInfo": {"Status": 0}}
+
+        def camera_available(self):
+            return True
+
+    monkeypatch.setattr(wiz, "ask_yes", answer)
+    monkeypatch.setattr(wiz, "ask_choice", choose)
+    monkeypatch.setattr(wiz, "ask", lambda prompt, default=None: {
+        "IP-адрес или имя принтера": "10.0.0.5",
+        "Адрес Moonraker": "http://10.0.0.5",
+        "Понятное имя": "COSMOS Centauri",
+    }.get(prompt, default or "10.0.0.5"))
+    monkeypatch.setattr(wiz.moonraker, "Client", FakeMoonraker)
+
+    assert wiz.run(api_factory=factory_for(api)) == 0
+    cfg = config_mod.load_valid()
+    assert cfg["backend"] == "moonraker"
+    assert cfg["moonraker_url"] == "http://10.0.0.5"
+    assert cfg["moonraker_allow_job_control"] is True
+    assert cfg["moonraker_allow_remote_start"] is False
+    assert cfg["owner_user_id"] == "555000111"
+
+
 def test_declining_statistics_still_saves_a_fully_working_bot(monkeypatch):
     api = FakeTelegram(updates=[update_from(555000111)])
     monkeypatch.setattr(wiz, "ask_secret", lambda prompt: VALID_TOKEN)
@@ -143,7 +188,9 @@ def test_declining_statistics_still_saves_a_fully_working_bot(monkeypatch):
         return False if "анонимную статистику" in prompt else True
 
     monkeypatch.setattr(wiz, "ask_yes", answer)
-    monkeypatch.setattr(wiz, "ask_choice", lambda prompt, options: options[1][0])
+    monkeypatch.setattr(
+        wiz, "ask_choice",
+        lambda prompt, options: "sdcp" if "установлено" in prompt else options[1][0])
     monkeypatch.setattr(wiz, "ask", lambda prompt, default=None: {
         "IP-адрес или имя принтера": "10.0.0.5",
         "Понятное имя": "Demo Centauri",
@@ -162,7 +209,9 @@ def test_wizard_stamps_the_install_date_for_the_support_interval(monkeypatch):
     api = FakeTelegram(updates=[update_from(555000111)])
     monkeypatch.setattr(wiz, "ask_secret", lambda prompt: VALID_TOKEN)
     monkeypatch.setattr(wiz, "ask_yes", lambda *a, **k: True)
-    monkeypatch.setattr(wiz, "ask_choice", lambda prompt, options: options[1][0])
+    monkeypatch.setattr(
+        wiz, "ask_choice",
+        lambda prompt, options: "sdcp" if "установлено" in prompt else options[1][0])
     monkeypatch.setattr(wiz, "ask", lambda prompt, default=None: default or "10.0.0.5")
     monkeypatch.setattr(wiz.sdcp, "tcp_reachable", lambda *a, **k: True)
 
@@ -181,7 +230,9 @@ def test_rerunning_the_wizard_keeps_existing_user_data(monkeypatch, base_config)
     api = FakeTelegram(updates=[update_from(555000111)])
     monkeypatch.setattr(wiz, "ask_secret", lambda prompt: VALID_TOKEN)
     monkeypatch.setattr(wiz, "ask_yes", lambda *a, **k: True)
-    monkeypatch.setattr(wiz, "ask_choice", lambda prompt, options: options[1][0])
+    monkeypatch.setattr(
+        wiz, "ask_choice",
+        lambda prompt, options: "sdcp" if "установлено" in prompt else options[1][0])
     monkeypatch.setattr(wiz, "ask", lambda prompt, default=None: default or "10.0.0.9")
     monkeypatch.setattr(wiz.sdcp, "tcp_reachable", lambda *a, **k: True)
 
@@ -194,7 +245,9 @@ def test_rerunning_the_wizard_keeps_existing_user_data(monkeypatch, base_config)
 def test_declining_the_summary_writes_nothing(monkeypatch):
     api = FakeTelegram(updates=[update_from(555000111)])
     monkeypatch.setattr(wiz, "ask_secret", lambda prompt: VALID_TOKEN)
-    monkeypatch.setattr(wiz, "ask_choice", lambda prompt, options: options[1][0])
+    monkeypatch.setattr(
+        wiz, "ask_choice",
+        lambda prompt, options: "sdcp" if "установлено" in prompt else options[1][0])
     monkeypatch.setattr(wiz, "ask", lambda prompt, default=None: default or "10.0.0.5")
     monkeypatch.setattr(wiz.sdcp, "tcp_reachable", lambda *a, **k: True)
 

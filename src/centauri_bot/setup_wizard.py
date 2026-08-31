@@ -18,7 +18,9 @@ import getpass
 import sys
 import time
 
+from . import backend
 from . import config as config_mod
+from . import moonraker
 from . import paths
 from . import sdcp
 from . import storage
@@ -226,8 +228,19 @@ def _describe(sender, chat):
                                   chat.get("id"))
 
 
+def ask_backend(existing=None):
+    head("5. Прошивка и протокол")
+    if existing in backend.BACKENDS and not ask_yes(
+            "Сменить прежний режим %s?" % existing, default=False):
+        return existing
+    return ask_choice("Что установлено на принтере", [
+        (backend.SDCP, "Штатная прошивка Elegoo V1.4.x (SDCP)"),
+        (backend.MOONRAKER, "OpenCentauri / COSMOS (Moonraker)"),
+    ])
+
+
 def ask_printer(existing=None):
-    head("5. Принтер")
+    head("6. Принтер")
     say("  %sАдрес принтера в локальной сети. Его видно на экране принтера:" % DIM)
     say("  Настройки → Сеть. Обычно это 192.168.x.x.%s" % RESET)
     while True:
@@ -237,7 +250,28 @@ def ask_printer(existing=None):
         bad("Это не похоже на IP-адрес или имя хоста.")
 
 
-def check_printer(host):
+def ask_moonraker(host, existing):
+    head("7. Moonraker")
+    default_url = existing.get("moonraker_url") or ("http://%s" % host)
+    while True:
+        url = ask("Адрес Moonraker", default=default_url)
+        if moonraker.valid_base_url(url):
+            break
+        bad("Нужен полный адрес http://... или https://... без логина и пароля.")
+
+    current_key = existing.get("moonraker_api_key") or ""
+    if current_key:
+        key = (ask_secret("Новый API key") if ask_yes(
+            "Заменить сохранённый API key?", default=False) else current_key)
+    elif ask_yes("Moonraker требует API key?", default=False):
+        key = ask_secret("API key Moonraker")
+    else:
+        key = ""
+    return url, key
+
+
+def check_printer(host, backend_name=backend.SDCP, moonraker_url="",
+                  moonraker_api_key=""):
     """Probe both ports and report them separately.
 
     Status and camera are separate services on the printer, and they fail
@@ -245,7 +279,28 @@ def check_printer(host):
     not a broken one, and telling the user "printer unreachable" in that case
     would send them hunting for the wrong problem.
     """
-    head("6. Связь с принтером")
+    head("8. Связь с принтером")
+    if backend_name == backend.MOONRAKER:
+        try:
+            client = moonraker.Client(
+                moonraker_url or ("http://%s" % host),
+                api_key=moonraker_api_key)
+            client.status()
+            status_ok = True
+            ok("Moonraker отвечает и передаёт состояние Klipper.")
+        except (ValueError, moonraker.MoonrakerError) as e:
+            status_ok = False
+            bad("Moonraker не ответил: %s" % e)
+        try:
+            camera_ok = status_ok and client.camera_available()
+        except moonraker.MoonrakerError:
+            camera_ok = False
+        if camera_ok:
+            ok("Moonraker сообщает адрес снимка камеры.")
+        else:
+            warn("Камера через Moonraker не найдена — бот будет без фотографий.")
+        return status_ok, camera_ok
+
     status_ok = sdcp.tcp_reachable(host, sdcp.WS_PORT)
     camera_ok = sdcp.tcp_reachable(host, sdcp.CAMERA_PORT)
 
@@ -265,12 +320,17 @@ def check_printer(host):
     return status_ok, camera_ok
 
 
-def ask_mode(existing=None):
-    head("8. Режим работы")
-    default_control = True if existing is None else bool(existing)
+def ask_mode(existing=None, backend_name=backend.SDCP):
+    head("10. Режим работы")
+    default_control = ((backend_name == backend.SDCP) if existing is None
+                       else bool(existing))
+    control_label = (
+        "Мониторинг и управление — плюс пауза, продолжение и отмена"
+        if backend_name == backend.MOONRAKER else
+        "Мониторинг и управление — плюс пауза, стоп, свет, нагрев")
     mode = ask_choice("Что разрешить боту", [
         ("watch", "Только мониторинг — состояние, уведомления, снимки"),
-        ("control", "Мониторинг и управление — плюс пауза, стоп, свет, нагрев"),
+        ("control", control_label),
     ]) if existing is None else (
         "control" if ask_yes("Разрешить управление принтером?",
                              default=default_control) else "watch")
@@ -310,21 +370,36 @@ def run(api_factory=TelegramAPI, argv=None):
             bad("Без chat_id бот не сможет тебе писать. Настройка не завершена.")
             return 1
 
+        backend_name = ask_backend(existing.get("backend") if existing else None)
         host = ask_printer(existing.get("printer_ip") or None)
-        status_ok, camera_ok = check_printer(host)
+        moonraker_url, moonraker_api_key = "", ""
+        if backend_name == backend.MOONRAKER:
+            moonraker_url, moonraker_api_key = ask_moonraker(host, existing)
+        status_ok, camera_ok = check_printer(
+            host, backend_name, moonraker_url, moonraker_api_key)
         if not status_ok and not ask_yes(
                 "Принтер не отвечает. Всё равно сохранить настройку?", default=True):
             return 1
 
-        head("7. Имя принтера")
+        head("9. Имя принтера")
         say("  %sТак принтер будет подписан в сообщениях.%s" % (DIM, RESET))
         name = ask("Понятное имя",
                    default=existing.get("printer_name") or "Centauri Carbon")
 
-        allow_control = ask_mode(existing.get("allow_control")
-                                 if existing else None)
+        allow_control = ask_mode(
+            existing.get("allow_control") if existing else None,
+            backend_name=backend_name)
+        moonraker_job_control = False
+        moonraker_remote_start = False
+        if backend_name == backend.MOONRAKER and allow_control:
+            moonraker_job_control = ask_yes(
+                "Разрешить паузу, продолжение и отмену печати?",
+                default=bool(existing.get("moonraker_allow_job_control", False)))
+            moonraker_remote_start = ask_yes(
+                "Разрешить удалённый запуск выбранного файла?",
+                default=bool(existing.get("moonraker_allow_remote_start", False)))
 
-        head("9. Анонимная статистика")
+        head("11. Анонимная статистика")
         say("  %sПомочь узнать, сколько установок реально используется?%s" % (DIM, RESET))
         say("  Передаются не чаще раза в 30 дней только случайный id установки,")
         say("  версия приложения и название проекта. Без Telegram-данных, IP принтера,")
@@ -343,9 +418,16 @@ def run(api_factory=TelegramAPI, argv=None):
         "chat_id": str(chat_id),
         "printer_ip": host,
         "printer_name": name,
+        "backend": backend_name,
+        "moonraker_url": moonraker_url,
+        "moonraker_api_key": moonraker_api_key,
+        "moonraker_allow_job_control": moonraker_job_control,
+        "moonraker_allow_remote_start": moonraker_remote_start,
         "allow_control": allow_control,
         "anonymous_statistics": anonymous_statistics,
         "send_photo": bool(camera_ok) if not existing else existing.get("send_photo", True),
+        "owner_user_id": (str(chat_id) if not str(chat_id).startswith("-") else
+                          str(existing.get("owner_user_id") or "")),
     })
 
     head("Итог")

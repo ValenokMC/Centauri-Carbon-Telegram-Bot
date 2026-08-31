@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """The running bot: four threads and the shared state between them.
 
-  printer_loop   - holds the SDCP websocket, turns statuses into events
-  keepalive_loop - stops the printer dropping a silent connection
+  printer_loop   - polls Moonraker or holds SDCP, turns statuses into events
+  keepalive_loop - stops the stock SDCP connection dropping when silent
   refresh_loop   - keeps the status message current while a print runs
   telemetry_loop - optional anonymous heartbeat, at most once per 30 days
   telegram_loop  - long-polls for updates (runs on the main thread)
@@ -37,6 +37,7 @@ class Bot(object):
         self.api = api or TelegramAPI(cfg["telegram_token"])
         self.clock = clock
         self.owner = str(cfg["chat_id"])
+        self.owner_user = str(cfg.get("owner_user_id") or "")
         self.host = cfg["printer_ip"]
         self.backend_name = backend.name(cfg)
         self.confirmations = backend.ConfirmationStore(clock=clock)

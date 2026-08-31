@@ -31,7 +31,7 @@
 |---|---|
 | **Operating system** | Windows 10 or 11 |
 | **Python** | 3.9 or newer — [python.org](https://www.python.org/downloads/), tick *Add python.exe to PATH* |
-| **Printer** | Elegoo Centauri Carbon (first generation), firmware V1.4.49, on the same local network |
+| **Printer** | Elegoo Centauri Carbon (first generation), stock V1.4.x or OpenCentauri/COSMOS, on the same local network |
 | **Anything else** | No. No server, no VPS, no cloud account, no third-party libraries. |
 
 > [!IMPORTANT]
@@ -127,6 +127,11 @@ Consent can be withdrawn by re-running `Setup.cmd`. Details: [PRIVACY.md](PRIVAC
 - All three fans, collected as a draft and sent in one command
 - Browse the files on the printer and start one
 
+The full list above applies to stock SDCP firmware. On COSMOS, pause/resume/cancel
+and remote file start are separate opt-ins. Heater, fan, light, speed, macro and
+arbitrary G-code controls stay unavailable until an installation-specific safe
+mapping exists.
+
 ---
 
 ## Compatibility
@@ -134,14 +139,16 @@ Consent can be withdrawn by re-running `Setup.cmd`. Details: [PRIVACY.md](PRIVAC
 | | Status |
 |---|---|
 | Elegoo Centauri Carbon (1st gen), firmware **V1.4.49** | ✅ Tested |
+| Elegoo Centauri Carbon (1st gen), **OpenCentauri/COSMOS** | 🧪 Moonraker backend covered by automated tests; hardware validation pending |
 | Other Centauri Carbon firmware | ⚠️ Likely fine, not tested |
 | **Elegoo Centauri Carbon 2** | ❌ **Not supported** — different protocol |
 | Any other printer | ❌ Not supported, not tested |
 | Windows 10 / 11 | ✅ Tested |
 | macOS, Linux | ⚠️ The Python code is portable; the launchers and autostart are not |
 
-**Protocol:** SDCP 3.0.0, over WebSocket on port 3030, camera MJPEG on 3031. The
-command codes are taken from the printer's own web interface, not guessed.
+**Protocols:** stock firmware uses SDCP 3.0.0 over WebSocket on port 3030 and
+MJPEG on 3031. COSMOS uses Moonraker's documented HTTP API. The stock command
+codes are taken from the printer's own web interface, not guessed.
 
 **Interface language:** Russian. The code, the documentation and the issue
 templates are English. A full English UI is not written and not tested, and
@@ -176,9 +183,9 @@ More: [docs/security.md](docs/security.md) · [SECURITY.md](SECURITY.md)
 ## How it works
 
 ```
-   Telegram  ⇄  bot (your PC)  ⇄  printer (your LAN)
-             long polling        SDCP over WebSocket :3030
-                                 MJPEG camera        :3031
+   Telegram  ⇄  bot (your PC/server)  ⇄  printer (your LAN)
+             long polling           stock: SDCP WebSocket + MJPEG
+                                    COSMOS: Moonraker HTTP + webcam
 ```
 
 Four threads. One holds the printer's WebSocket and turns each status into

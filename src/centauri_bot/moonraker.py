@@ -212,6 +212,10 @@ class Client(object):
                 return self._url(str(camera["snapshot_url"]))
         return ""
 
+    def camera_available(self):
+        """Whether a snapshot endpoint is configured, without fetching a frame."""
+        return bool(self._camera_snapshot_url())
+
     def grab_frame(self, max_bytes=8_000_000):
         url = self._camera_snapshot_url()
         if not url:
@@ -226,4 +230,3 @@ class Client(object):
         if a < 0 or b <= a:
             raise MoonrakerError("камера вернула не JPEG")
         return raw[a:b + 2]
-

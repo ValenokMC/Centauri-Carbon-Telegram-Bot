@@ -7,6 +7,24 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- OpenCentauri/COSMOS support through a dependency-free Moonraker polling
+  backend for status, files, webcam snapshots and explicitly enabled job
+  controls.
+- Backend capability policy: Moonraker starts read-only, with separate opt-ins
+  for pause/resume/cancel and remote file start.
+
+### Security
+
+- File-start confirmations are one-use, expire after five minutes and bind to
+  the exact path instead of a mutable list index.
+- New private-chat configurations verify both the destination chat and callback
+  sender. Existing group-chat configurations remain compatible until an owner
+  user id is configured.
+- Moonraker API keys are sent only in a request header and are omitted from
+  configuration summaries and URLs.
+
 ## [1.1.2] — 2026-08-23
 
 ### Fixed

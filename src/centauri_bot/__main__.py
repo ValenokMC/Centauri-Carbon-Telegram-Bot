@@ -31,6 +31,8 @@ def cmd_run():
 
 def cmd_check():
     """Read-only diagnosis. Touches nothing, contacts no printer control."""
+    from . import backend
+    from . import moonraker
     from . import sdcp
     try:
         cfg = config_mod.load()
@@ -49,10 +51,33 @@ def cmd_check():
             print("  - %s" % p)
         return 1
     host = cfg["printer_ip"]
-    status_ok = sdcp.tcp_reachable(host, sdcp.WS_PORT)
-    camera_ok = sdcp.tcp_reachable(host, sdcp.CAMERA_PORT)
-    print("  Порт состояния %-5d %s" % (sdcp.WS_PORT, "открыт" if status_ok else "закрыт"))
-    print("  Порт камеры    %-5d %s" % (sdcp.CAMERA_PORT, "открыт" if camera_ok else "закрыт"))
+    if backend.name(cfg) == backend.MOONRAKER:
+        client = moonraker.Client(
+            cfg.get("moonraker_url") or ("http://%s" % host),
+            api_key=cfg.get("moonraker_api_key", ""),
+            timeout=cfg.get("moonraker_timeout_sec", 5),
+            camera_url=cfg.get("moonraker_camera_url", ""),
+            allow_external_camera=cfg.get(
+                "moonraker_allow_external_camera", False))
+        try:
+            client.status()
+            status_ok = True
+            print("  Moonraker       отвечает")
+        except moonraker.MoonrakerError as e:
+            status_ok = False
+            print("  Moonraker       ошибка: %s" % e)
+        try:
+            camera_ok = status_ok and client.camera_available()
+        except moonraker.MoonrakerError:
+            camera_ok = False
+        print("  Камера          %s" % ("настроена" if camera_ok else "не найдена"))
+    else:
+        status_ok = sdcp.tcp_reachable(host, sdcp.WS_PORT)
+        camera_ok = sdcp.tcp_reachable(host, sdcp.CAMERA_PORT)
+        print("  Порт состояния %-5d %s" % (
+            sdcp.WS_PORT, "открыт" if status_ok else "закрыт"))
+        print("  Порт камеры    %-5d %s" % (
+            sdcp.CAMERA_PORT, "открыт" if camera_ok else "закрыт"))
     print("")
     print("  Лог: %s" % logging_setup.log_path())
     return 0 if status_ok else 1

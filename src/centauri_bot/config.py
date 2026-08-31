@@ -19,6 +19,7 @@ from . import moonraker
 DEFAULTS = {
     "telegram_token": "",
     "chat_id": "",
+    "owner_user_id": "",
     "printer_ip": "",
     "printer_name": "Centauri Carbon",
     # ``sdcp`` is the stock V1.4.49 protocol.  COSMOS uses Moonraker.  Keeping
@@ -140,6 +141,9 @@ def validate(cfg):
                         "(expected the token BotFather gave you)")
     if not valid_chat_id(cfg.get("chat_id")):
         problems.append("chat_id is missing or not a number")
+    owner_user = str(cfg.get("owner_user_id") or "").strip()
+    if owner_user and not owner_user.isdigit():
+        problems.append("owner_user_id must be a positive Telegram user id")
     if not valid_host(cfg.get("printer_ip")):
         problems.append("printer_ip is not a valid IP address or hostname")
     selected = backend_mod.name(cfg)
