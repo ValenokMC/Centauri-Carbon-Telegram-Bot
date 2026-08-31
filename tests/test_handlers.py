@@ -58,6 +58,13 @@ def test_stranger_pressing_a_button_is_refused_and_nothing_is_edited(bot):
     assert bot.api.sent == []
 
 
+def test_callback_sender_cannot_hide_behind_owner_chat(bot):
+    forged = callback("do:stop")
+    forged["from"]["id"] = STRANGER
+    handlers.handle_callback(bot, forged)
+    assert bot.api.answers == [("cb-1", "Не для тебя.")]
+
+
 def test_stranger_cannot_stop_a_print(online_bot):
     commands = []
     online_bot.run_command = lambda cmd, *a, **k: (commands.append(cmd), (True, ""))[1]
@@ -241,6 +248,32 @@ def test_confirmed_stop_sends_the_stop_command(online_bot):
         sent_commands.append(cmd), (True, "Ack=0"))[1]
     handlers.handle_callback(online_bot, callback("do:stop"))
     assert sdcp.CMD_STOP in sent_commands
+
+
+def test_print_confirmation_stays_bound_to_original_file(online_bot):
+    online_bot.files = ["/local/original.gcode"]
+    sent = []
+    online_bot.run_command = lambda cmd, data=None, **kwargs: (
+        sent.append((cmd, data)), (True, "Ack=0"))[1]
+
+    handlers.show_files(online_bot, OWNER, force_new=True)
+    file_keyboard = online_bot.api.sent[-1][2]
+    ask_data = file_keyboard[0][0]["callback_data"]
+    handlers.handle_callback(online_bot, callback(ask_data))
+
+    confirm_keyboard = online_bot.api.sent[-1][2]
+    do_data = confirm_keyboard[0][0]["callback_data"]
+    online_bot.files = ["/local/replaced.gcode"]
+    handlers.handle_callback(online_bot, callback(do_data))
+
+    starts = [(cmd, data) for cmd, data in sent if cmd == sdcp.CMD_START]
+    assert starts == [(sdcp.CMD_START,
+                       {"Filename": "/local/original.gcode", "StartLayer": 0})]
+
+    # Replaying the same old Telegram callback is harmless.
+    handlers.handle_callback(online_bot, callback(do_data))
+    starts = [(cmd, data) for cmd, data in sent if cmd == sdcp.CMD_START]
+    assert len(starts) == 1
 
 
 def test_pause_asks_for_confirmation(online_bot):

@@ -15,7 +15,9 @@ import logging
 import threading
 import time
 
+from . import backend
 from . import config as config_mod
+from . import moonraker
 from . import printer_state as ps
 from . import sdcp
 from . import storage
@@ -36,6 +38,19 @@ class Bot(object):
         self.clock = clock
         self.owner = str(cfg["chat_id"])
         self.host = cfg["printer_ip"]
+        self.backend_name = backend.name(cfg)
+        self.confirmations = backend.ConfirmationStore(clock=clock)
+        self.moonraker = None
+        if self.backend_name == backend.MOONRAKER:
+            base_url = cfg.get("moonraker_url") or ("http://%s" % self.host)
+            self.moonraker = moonraker.Client(
+                base_url,
+                api_key=cfg.get("moonraker_api_key", ""),
+                timeout=cfg.get("moonraker_timeout_sec", 5),
+                camera_url=cfg.get("moonraker_camera_url", ""),
+                allow_external_camera=cfg.get(
+                    "moonraker_allow_external_camera", False),
+            )
 
         self.lock = threading.RLock()
         self.main_lock = threading.Lock()
@@ -82,8 +97,45 @@ class Bot(object):
     def keyboard(self, detailed=False):
         status, _ = self._snapshot()
         show, _, due = self.maintenance_view()
-        return ui.kb_main(status, allow_control=self.cfg.get("allow_control", True),
-                          detailed=detailed, maintenance=(show, due))
+        return ui.kb_main(
+            status, allow_control=self.cfg.get("allow_control", True),
+            allowed=self.allowed_actions(), detailed=detailed,
+            maintenance=(show, due))
+
+    def allowed_actions(self):
+        return backend.allowed_actions(self.cfg)
+
+    def action_allowed(self, action):
+        return backend.is_allowed(self.cfg, action)
+
+    def prepare_file_choices(self, files):
+        """Return short callback tokens bound to these exact file paths."""
+        return [self.confirmations.issue("file-choice", path) for path in files]
+
+    def resolve_file_choice(self, token):
+        """Resolve and consume a file-list choice.
+
+        Numeric values are accepted only for keyboards made by releases before
+        path-bound tokens existed.  New keyboards never emit an index.
+        """
+        if str(token).isdigit():
+            index = int(token)
+            with self.lock:
+                files = list(self.files or [])
+            return files[index] if 0 <= index < len(files) else None
+        return self.confirmations.consume("file-choice", token)
+
+    def issue_print_confirmation(self, path):
+        return self.confirmations.issue("print", path)
+
+    def consume_print_confirmation(self, token):
+        if str(token).isdigit():
+            # Compatibility with an already delivered legacy confirmation.
+            index = int(token)
+            with self.lock:
+                files = list(self.files or [])
+            return files[index] if 0 <= index < len(files) else None
+        return self.confirmations.consume("print", token)
 
     # ------------------------------------------------------------- camera
 
@@ -95,7 +147,14 @@ class Bot(object):
                 cached, when = self.frame, self.frame_time
             if cached and self.clock() - when < max_age:
                 return cached
-        shot = sdcp.grab_frame(self.host)
+        if self.backend_name == backend.MOONRAKER:
+            try:
+                shot = self.moonraker.grab_frame()
+            except moonraker.MoonrakerError as e:
+                log.debug("Moonraker camera unavailable: %s", e)
+                shot = None
+        else:
+            shot = sdcp.grab_frame(self.host)
         if shot:
             with self.lock:
                 self.frame, self.frame_time = shot, self.clock()
@@ -222,6 +281,65 @@ class Bot(object):
             time.sleep(0.1)
         return False, "принтер не ответил"
 
+    def refresh_files(self):
+        """Refresh ``self.files`` through the selected backend."""
+        if not self.action_allowed(backend.FILES):
+            return False, "список файлов недоступен"
+        if self.backend_name == backend.MOONRAKER:
+            try:
+                files = self.moonraker.list_files()
+            except moonraker.MoonrakerError as e:
+                return False, str(e)
+            with self.lock:
+                self.files = files
+            return True, "Moonraker"
+        return self.run_command(sdcp.CMD_FILE_LIST, {"Url": "/local"}, wait=6)
+
+    def perform(self, action, value=None):
+        """Execute one named operation after a final permission check."""
+        if not self.action_allowed(action):
+            return False, "команда запрещена настройками"
+
+        if self.backend_name == backend.MOONRAKER:
+            methods = {
+                backend.PAUSE: self.moonraker.pause,
+                backend.RESUME: self.moonraker.resume,
+                backend.CANCEL: self.moonraker.cancel,
+                backend.START: lambda: self.moonraker.start(value),
+            }
+            method = methods.get(action)
+            if method is None:
+                return False, "эта команда не поддерживается Moonraker-режимом"
+            try:
+                method()
+                return True, "Moonraker"
+            except moonraker.MoonrakerError as e:
+                return False, str(e)
+
+        if action == backend.PAUSE:
+            command = (sdcp.CMD_PAUSE, None)
+        elif action == backend.RESUME:
+            command = (sdcp.CMD_RESUME, None)
+        elif action == backend.CANCEL:
+            command = (sdcp.CMD_STOP, None)
+        elif action == backend.START:
+            command = (sdcp.CMD_START,
+                       {"Filename": value, "StartLayer": 0})
+        elif action == backend.LIGHT:
+            command = (sdcp.CMD_SET,
+                       {"LightStatus": {"SecondLight": int(bool(value))}})
+        elif action == backend.SPEED:
+            command = (sdcp.CMD_SET, {"PrintSpeedPct": int(value)})
+        elif action == backend.TEMPERATURE:
+            command = (sdcp.CMD_SET,
+                       {"TempTargetNozzle": int(value[0]),
+                        "TempTargetHotbed": int(value[1])})
+        elif action == backend.FANS:
+            command = (sdcp.CMD_SET, {"TargetFanSpeed": dict(value)})
+        else:
+            return False, "неизвестная команда"
+        return self.run_command(command[0], command[1])
+
     def light_off_if_night(self):
         """Turn the light off after a print, but only at night.
 
@@ -234,7 +352,9 @@ class Bot(object):
             lit = (((self.status or {}).get("LightStatus") or {}).get("SecondLight") == 1)
         if not lit:
             return ""
-        ok, info = self.run_command(sdcp.CMD_SET, {"LightStatus": {"SecondLight": 0}})
+        if not self.action_allowed(backend.LIGHT):
+            return ""
+        ok, info = self.perform(backend.LIGHT, False)
         return "\n🌙 Свет выключен — ночь." if ok else \
                "\n⚠️ Свет погасить не вышло (%s)." % info
 
@@ -338,14 +458,46 @@ class Bot(object):
     # -------------------------------------------------------------- loops
 
     def printer_loop(self):
-        while not self.stopping.is_set():
+        if self.backend_name == backend.MOONRAKER:
+            return self._moonraker_printer_loop()
+        return self._sdcp_printer_loop()
+
+    def _maybe_report_connection_loss(self):
+        with self.lock:
+            since, reported = self.offline_since, self.loss_reported
+        grace = int(self.cfg.get("offline_grace_sec", 60))
+        if since and not reported and self.clock() - since > grace:
             with self.lock:
-                since, reported = self.offline_since, self.loss_reported
-            grace = int(self.cfg.get("offline_grace_sec", 60))
-            if since and not reported and self.clock() - since > grace:
+                self.loss_reported = True
+            self.show_connection_lost(int(self.clock() - since))
+
+    def _moonraker_printer_loop(self):
+        interval = max(1, float(self.cfg.get("moonraker_poll_sec", 2)))
+        while not self.stopping.is_set():
+            self._maybe_report_connection_loss()
+            try:
+                status = self.moonraker.status()
                 with self.lock:
-                    self.loss_reported = True
-                self.show_connection_lost(int(self.clock() - since))
+                    was_online = self.online
+                    self.online = True
+                    self.offline_since = None
+                    had_reported, self.loss_reported = self.loss_reported, False
+                if not was_online:
+                    log.info("printer: Moonraker connected")
+                if had_reported:
+                    self.show_connection_restored()
+                self._handle_status(status)
+            except Exception as e:
+                log.info("printer: Moonraker unavailable - %s", e)
+                with self.lock:
+                    self.online = False
+                    if self.offline_since is None:
+                        self.offline_since = self.clock()
+            self.stopping.wait(interval)
+
+    def _sdcp_printer_loop(self):
+        while not self.stopping.is_set():
+            self._maybe_report_connection_loss()
             ws = None
             try:
                 ws = sdcp.WS(self.host)
@@ -391,6 +543,9 @@ class Bot(object):
         if not isinstance(status, dict):
             return
         ws.mainboard = payload.get("MainboardID", "") or ws.mainboard
+        self._handle_status(status)
+
+    def _handle_status(self, status):
         print_info = status.get("PrintInfo") or {}
         code = print_info.get("Status")
         if code is None:
@@ -421,6 +576,8 @@ class Bot(object):
     def keepalive_loop(self):
         """The printer closes the websocket if the client stays silent.
         Asking for a status is harmless and moves traffic both ways."""
+        if self.backend_name != backend.SDCP:
+            return
         while not self.stopping.is_set():
             self.stopping.wait(max(5, int(self.cfg.get("keepalive_sec", 20))))
             with self.lock:

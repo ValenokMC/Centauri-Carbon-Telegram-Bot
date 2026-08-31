@@ -10,8 +10,8 @@ other than the configured owner is answered with a refusal and goes no further.
 import logging
 import time
 
+from . import backend
 from . import printer_state as ps
-from . import sdcp
 from . import storage
 from . import ui
 
@@ -34,8 +34,10 @@ SETTLE_SEC = 1.2
 SETTLE_AFTER_ACTION_SEC = 1.5
 
 
-def _is_owner(bot, chat):
-    return str(chat) == bot.owner
+def _is_owner(bot, chat, sender=None):
+    if str(chat) != bot.owner:
+        return False
+    return sender is None or str(sender) == bot.owner
 
 
 def show_files(bot, chat, mid=None, is_photo=False, force_new=False):
@@ -45,7 +47,7 @@ def show_files(bot, chat, mid=None, is_photo=False, force_new=False):
     such message id, so it recreates the tracked main message as the file list;
     the Back button can then turn that very message back into the status.
     """
-    ok, info = bot.run_command(sdcp.CMD_FILE_LIST, {"Url": "/local"}, wait=6)
+    ok, info = bot.refresh_files()
     with bot.lock:
         files = list(bot.files or [])
     if not files:
@@ -59,7 +61,10 @@ def show_files(bot, chat, mid=None, is_photo=False, force_new=False):
             bot.api.send_message(chat, text)
         return
     body = ui.files_text(files)
-    rows = ui.kb_files(files, allow_control=bot.cfg.get("allow_control", True))
+    can_start = bot.action_allowed(backend.START)
+    refs = bot.prepare_file_choices(files[:8]) if can_start else None
+    rows = ui.kb_files(files, allow_control=bot.cfg.get("allow_control", True),
+                       can_start=can_start, refs=refs)
     if force_new:
         bot.refresh_main(force_new=True, text=body, keyboard=rows)
     elif mid:
@@ -75,7 +80,8 @@ def handle_callback(bot, query):
     data = query.get("data", "")
     is_photo = "photo" in query.get("message", {})
 
-    if not _is_owner(bot, chat):
+    sender = query.get("from", {}).get("id")
+    if not _is_owner(bot, chat, sender):
         bot.api.answer_callback(query["id"], "Не для тебя.")
         log.info("callback from a foreign chat was refused")
         return
@@ -86,7 +92,8 @@ def handle_callback(bot, query):
 
     if data == "help":
         bot.api.answer_callback(query["id"])
-        text, keyboard = ui.help_screen(bot.cfg.get("allow_control", True))
+        text, keyboard = ui.help_screen(
+            bot.cfg.get("allow_control", True), allowed=bot.allowed_actions())
         bot.api.edit_message(chat, mid, text, keyboard=keyboard, is_photo=is_photo)
         return
 
@@ -191,10 +198,12 @@ def _fan_current(bot):
 
 
 def _toggle_light(bot, chat, mid, query):
+    if not bot.action_allowed(backend.LIGHT):
+        bot.api.answer_callback(query["id"], CONTROL_OFF.strip())
+        return
     with bot.lock:
         lit = (((bot.status or {}).get("LightStatus") or {}).get("SecondLight") == 1)
-    ok, info = bot.run_command(sdcp.CMD_SET,
-                               {"LightStatus": {"SecondLight": 0 if lit else 1}})
+    ok, info = bot.perform(backend.LIGHT, not lit)
     note = ("💡 Свет %s.\n\n" % ("выключен" if lit else "включён")) if ok \
         else "⚠️ Свет не переключился (%s).\n\n" % info
     bot.api.answer_callback(query["id"], note)
@@ -209,10 +218,10 @@ def _apply_fans(bot, chat, mid, query):
         bot.fan_draft = None
     target = _fan_current(bot)
     target.update(draft)
-    if not bot.cfg.get("allow_control"):
+    if not bot.action_allowed(backend.FANS):
         note = CONTROL_OFF
     else:
-        ok, info = bot.run_command(sdcp.CMD_SET, {"TargetFanSpeed": target})
+        ok, info = bot.perform(backend.FANS, target)
         note = ("🌀 Вентиляторы: обдув %d%% · корпус %d%% · доп %d%%.\n\n"
                 % (target["ModelFan"], target["BoxFan"], target["AuxiliaryFan"])) if ok \
             else "⚠️ Вентиляторы не приняты (%s).\n\n" % info
@@ -224,16 +233,16 @@ def _apply_fans(bot, chat, mid, query):
 
 def _apply_setting(bot, chat, mid, query, data):
     _, what, value = data.split(":", 2)
-    if not bot.cfg.get("allow_control"):
+    action = backend.SPEED if what == "speed" else backend.TEMPERATURE
+    if not bot.action_allowed(action):
         note = CONTROL_OFF
     elif what == "speed":
-        ok, info = bot.run_command(sdcp.CMD_SET, {"PrintSpeedPct": int(value)})
+        ok, info = bot.perform(backend.SPEED, int(value))
         note = ("⚡ Скорость печати %s%%.\n\n" % value) if ok \
             else "⚠️ Скорость не принялась (%s).\n\n" % info
     else:
         label, nozzle, bed = ui.HEAT_PRESETS.get(value, ("?", 0, 0))
-        ok, info = bot.run_command(sdcp.CMD_SET,
-                                   {"TempTargetNozzle": nozzle, "TempTargetHotbed": bed})
+        ok, info = bot.perform(backend.TEMPERATURE, (nozzle, bed))
         note = ("🌡 Нагрев: %s.\n\n" % label) if ok \
             else "⚠️ Нагрев не принялся (%s).\n\n" % info
     bot.api.answer_callback(query["id"], note)
@@ -245,17 +254,27 @@ def _apply_setting(bot, chat, mid, query, data):
 def _ask_confirmation(bot, chat, mid, query, what, is_photo):
     """Dangerous actions always get a second screen. No support button here."""
     if what.startswith("print:"):
-        index = int(what.split(":")[1])
-        with bot.lock:
-            files = list(bot.files or [])
-        name = files[index].rsplit("/", 1)[-1] if index < len(files) else "?"
+        if not bot.action_allowed(backend.START):
+            bot.api.answer_callback(query["id"], CONTROL_OFF.strip())
+            return
+        choice = what.split(":", 1)[1]
+        path = bot.resolve_file_choice(choice)
+        if not path:
+            bot.api.answer_callback(query["id"], "Список устарел. Открой файлы заново.")
+            return
+        name = path.rsplit("/", 1)[-1]
+        confirmation = bot.issue_print_confirmation(path)
         bot.api.answer_callback(query["id"])
         bot.api.send_message(
             chat,
             "🖨 <b>Запустить печать?</b>\n<i>%s</i>\n\n"
             "Убедись по снимку, что стол пуст." % name,
-            keyboard=ui.kb_confirm("print:%d" % index, "печатать"),
+            keyboard=ui.kb_confirm("print:%s" % confirmation, "печатать"),
             photo=bot.grab())
+        return
+    action = {"pause": backend.PAUSE, "stop": backend.CANCEL}.get(what)
+    if action and not bot.action_allowed(action):
+        bot.api.answer_callback(query["id"], CONTROL_OFF.strip())
         return
     label, question = CONFIRM_LABELS.get(what, ("выполнить", "Выполнить?"))
     bot.api.answer_callback(query["id"])
@@ -265,27 +284,30 @@ def _ask_confirmation(bot, chat, mid, query, what, is_photo):
 
 def _do_action(bot, chat, mid, query, what):
     note = ""
-    if not bot.cfg.get("allow_control"):
+    action = ({"pause": backend.PAUSE, "resume": backend.RESUME,
+               "stop": backend.CANCEL}.get(what) or
+              (backend.START if what.startswith("print:") else None))
+    if not action or not bot.action_allowed(action):
         note = CONTROL_OFF
     elif what == "pause":
-        ok, info = bot.run_command(sdcp.CMD_PAUSE)
+        ok, info = bot.perform(backend.PAUSE)
         note = "⏸ Команда паузы принята.\n\n" if ok else "⚠️ Пауза не прошла (%s).\n\n" % info
     elif what == "resume":
-        ok, info = bot.run_command(sdcp.CMD_RESUME)
+        ok, info = bot.perform(backend.RESUME)
         note = "▶️ Команда продолжения принята.\n\n" if ok \
             else "⚠️ Не продолжилось (%s).\n\n" % info
     elif what == "stop":
-        ok, info = bot.run_command(sdcp.CMD_STOP)
+        ok, info = bot.perform(backend.CANCEL)
         note = "⏹ Команда остановки принята.\n\n" if ok \
             else "⚠️ Не остановилось (%s).\n\n" % info
     elif what.startswith("print:"):
-        index = int(what.split(":")[1])
-        with bot.lock:
-            files = list(bot.files or [])
-        if index < len(files):
-            ok, info = bot.run_command(sdcp.CMD_START,
-                                       {"Filename": files[index], "StartLayer": 0})
+        token = what.split(":", 1)[1]
+        path = bot.consume_print_confirmation(token)
+        if path:
+            ok, info = bot.perform(backend.START, path)
             note = "🖨 Печать запущена.\n\n" if ok else "⚠️ Не запустилось (%s).\n\n" % info
+        else:
+            note = "⚠️ Подтверждение устарело. Выбери файл заново.\n\n"
     bot.api.answer_callback(query["id"], note or "Готово")
     time.sleep(SETTLE_AFTER_ACTION_SEC)
     # Answering the same callback twice is refused by Telegram with "query is
@@ -306,7 +328,8 @@ def handle_message(bot, message):
     chat = str(message["chat"]["id"])
     text = message["text"].strip().lower()
 
-    if not _is_owner(bot, chat):
+    sender = message.get("from", {}).get("id")
+    if not _is_owner(bot, chat, sender):
         bot.api.send_message(chat, "Этот бот личный.")
         log.info("message from a foreign chat was refused")
         return
@@ -319,7 +342,8 @@ def handle_message(bot, message):
         show_files(bot, chat, force_new=True)
         return
     elif text.startswith("/help") or text.startswith("/start"):
-        body, keyboard = ui.help_screen(bot.cfg.get("allow_control", True))
+        body, keyboard = ui.help_screen(
+            bot.cfg.get("allow_control", True), allowed=bot.allowed_actions())
         bot.api.send_message(chat, body, keyboard=keyboard)
         _maybe_help_reminder(bot, chat)
         return

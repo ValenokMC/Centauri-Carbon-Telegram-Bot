@@ -96,6 +96,26 @@ def test_load_fills_in_defaults_for_missing_keys(base_config):
     assert loaded["keepalive_sec"] == config_mod.DEFAULTS["keepalive_sec"]
     assert loaded["maintenance_hours"] == config_mod.DEFAULTS["maintenance_hours"]
     assert loaded["anonymous_statistics"] is False
+    assert loaded["backend"] == "sdcp"
+    assert loaded["moonraker_allow_remote_start"] is False
+
+
+def test_moonraker_config_requires_a_safe_url_or_printer_host(base_config):
+    base_config["backend"] = "moonraker"
+    base_config["moonraker_url"] = "http://printer.local"
+    assert config_mod.validate(base_config) == []
+
+    base_config["moonraker_url"] = "ftp://printer.local"
+    assert any("moonraker_url" in item for item in config_mod.validate(base_config))
+
+
+def test_summary_never_contains_moonraker_api_key(base_config):
+    base_config.update({
+        "backend": "moonraker",
+        "moonraker_url": "http://printer.local",
+        "moonraker_api_key": "moonraker-secret-value",
+    })
+    assert "moonraker-secret-value" not in "\n".join(config_mod.summary(base_config))
 
 
 def test_validate_lists_every_problem_at_once():

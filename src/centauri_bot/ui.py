@@ -9,6 +9,7 @@ shipping an honest single-language one.
 Pure functions only. Everything is passed in, nothing is read from a socket or
 a global, which is what lets tests assert on exact button layouts.
 """
+from . import backend
 from . import printer_state as ps
 from . import support
 
@@ -198,7 +199,8 @@ def render(status, online, printer_name, header="", detailed=False,
 
 # ------------------------------------------------------------------ keyboards
 
-def kb_main(status, allow_control=True, detailed=False, maintenance=(False, False)):
+def kb_main(status, allow_control=True, detailed=False, maintenance=(False, False),
+            allowed=None):
     """The keyboard under the status message.
 
     Every button edits this same message and sends nothing new: otherwise new
@@ -214,28 +216,40 @@ def kb_main(status, allow_control=True, detailed=False, maintenance=(False, Fals
     print_info = status.get("PrintInfo") or {}
     printing = print_info.get("Status") == ps.STATUS_PRINTING
     busy = bool(print_info.get("Filename")) and (print_info.get("Progress", 0) or 0) < 100
+    if allowed is None:
+        allowed = (backend.SDCP_CONTROL_ACTIONS | backend.READ_ACTIONS
+                   if allow_control else backend.READ_ACTIONS)
+    else:
+        allowed = frozenset(allowed)
 
     rows = [[{"text": "🔄 Обновить", "callback_data": "refresh"},
              {"text": "🔼 Кратко" if detailed else "ℹ️ Подробнее",
               "callback_data": "brief" if detailed else "details"}]]
+    ctl = []
     if allow_control:
-        ctl = []
-        if printing:
+        if printing and backend.PAUSE in allowed:
             ctl.append({"text": "⏸ Пауза", "callback_data": "ask:pause"})
-        elif busy:
+        elif busy and backend.RESUME in allowed:
             ctl.append({"text": "▶️ Продолжить", "callback_data": "do:resume"})
-        if busy:
+        if busy and backend.CANCEL in allowed:
             ctl.append({"text": "⏹ Стоп", "callback_data": "ask:stop"})
         if ctl:
             rows.append(ctl)
+        settings = []
         lit = ((status.get("LightStatus") or {}).get("SecondLight") == 1)
-        rows.append([
-            {"text": "💡 Свет выкл" if lit else "💡 Свет вкл", "callback_data": "light"},
-            {"text": "⚡ Скорость", "callback_data": "menu:speed"},
-            {"text": "🌡 Нагрев", "callback_data": "menu:temp"},
-        ])
-    rows.append([{"text": "📂 Файлы", "callback_data": "files"},
-                 {"text": "🌀 Вентиляторы", "callback_data": "menu:fans"}])
+        if backend.LIGHT in allowed:
+            settings.append({"text": "💡 Свет выкл" if lit else "💡 Свет вкл",
+                             "callback_data": "light"})
+        if backend.SPEED in allowed:
+            settings.append({"text": "⚡ Скорость", "callback_data": "menu:speed"})
+        if backend.TEMPERATURE in allowed:
+            settings.append({"text": "🌡 Нагрев", "callback_data": "menu:temp"})
+        if settings:
+            rows.append(settings)
+    files_row = [{"text": "📂 Файлы", "callback_data": "files"}]
+    if backend.FANS in allowed:
+        files_row.append({"text": "🌀 Вентиляторы", "callback_data": "menu:fans"})
+    rows.append(files_row)
 
     show_maint, due = maintenance
     if show_maint:
@@ -293,12 +307,15 @@ def kb_fans(current, draft=None):
     return rows
 
 
-def kb_files(files, allow_control=True, limit=8):
+def kb_files(files, allow_control=True, limit=8, can_start=None, refs=None):
     rows = []
-    if allow_control:
+    can_start = allow_control if can_start is None else bool(can_start)
+    if can_start:
         for i, path in enumerate(files[:limit]):
             base = path.rsplit("/", 1)[-1]
-            rows.append([{"text": "🖨 %s" % base[:38], "callback_data": "ask:print:%d" % i}])
+            ref = refs[i] if refs and i < len(refs) else str(i)
+            rows.append([{"text": "🖨 %s" % base[:38],
+                          "callback_data": "ask:print:%s" % ref}])
     rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
     return rows
 
@@ -329,9 +346,24 @@ HELP_TEXT_FOOTER = (
 )
 
 
-def help_screen(allow_control=True):
+def help_screen(allow_control=True, allowed=None):
     """Text and keyboard for /help — the permanent home of the support button."""
-    buttons = ("обновить · подробнее · пауза/продолжить · стоп · свет · "
-               "скорость · нагрев · файлы\n" if allow_control else
-               "обновить · подробнее · файлы\n")
+    if allowed is None:
+        allowed = (backend.SDCP_CONTROL_ACTIONS | backend.READ_ACTIONS
+                   if allow_control else backend.READ_ACTIONS)
+    names = ["обновить", "подробнее"]
+    if backend.PAUSE in allowed or backend.RESUME in allowed:
+        names.append("пауза/продолжить")
+    if backend.CANCEL in allowed:
+        names.append("стоп")
+    if backend.LIGHT in allowed:
+        names.append("свет")
+    if backend.SPEED in allowed:
+        names.append("скорость")
+    if backend.TEMPERATURE in allowed:
+        names.append("нагрев")
+    names.append("файлы")
+    if backend.FANS in allowed:
+        names.append("вентиляторы")
+    buttons = " · ".join(names) + "\n"
     return HELP_TEXT_HEADER + buttons + HELP_TEXT_FOOTER, support.help_keyboard()

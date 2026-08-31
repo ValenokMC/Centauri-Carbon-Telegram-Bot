@@ -1,0 +1,229 @@
+# -*- coding: utf-8 -*-
+"""Dependency-free Moonraker HTTP client and status normalizer.
+
+Moonraker's documented polling interval is one to two seconds.  Polling keeps
+the distributable ZIP dependency-free and gives this first COSMOS backend a
+small, auditable surface.  Commands are exposed here, but the policy in
+``backend.py`` decides whether the bot may call them.
+"""
+import json
+import logging
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+log = logging.getLogger(__name__)
+
+QUERY_OBJECTS = (
+    "webhooks", "virtual_sdcard", "print_stats", "extruder", "heater_bed",
+    "fan", "display_status", "gcode_move",
+)
+
+
+class MoonrakerError(Exception):
+    """A safe, human-readable Moonraker failure."""
+
+
+def valid_base_url(value):
+    try:
+        parsed = urllib.parse.urlsplit(str(value or "").strip())
+    except ValueError:
+        return False
+    return (parsed.scheme in ("http", "https") and bool(parsed.hostname)
+            and not parsed.username and not parsed.password
+            and not parsed.query and not parsed.fragment)
+
+
+def _number(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def normalize_status(objects):
+    """Translate Klipper objects to the stable status shape used by the UI."""
+    objects = objects or {}
+    hooks = objects.get("webhooks") or {}
+    stats = objects.get("print_stats") or {}
+    card = objects.get("virtual_sdcard") or {}
+    display = objects.get("display_status") or {}
+    extruder = objects.get("extruder") or {}
+    bed = objects.get("heater_bed") or {}
+    move = objects.get("gcode_move") or {}
+
+    klippy_state = str(hooks.get("state") or "").lower()
+    print_state = str(stats.get("state") or "standby").lower()
+    codes = {
+        "standby": 0,
+        "printing": 13,
+        "paused": 6,
+        "complete": 9,
+        "cancelled": 8,
+        # An unknown settled code after printing becomes a visible stalled
+        # event in PrinterLifecycle instead of being misreported as success.
+        "error": 77,
+    }
+    code = codes.get(print_state, 77 if print_state else 0)
+    if klippy_state and klippy_state != "ready":
+        code = 77
+
+    progress_fraction = max(_number(card.get("progress")),
+                            _number(display.get("progress")))
+    progress = max(0, min(100, int(round(progress_fraction * 100))))
+    elapsed = max(0, int(_number(stats.get("print_duration"))))
+    total = int(elapsed / progress_fraction) if progress_fraction > 0 else 0
+    info = stats.get("info") or {}
+    filename = str(stats.get("filename") or card.get("file_path") or "")
+    position = move.get("gcode_position") or [0, 0, 0, 0]
+
+    print_info = {
+        "Status": code,
+        "Progress": progress,
+        "CurrentLayer": int(_number(info.get("current_layer"))),
+        "TotalLayer": int(_number(info.get("total_layer"))),
+        "CurrentTicks": elapsed,
+        "TotalTicks": max(elapsed, total),
+        "Filename": filename,
+        "TaskId": filename,
+        "PrintSpeedPct": 100,
+    }
+    return {
+        "PrintInfo": print_info,
+        "TempOfNozzle": _number(extruder.get("temperature")),
+        "TempTargetNozzle": _number(extruder.get("target")),
+        "TempOfHotbed": _number(bed.get("temperature")),
+        "TempTargetHotbed": _number(bed.get("target")),
+        "CurrentFanSpeed": {
+            "ModelFan": int(max(0, min(1, _number(
+                (objects.get("fan") or {}).get("speed")))) * 100),
+            "BoxFan": 0,
+            "AuxiliaryFan": 0,
+        },
+        "CurrentCoord": {
+            "X": _number(position[0] if len(position) > 0 else 0),
+            "Y": _number(position[1] if len(position) > 1 else 0),
+            "Z": _number(position[2] if len(position) > 2 else 0),
+        },
+        "Moonraker": {
+            "KlippyState": klippy_state,
+            "PrintState": print_state,
+            "Message": str(stats.get("message") or hooks.get("state_message") or ""),
+        },
+    }
+
+
+class Client(object):
+    """The small Moonraker API surface required by this bot."""
+
+    def __init__(self, base_url, api_key="", timeout=5, opener=None,
+                 camera_url="", allow_external_camera=False):
+        base_url = str(base_url or "").strip().rstrip("/")
+        if not valid_base_url(base_url):
+            raise ValueError("invalid Moonraker URL")
+        self.base_url = base_url
+        self.api_key = str(api_key or "")
+        self.timeout = max(1, float(timeout))
+        self.opener = opener or urllib.request.urlopen
+        self.camera_url = str(camera_url or "").strip()
+        self.allow_external_camera = bool(allow_external_camera)
+
+    def _url(self, path):
+        return urllib.parse.urljoin(self.base_url + "/", path.lstrip("/"))
+
+    def _headers(self):
+        headers = {"Accept": "application/json", "User-Agent": "centauri-bot"}
+        if self.api_key:
+            headers["X-Api-Key"] = self.api_key
+        return headers
+
+    def _open(self, request, max_bytes):
+        try:
+            with self.opener(request, timeout=self.timeout) as response:
+                raw = response.read(max_bytes + 1)
+        except urllib.error.HTTPError as exc:
+            raise MoonrakerError("HTTP %s" % exc.code)
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            reason = getattr(exc, "reason", exc)
+            raise MoonrakerError("нет связи: %s" % reason)
+        if len(raw) > max_bytes:
+            raise MoonrakerError("ответ слишком большой")
+        return raw
+
+    def _json(self, path, method="GET", form=None):
+        data = None
+        headers = self._headers()
+        if form is not None:
+            data = urllib.parse.urlencode(form).encode("utf-8")
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+        request = urllib.request.Request(self._url(path), data=data,
+                                         headers=headers, method=method)
+        raw = self._open(request, 8_000_000)
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            raise MoonrakerError("Moonraker вернул не JSON")
+        if not isinstance(payload, dict):
+            raise MoonrakerError("неожиданный ответ Moonraker")
+        if payload.get("error"):
+            message = (payload["error"] or {}).get("message", "ошибка API")
+            raise MoonrakerError(str(message)[:240])
+        return payload.get("result", payload)
+
+    def status(self):
+        query = "&".join(urllib.parse.quote(item) for item in QUERY_OBJECTS)
+        result = self._json("/printer/objects/query?" + query)
+        objects = (result or {}).get("status") or {}
+        if not objects:
+            raise MoonrakerError("пустой статус Klipper")
+        return normalize_status(objects)
+
+    def list_files(self):
+        result = self._json("/server/files/list?root=gcodes")
+        files = result if isinstance(result, list) else (result or {}).get("files", [])
+        paths = []
+        for item in files or []:
+            path = item.get("path") if isinstance(item, dict) else None
+            if path and str(path).lower().endswith((".gcode", ".gco", ".gc")):
+                paths.append(str(path))
+        return sorted(set(paths), key=str.lower)
+
+    def pause(self):
+        self._json("/printer/print/pause", method="POST", form={})
+
+    def resume(self):
+        self._json("/printer/print/resume", method="POST", form={})
+
+    def cancel(self):
+        self._json("/printer/print/cancel", method="POST", form={})
+
+    def start(self, filename):
+        self._json("/printer/print/start", method="POST",
+                   form={"filename": str(filename)})
+
+    def _camera_snapshot_url(self):
+        if self.camera_url:
+            return self._url(self.camera_url)
+        result = self._json("/server/webcams/list")
+        webcams = (result or {}).get("webcams", [])
+        for camera in webcams:
+            if camera.get("enabled", True) and camera.get("snapshot_url"):
+                return self._url(str(camera["snapshot_url"]))
+        return ""
+
+    def grab_frame(self, max_bytes=8_000_000):
+        url = self._camera_snapshot_url()
+        if not url:
+            return None
+        base_host = urllib.parse.urlsplit(self.base_url).hostname
+        camera_host = urllib.parse.urlsplit(url).hostname
+        if not self.allow_external_camera and camera_host != base_host:
+            raise MoonrakerError("внешний адрес камеры запрещён настройками")
+        request = urllib.request.Request(url, headers=self._headers(), method="GET")
+        raw = self._open(request, max_bytes)
+        a, b = raw.find(b"\xff\xd8"), raw.rfind(b"\xff\xd9")
+        if a < 0 or b <= a:
+            raise MoonrakerError("камера вернула не JPEG")
+        return raw[a:b + 2]
+

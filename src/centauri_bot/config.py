@@ -10,6 +10,8 @@ import re
 import tempfile
 
 from . import paths
+from . import backend as backend_mod
+from . import moonraker
 
 
 # Values a fresh install starts from. Only the four identity fields are blank;
@@ -19,6 +21,21 @@ DEFAULTS = {
     "chat_id": "",
     "printer_ip": "",
     "printer_name": "Centauri Carbon",
+    # ``sdcp`` is the stock V1.4.49 protocol.  COSMOS uses Moonraker.  Keeping
+    # SDCP as the default makes existing installations upgrade without a
+    # surprise protocol switch.
+    "backend": "sdcp",
+    "moonraker_url": "",
+    "moonraker_api_key": "",
+    "moonraker_poll_sec": 2,
+    "moonraker_timeout_sec": 5,
+    "moonraker_camera_url": "",
+    "moonraker_allow_external_camera": False,
+    # A newly selected Moonraker backend is monitoring-only until each class of
+    # remote action is explicitly enabled.  No macro/arbitrary-G-code setting
+    # exists on purpose.
+    "moonraker_allow_job_control": False,
+    "moonraker_allow_remote_start": False,
     "send_photo": True,
     "progress_every_pct": 0,        # 0 = no interim reports, 25 = every 25%
     "allow_control": True,          # False keeps the bot read-only
@@ -125,6 +142,14 @@ def validate(cfg):
         problems.append("chat_id is missing or not a number")
     if not valid_host(cfg.get("printer_ip")):
         problems.append("printer_ip is not a valid IP address or hostname")
+    selected = backend_mod.name(cfg)
+    if not selected:
+        problems.append("backend must be 'sdcp' or 'moonraker'")
+    if selected == backend_mod.MOONRAKER:
+        url = cfg.get("moonraker_url") or (
+            "http://%s" % str(cfg.get("printer_ip") or "").strip())
+        if not moonraker.valid_base_url(url):
+            problems.append("moonraker_url is not a valid HTTP or HTTPS URL")
     return problems
 
 
@@ -168,8 +193,11 @@ def summary(cfg):
         "Owner chat id  : %s" % (cfg.get("chat_id") or "(not set)"),
         "Printer address: %s" % (cfg.get("printer_ip") or "(not set)"),
         "Printer name   : %s" % cfg.get("printer_name"),
-        "Mode           : %s" % ("monitoring and control" if cfg.get("allow_control")
-                                 else "monitoring only"),
+        "Backend        : %s" % (backend_mod.name(cfg) or "(invalid)"),
+        "Mode           : %s" % (
+            "monitoring and permitted controls"
+            if backend_mod.allowed_actions(cfg) - backend_mod.READ_ACTIONS
+            else "monitoring only"),
         "Camera photos  : %s" % ("on" if cfg.get("send_photo") else "off"),
         "Anonymous stats: %s" % ("on" if cfg.get("anonymous_statistics") else "off"),
     ]
