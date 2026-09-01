@@ -17,6 +17,10 @@ BACKENDS = {SDCP, MOONRAKER}
 FILES = "files"
 SNAPSHOT = "snapshot"
 DIAGNOSTICS = "diagnostics"
+HISTORY = "history"
+HEIGHT_MAP = "height-map"
+MACROS = "macros"
+RUN_MACRO = "run-macro"
 PAUSE = "pause"
 RESUME = "resume"
 CANCEL = "cancel"
@@ -27,7 +31,7 @@ SPEED = "speed"
 TEMPERATURE = "temperature"
 FANS = "fans"
 
-READ_ACTIONS = frozenset({FILES, SNAPSHOT})
+READ_ACTIONS = frozenset({FILES, SNAPSHOT, DIAGNOSTICS, HISTORY, HEIGHT_MAP, MACROS})
 JOB_ACTIONS = frozenset({PAUSE, RESUME, CANCEL})
 SDCP_CONTROL_ACTIONS = frozenset({
     PAUSE, RESUME, CANCEL, START, LIGHT, SPEED, TEMPERATURE, FANS,
@@ -59,13 +63,15 @@ def allowed_actions(cfg):
     if backend_name == SDCP:
         allowed.update(SDCP_CONTROL_ACTIONS)
     elif backend_name == MOONRAKER:
-        allowed.add(DIAGNOSTICS)
+        allowed.update({DIAGNOSTICS, HISTORY, HEIGHT_MAP, MACROS})
         if cfg.get("moonraker_allow_job_control", False):
             allowed.update(JOB_ACTIONS)
         if cfg.get("moonraker_allow_remote_start", False):
             allowed.add(START)
         if cfg.get("moonraker_allow_file_delete", False):
             allowed.add(DELETE)
+        if cfg.get("moonraker_macro_whitelist", []):
+            allowed.add(RUN_MACRO)
         # Heater, fan, light, speed, macros and arbitrary G-code intentionally
         # remain unavailable.  Their names and semantics are installation-
         # specific, so pretending there is a universal safe mapping is risky.

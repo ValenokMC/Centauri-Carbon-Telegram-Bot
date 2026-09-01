@@ -110,10 +110,15 @@ class TelegramAPI:
                 v = json.dumps(v, ensure_ascii=False)
             body += ("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n"
                      % (boundary, k, v)).encode("utf-8")
-        for k, (fname, blob) in files.items():
+        for k, attachment in files.items():
+            if len(attachment) == 2:
+                fname, blob = attachment
+                mime = "image/jpeg"
+            else:
+                fname, blob, mime = attachment
             body += ("--%s\r\nContent-Disposition: form-data; name=\"%s\"; "
-                     "filename=\"%s\"\r\nContent-Type: image/jpeg\r\n\r\n"
-                     % (boundary, k, fname)).encode("utf-8")
+                     "filename=\"%s\"\r\nContent-Type: %s\r\n\r\n"
+                     % (boundary, k, fname, mime)).encode("utf-8")
             body += blob + b"\r\n"
         body += ("--%s--\r\n" % boundary).encode("utf-8")
         return body, "multipart/form-data; boundary=" + boundary
@@ -139,7 +144,9 @@ class TelegramAPI:
             p["reply_markup"] = {"inline_keyboard": keyboard}
         if photo:
             p["caption"] = text
-            return self.call("sendPhoto", p, files={"photo": ("snap.jpg", photo)})
+            is_png = bytes(photo).startswith(b"\x89PNG\r\n\x1a\n")
+            attachment = ("height-map.png", photo, "image/png") if is_png else ("snap.jpg", photo)
+            return self.call("sendPhoto", p, files={"photo": attachment})
         p["text"] = text
         p["disable_web_page_preview"] = True
         return self.call("sendMessage", p)

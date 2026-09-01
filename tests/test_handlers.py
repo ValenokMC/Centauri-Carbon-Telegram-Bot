@@ -205,6 +205,29 @@ def test_cosmos_diagnostics_button_is_read_only_and_renders_health(bot):
     assert "ready" in bot.api.edited[-1][2]
 
 
+def test_mesh_and_macro_execution_have_separate_safe_paths(online_bot):
+    online_bot.cfg.update({"backend": "moonraker", "moonraker_macro_whitelist": ["LOAD_FILAMENT"]})
+    online_bot.backend_name = backend.MOONRAKER
+    called = []
+    online_bot.moonraker = type("Moonraker", (), {
+        "bed_mesh": lambda self: {"profile": "default", "points": [[-0.1, 0.0], [0.1, 0.2]]},
+        "list_macros": lambda self: ["LOAD_FILAMENT", "UNLOAD_FILAMENT"],
+        "run_macro": lambda self, name: called.append(name),
+    })()
+
+    handlers.handle_callback(online_bot, callback("mesh"))
+    assert "Карта высот" in online_bot.api.edited[-1][2]
+
+    handlers.handle_callback(online_bot, callback("macros"))
+    macro_button = [button for row in online_bot.api.edited[-1][3] for button in row
+                    if button["callback_data"].startswith("ask:macro:")][0]
+    handlers.handle_callback(online_bot, callback(macro_button["callback_data"]))
+    confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
+    assert called == []
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert called == ["LOAD_FILAMENT"]
+
+
 def test_connection_loss_and_recovery_replace_the_one_main_panel(bot):
     """Network notices must never sit above a separate stale status panel."""
     storage.set_message_id(77)

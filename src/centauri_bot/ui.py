@@ -255,6 +255,15 @@ def kb_main(status, allow_control=True, detailed=False, maintenance=(False, Fals
     if backend.FANS in allowed:
         files_row.append({"text": "🌀 Вентиляторы", "callback_data": "menu:fans"})
     rows.append(files_row)
+    cosmos = []
+    if backend.HEIGHT_MAP in allowed:
+        cosmos.append({"text": "🗺 Карта стола", "callback_data": "mesh"})
+    if backend.HISTORY in allowed:
+        cosmos.append({"text": "🧾 История", "callback_data": "history"})
+    if backend.MACROS in allowed:
+        cosmos.append({"text": "🧩 Макросы", "callback_data": "macros"})
+    if cosmos:
+        rows.append(cosmos)
 
     show_maint, due = maintenance
     if show_maint:
@@ -363,12 +372,65 @@ def diagnostics_text(data):
     return "\n".join(lines)
 
 
+def kb_back():
+    return [[{"text": "↩️ Назад к статусу", "callback_data": "refresh"}]]
+
+
+def height_map_text(mesh):
+    points = mesh.get("points") or []
+    values = [float(value) for row in points for value in row]
+    low, high = min(values), max(values)
+    return ("<b>🗺 Карта высот стола</b>\n"
+            "Профиль: <code>%s</code> · %d×%d точек\n"
+            "Минимум: %.3f мм · максимум: %.3f мм\n"
+            "Разброс: %.3f мм\n\n"
+            "Синий — ниже, красный — выше. Это сохранённая сетка: команда не запускает измерение."
+            % (html.escape(str(mesh.get("profile") or "—")), len(points),
+               len(points[0]) if points else 0, low, high, high - low))
+
+
+def history_text(jobs):
+    if not jobs:
+        return "<b>🧾 История печатей</b>\n\nMoonraker пока не сохранил завершённых заданий."
+    lines = ["<b>🧾 История печатей</b> — последние %d" % len(jobs)]
+    for job in jobs:
+        filename = html.escape(str(job.get("filename") or "без имени").rsplit("/", 1)[-1])
+        status = html.escape(str(job.get("status") or "—"))
+        seconds = int(float(job.get("total_duration") or job.get("print_duration") or 0))
+        lines.append("• <i>%s</i> · %s · %s" % (filename, status, hhmm(seconds) if seconds else "длительность —"))
+    return "\n".join(lines)
+
+
+def macros_text(names, enabled):
+    enabled = set(enabled or [])
+    if not names:
+        return "<b>🧩 Макросы COSMOS</b>\n\nMoonraker не сообщил доступных пользовательских макросов."
+    lines = ["<b>🧩 Макросы COSMOS</b>",
+             "Установлено: %d · разрешено к запуску: %d" % (len(names), len(enabled))]
+    if enabled:
+        lines.append("Разрешённые макросы появятся кнопками ниже и каждый потребует подтверждения.")
+    else:
+        lines.append("Запуск выключен: whitelist пока пуст. Служебные макросы скрыты.")
+    return "\n".join(lines)
+
+
+def kb_macros(names, refs):
+    rows = []
+    for name, ref in zip(names, refs):
+        rows.append([{"text": "▶️ " + name, "callback_data": "ask:macro:" + ref}])
+    rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
+    return rows
+
+
 HELP_TEXT_HEADER = (
     "<b>Что умею</b>\n\n"
     "/status — состояние со снимком и кнопками\n"
     "/snap — только кадр с камеры\n"
     "/files — файлы на принтере\n"
     "/diag — диагностика COSMOS\n"
+    "/mesh — карта высот стола\n"
+    "/history — история печатей\n"
+    "/macros — макросы COSMOS\n"
     "/help — эта справка\n\n"
     "<b>Кнопки под статусом</b>\n"
 )
@@ -401,6 +463,12 @@ def help_screen(allow_control=True, allowed=None):
     names.append("файлы")
     if backend.DIAGNOSTICS in allowed:
         names.append("диагностика COSMOS")
+    if backend.HEIGHT_MAP in allowed:
+        names.append("карта стола")
+    if backend.HISTORY in allowed:
+        names.append("история")
+    if backend.MACROS in allowed:
+        names.append("макросы")
     if backend.DELETE in allowed:
         names.append("удаление файлов")
     if backend.FANS in allowed:

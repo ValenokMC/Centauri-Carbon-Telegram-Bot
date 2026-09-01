@@ -40,6 +40,9 @@ DEFAULTS = {
     # File deletion is a separate opt-in.  It always still needs a one-use
     # confirmation tied to the exact file selected in Telegram.
     "moonraker_allow_file_delete": False,
+    # Macro bodies are installation-specific.  The bot only offers names from
+    # this explicit list and every execution requires a fresh confirmation.
+    "moonraker_macro_whitelist": [],
     "send_photo": True,
     "progress_every_pct": 0,        # 0 = no interim reports, 25 = every 25%
     "allow_control": True,          # False keeps the bot read-only
@@ -49,6 +52,8 @@ DEFAULTS = {
     "keepalive_sec": 20,            # the printer drops a silent connection
     "offline_grace_sec": 60,        # stay quiet until a dropout really lasts
     "status_refresh_sec": 120,      # how often to refresh the message while printing
+    "notify_cooldown": True,
+    "cooldown_temp_c": 50,
     # Rail lubrication reminder. Elegoo's wiki documents the procedure but
     # publishes no hour figure, only "every 1-2 months". So either threshold
     # fires, whichever comes first; the hours are an estimate for that interval.

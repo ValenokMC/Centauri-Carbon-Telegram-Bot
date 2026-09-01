@@ -147,6 +147,24 @@ def test_diagnostics_uses_only_documented_read_endpoints():
     assert [request.get_method() for request, _ in fake.requests] == ["GET", "GET", "GET"]
 
 
+def test_macros_history_and_saved_mesh_use_read_endpoints_until_macro_is_confirmed():
+    fake = FakeOpener([
+        {"result": {"objects": ["gcode_macro LOAD_FILAMENT", "gcode_macro _INTERNAL", "toolhead"]}},
+        {"result": {"jobs": [{"filename": "cube.gcode", "status": "completed"}]}},
+        {"result": {"status": {"bed_mesh": {"profile_name": "default", "profiles": {
+            "default": {"points": [[-0.1, 0.0], [0.1, 0.2]]}}}}}},
+        {"result": "ok"},
+    ])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    assert client.list_macros() == ["LOAD_FILAMENT"]
+    assert client.history() == [{"filename": "cube.gcode", "status": "completed"}]
+    assert client.bed_mesh()["points"][1][1] == 0.2
+    client.run_macro("load_filament")
+    request, _ = fake.requests[-1]
+    assert request.get_method() == "POST"
+    assert urllib.parse.parse_qs(request.data.decode()) == {"script": ["LOAD_FILAMENT"]}
+
+
 def test_camera_refuses_unapproved_external_host_before_fetching_image():
     fake = FakeOpener([{"result": {"webcams": [{
         "enabled": True, "snapshot_url": "http://camera.example/snapshot.jpg",

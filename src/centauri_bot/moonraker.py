@@ -8,6 +8,7 @@ small, auditable surface.  Commands are exposed here, but the policy in
 """
 import json
 import logging
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -55,6 +56,14 @@ def normalized_gcode_path(value):
 
 def valid_gcode_path(value):
     return bool(normalized_gcode_path(value))
+
+
+MACRO_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+
+
+def normalized_macro_name(value):
+    name = str(value or "").strip().upper()
+    return name if MACRO_RE.match(name) and not name.startswith("_") else ""
 
 
 def normalize_status(objects):
@@ -253,6 +262,47 @@ class Client(object):
             "failed_components": len(server.get("failed_components") or []),
             "object_count": len(objects),
         }
+
+    def list_macros(self):
+        """Read the public macro names without exposing macro source code."""
+        result = self._json("/printer/objects/list") or {}
+        objects = result.get("objects", []) if isinstance(result, dict) else []
+        names = []
+        for item in objects:
+            text = str(item or "")
+            if text.startswith("gcode_macro "):
+                name = normalized_macro_name(text.split(" ", 1)[1])
+                if name:
+                    names.append(name)
+        return sorted(set(names))
+
+    def run_macro(self, name):
+        name = normalized_macro_name(name)
+        if not name:
+            raise MoonrakerError("некорректное имя макроса")
+        self._json("/printer/gcode/script", method="POST", form={"script": name})
+
+    def history(self, limit=8):
+        limit = max(1, min(20, int(limit)))
+        result = self._json("/server/history/list?limit=%d" % limit) or {}
+        jobs = result.get("jobs", []) if isinstance(result, dict) else []
+        return [job for job in jobs if isinstance(job, dict)][:limit]
+
+    def bed_mesh(self):
+        result = self._json("/printer/objects/query?bed_mesh") or {}
+        mesh = ((result.get("status") or {}).get("bed_mesh") or {})
+        profile = str(mesh.get("profile_name") or "")
+        points = ((mesh.get("profiles") or {}).get(profile) or {}).get("points")
+        if not profile or not isinstance(points, list):
+            raise MoonrakerError("сохранённая сетка стола не найдена")
+        try:
+            rows = [[float(value) for value in row] for row in points]
+        except (TypeError, ValueError):
+            raise MoonrakerError("сетка стола содержит некорректные данные")
+        if not rows or not rows[0] or any(len(row) != len(rows[0]) for row in rows):
+            raise MoonrakerError("сетка стола неполная")
+        return {"profile": profile, "points": rows,
+                "mesh_min": mesh.get("mesh_min"), "mesh_max": mesh.get("mesh_max")}
 
     def _camera_snapshot_url(self):
         if self.camera_url:

@@ -62,6 +62,7 @@ class Bot(object):
         self.pending = {}          # RequestID -> Ack payload
         self.files = []
         self.file_info = {}
+        self.cooldown_pending = False
         self.fan_draft = None
         self.offline_since = None
         self.loss_reported = False
@@ -152,6 +153,24 @@ class Bot(object):
     def consume_action_confirmation(self, action, token):
         confirmed = self.confirmations.consume("job-action", token)
         return confirmed == action
+
+    def macro_allowed(self, name):
+        allowed = {moonraker.normalized_macro_name(item)
+                   for item in (self.cfg.get("moonraker_macro_whitelist") or [])}
+        return bool(self.action_allowed(backend.RUN_MACRO)
+                    and moonraker.normalized_macro_name(name) in allowed)
+
+    def prepare_macro_choices(self, names):
+        return [self.confirmations.issue("macro-choice", name) for name in names]
+
+    def resolve_macro_choice(self, token):
+        return self.confirmations.consume("macro-choice", token)
+
+    def issue_macro_confirmation(self, name):
+        return self.confirmations.issue("macro", name)
+
+    def consume_macro_confirmation(self, token):
+        return self.confirmations.consume("macro", token)
 
     # ------------------------------------------------------------- camera
 
@@ -316,6 +335,8 @@ class Bot(object):
         """Execute one named operation after a final permission check."""
         if not self.action_allowed(action):
             return False, "команда запрещена настройками"
+        if action == backend.RUN_MACRO and not self.macro_allowed(value):
+            return False, "макрос не разрешён настройками"
 
         # Re-check live state at execution time.  A confirmation screen can be
         # left open while the printer disconnects or changes state; the old
@@ -342,6 +363,7 @@ class Bot(object):
                 backend.CANCEL: lambda: self.moonraker.cancel(),
                 backend.START: lambda: self.moonraker.start(value),
                 backend.DELETE: lambda: self.moonraker.delete(value),
+                backend.RUN_MACRO: lambda: self.moonraker.run_macro(value),
             }
             method = methods.get(action)
             if method is None:
@@ -384,6 +406,30 @@ class Bot(object):
             return False, "диагностика COSMOS доступна только через Moonraker"
         try:
             return True, self.moonraker.diagnostics()
+        except moonraker.MoonrakerError as e:
+            return False, str(e)
+
+    def history(self):
+        if not self.action_allowed(backend.HISTORY) or self.backend_name != backend.MOONRAKER:
+            return False, "история доступна только через Moonraker"
+        try:
+            return True, self.moonraker.history()
+        except moonraker.MoonrakerError as e:
+            return False, str(e)
+
+    def bed_mesh(self):
+        if not self.action_allowed(backend.HEIGHT_MAP) or self.backend_name != backend.MOONRAKER:
+            return False, "карта доступна только через Moonraker"
+        try:
+            return True, self.moonraker.bed_mesh()
+        except moonraker.MoonrakerError as e:
+            return False, str(e)
+
+    def macros(self):
+        if not self.action_allowed(backend.MACROS) or self.backend_name != backend.MOONRAKER:
+            return False, "макросы доступны только через Moonraker"
+        try:
+            return True, self.moonraker.list_macros()
         except moonraker.MoonrakerError as e:
             return False, str(e)
 
@@ -476,6 +522,26 @@ class Bot(object):
         # silently swallow a whole month.
         if note_appended and mid is not None:
             self.confirm_support_note_shown()
+        if event.kind in (ps.FINISHED, ps.CANCELLED) and self.cfg.get("notify_cooldown", True):
+            with self.lock:
+                nozzle = float((self.status or {}).get("TempOfNozzle") or 0)
+            self.cooldown_pending = nozzle > float(self.cfg.get("cooldown_temp_c", 50))
+
+    def _maybe_notify_cooldown(self, status):
+        if not self.cooldown_pending:
+            return
+        info = status.get("PrintInfo") or {}
+        threshold = float(self.cfg.get("cooldown_temp_c", 50))
+        nozzle = float(status.get("TempOfNozzle") or 0)
+        target = float(status.get("TempTargetNozzle") or 0)
+        if info.get("Status") == ps.STATUS_PRINTING or nozzle > threshold or target > 0:
+            return
+        self.cooldown_pending = False
+        try:
+            self.refresh_main(force_new=True, text=self.render(
+                "❄️ <b>Принтер остыл</b>\nСопло %.0f°C — можно безопасно заняться деталью.\n" % nozzle))
+        except Exception as e:
+            log.warning("cooldown notification did not go out: %r", e)
 
     def _take_print_frame(self):
         with self.lock:
@@ -619,6 +685,7 @@ class Bot(object):
 
         for event in self.lifecycle.observe(status):
             self.announce(event)
+        self._maybe_notify_cooldown(status)
 
     def keepalive_loop(self):
         """The printer closes the websocket if the client stays silent.
@@ -658,6 +725,9 @@ class Bot(object):
             {"command": "snap", "description": "кадр с камеры"},
             {"command": "files", "description": "файлы на принтере"},
             {"command": "diag", "description": "диагностика COSMOS"},
+            {"command": "mesh", "description": "карта высот стола"},
+            {"command": "history", "description": "история печатей"},
+            {"command": "macros", "description": "макросы COSMOS"},
             {"command": "help", "description": "справка"},
         ])
         while not self.stopping.is_set():

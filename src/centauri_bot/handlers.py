@@ -12,6 +12,7 @@ import time
 from html import escape
 
 from . import backend
+from . import heightmap
 from . import printer_state as ps
 from . import storage
 from . import ui
@@ -27,6 +28,14 @@ CONFIRM_LABELS = {
 }
 
 CONTROL_OFF = "Управление выключено в настройках.\n\n"
+
+MACRO_DESCRIPTIONS = {
+    "CHECK_CALIBRATION": "покажет на экране принтера состояние калибровок",
+    "CLEAN_NOZZLE": "нагреет сопло, выполнит homing и переместит его в зону очистки",
+    "LOAD_FILAMENT": "нагреет сопло и подаст филамент",
+    "UNLOAD_FILAMENT": "выполнит homing, переместит голову и выгрузит филамент",
+    "MOVE_TO_TRAY": "выполнит homing и переместит сопло в задний лоток",
+}
 
 # The printer needs a moment to act on a command before its next status is
 # worth rendering; without this the message redraws showing the old state and
@@ -82,6 +91,48 @@ def show_files(bot, chat, mid=None, is_photo=False, force_new=False):
         bot.api.send_message(chat, body, keyboard=rows)
 
 
+def _show_readonly(bot, chat, mid, is_photo, force_new, text, keyboard, photo=None):
+    if force_new:
+        bot.refresh_main(force_new=True, text=text, keyboard=keyboard, photo=photo)
+    elif mid:
+        bot.edit_main_from_callback(mid, text, keyboard=keyboard, photo=photo,
+                                    is_photo=is_photo)
+    else:
+        bot.api.send_message(chat, text, keyboard=keyboard, photo=photo)
+
+
+def show_history(bot, chat, mid=None, is_photo=False, force_new=False):
+    ok, result = bot.history()
+    text = ui.history_text(result) if ok else "⚠️ Историю получить не вышло: %s" % result
+    _show_readonly(bot, chat, mid, is_photo, force_new, text, ui.kb_back())
+
+
+def show_mesh(bot, chat, mid=None, is_photo=False, force_new=False):
+    ok, result = bot.bed_mesh()
+    if not ok:
+        _show_readonly(bot, chat, mid, is_photo, force_new,
+                       "⚠️ Карту стола получить не вышло: %s" % result, ui.kb_back())
+        return
+    try:
+        photo = heightmap.render(result["points"])
+        text = ui.height_map_text(result)
+    except (KeyError, TypeError, ValueError) as e:
+        photo, text = None, "⚠️ Сохранённая сетка стола некорректна: %s" % e
+    _show_readonly(bot, chat, mid, is_photo, force_new, text, ui.kb_back(), photo=photo)
+
+
+def show_macros(bot, chat, mid=None, is_photo=False, force_new=False):
+    ok, names = bot.macros()
+    if not ok:
+        _show_readonly(bot, chat, mid, is_photo, force_new,
+                       "⚠️ Макросы получить не вышло: %s" % names, ui.kb_back())
+        return
+    enabled = [name for name in names if bot.macro_allowed(name)]
+    refs = bot.prepare_macro_choices(enabled)
+    _show_readonly(bot, chat, mid, is_photo, force_new,
+                   ui.macros_text(names, enabled), ui.kb_macros(enabled, refs))
+
+
 def handle_callback(bot, query):
     chat = str(query["message"]["chat"]["id"])
     mid = query["message"]["message_id"]
@@ -135,6 +186,21 @@ def handle_callback(bot, query):
         text = ui.diagnostics_text(result) if ok else "⚠️ Диагностика не прошла: %s" % result
         bot.edit_main_from_callback(mid, text, keyboard=bot.keyboard(),
                                     is_photo=is_photo)
+        return
+
+    if data == "history":
+        bot.api.answer_callback(query["id"], "Читаю историю…")
+        show_history(bot, chat, mid, is_photo)
+        return
+
+    if data == "mesh":
+        bot.api.answer_callback(query["id"], "Читаю сохранённую сетку…")
+        show_mesh(bot, chat, mid, is_photo)
+        return
+
+    if data == "macros":
+        bot.api.answer_callback(query["id"], "Читаю макросы…")
+        show_macros(bot, chat, mid, is_photo)
         return
 
     if data.startswith("menu:"):
@@ -306,6 +372,23 @@ def _ask_confirmation(bot, chat, mid, query, what, is_photo):
         bot.api.answer_callback(query["id"])
         bot.api.send_message(chat, "🗑 <b>Удалить файл?</b>\n<i>%s</i>\n\nВосстановить его с принтера будет нельзя." % escape(path.rsplit("/", 1)[-1]), keyboard=ui.kb_confirm("delete:%s" % token, "удалить"))
         return
+    if what.startswith("macro:"):
+        choice = what.split(":", 1)[1]
+        name = bot.resolve_macro_choice(choice)
+        if not name or not bot.macro_allowed(name):
+            bot.api.answer_callback(query["id"], "Макрос не разрешён или список устарел.")
+            return
+        token = bot.issue_macro_confirmation(name)
+        bot.api.answer_callback(query["id"])
+        bot.api.edit_message(chat, mid,
+                             "🧩 <b>Запустить макрос?</b>\n<code>%s</code>\n\n"
+                             "Действие: %s.\n\n"
+                             "Макрос может двигать механизмы или менять состояние принтера."
+                             % (escape(name), escape(MACRO_DESCRIPTIONS.get(
+                                 name, "действие не описано в боте"))),
+                             keyboard=ui.kb_confirm("macro:%s" % token, "запустить"),
+                             is_photo=is_photo)
+        return
     action = {"pause": backend.PAUSE, "resume": backend.RESUME,
               "stop": backend.CANCEL}.get(what)
     if action and not bot.action_allowed(action):
@@ -324,7 +407,7 @@ def _ask_confirmation(bot, chat, mid, query, what, is_photo):
 
 def _do_action(bot, chat, mid, query, what):
     note = ""
-    action = backend.START if what.startswith("print:") else (backend.DELETE if what.startswith("delete:") else None)
+    action = backend.START if what.startswith("print:") else (backend.DELETE if what.startswith("delete:") else (backend.RUN_MACRO if what.startswith("macro:") else None))
     if what.startswith("job:"):
         parts = what.split(":", 2)
         candidate = parts[1] if len(parts) == 3 else ""
@@ -366,6 +449,14 @@ def _do_action(bot, chat, mid, query, what):
                 note = "🗑 Файл удалён.\n\n" if ok else "⚠️ Удаление не прошло (%s).\n\n" % info
         else:
             note = "⚠️ Подтверждение устарело. Открой файлы заново.\n\n"
+    elif what.startswith("macro:"):
+        token = what.split(":", 1)[1]
+        name = bot.consume_macro_confirmation(token)
+        if not name or not bot.macro_allowed(name):
+            note = "⚠️ Макрос не разрешён или подтверждение устарело.\n\n"
+        else:
+            ok, info = bot.perform(backend.RUN_MACRO, name)
+            note = "🧩 Макрос <code>%s</code> отправлен.\n\n" % escape(name) if ok else "⚠️ Макрос не запустился (%s).\n\n" % info
     bot.api.answer_callback(query["id"], note or "Готово")
     time.sleep(SETTLE_AFTER_ACTION_SEC)
     # Answering the same callback twice is refused by Telegram with "query is
@@ -402,6 +493,15 @@ def handle_message(bot, message):
     elif text.startswith("/diag") or text.startswith("/diagnostics"):
         ok, result = bot.diagnostics()
         bot.api.send_message(chat, ui.diagnostics_text(result) if ok else "⚠️ Диагностика не прошла: %s" % result)
+    elif text.startswith("/mesh"):
+        show_mesh(bot, chat, force_new=True)
+        return
+    elif text.startswith("/history"):
+        show_history(bot, chat, force_new=True)
+        return
+    elif text.startswith("/macros"):
+        show_macros(bot, chat, force_new=True)
+        return
     elif text.startswith("/help") or text.startswith("/start"):
         body, keyboard = ui.help_screen(
             bot.cfg.get("allow_control", True), allowed=bot.allowed_actions())
