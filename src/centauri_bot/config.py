@@ -40,6 +40,7 @@ DEFAULTS = {
     # File deletion is a separate opt-in.  It always still needs a one-use
     # confirmation tied to the exact file selected in Telegram.
     "moonraker_allow_file_delete": False,
+    "moonraker_allow_hardware_controls": False,
     # Macro bodies are installation-specific.  The bot only offers names from
     # this explicit list and every execution requires a fresh confirmation.
     "moonraker_macro_whitelist": [],

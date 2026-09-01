@@ -154,6 +154,13 @@ class Bot(object):
         confirmed = self.confirmations.consume("job-action", token)
         return confirmed == action
 
+    def issue_control_confirmation(self, action, value):
+        return self.confirmations.issue("hardware-control", (action, value))
+
+    def consume_control_confirmation(self, action, token):
+        item = self.confirmations.consume("hardware-control", token)
+        return item[1] if item and item[0] == action else None
+
     def macro_allowed(self, name):
         allowed = {moonraker.normalized_macro_name(item)
                    for item in (self.cfg.get("moonraker_macro_whitelist") or [])}
@@ -364,6 +371,10 @@ class Bot(object):
                 backend.START: lambda: self.moonraker.start(value),
                 backend.DELETE: lambda: self.moonraker.delete(value),
                 backend.RUN_MACRO: lambda: self.moonraker.run_macro(value),
+                backend.LIGHT: lambda: self.moonraker.set_light(value),
+                backend.SPEED: lambda: self.moonraker.set_speed(value),
+                backend.TEMPERATURE: lambda: self.moonraker.set_temperatures(value[0], value[1]),
+                backend.FANS: lambda: self.moonraker.set_fans(value),
             }
             method = methods.get(action)
             if method is None:

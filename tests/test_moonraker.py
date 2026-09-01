@@ -165,6 +165,24 @@ def test_macros_history_and_saved_mesh_use_read_endpoints_until_macro_is_confirm
     assert urllib.parse.parse_qs(request.data.decode()) == {"script": ["LOAD_FILAMENT"]}
 
 
+def test_hardware_controls_only_emit_fixed_validated_cosmos_commands():
+    fake = FakeOpener([{"result": "ok"}] * 4)
+    client = moonraker.Client("http://printer.local", opener=fake)
+    client.set_light(True)
+    client.set_speed(125)
+    client.set_temperatures(245, 80)
+    client.set_fans({"ModelFan": 100, "AuxiliaryFan": 50, "BoxFan": 0})
+    scripts = [urllib.parse.parse_qs(request.data.decode())["script"][0]
+               for request, _ in fake.requests]
+    assert scripts == [
+        "SET_LED LED=case WHITE=1\nSYNC_CAMERA_LED", "M220 S125",
+        "SET_HEATER_TEMPERATURE HEATER=extruder TARGET=245\nSET_HEATER_TEMPERATURE HEATER=heater_bed TARGET=80",
+        "M106 P1 S255\nM106 P2 S128\nM106 P3 S0",
+    ]
+    with pytest.raises(moonraker.MoonrakerError, match="недопустимая"):
+        client.set_speed(101)
+
+
 def test_camera_refuses_unapproved_external_host_before_fetching_image():
     fake = FakeOpener([{"result": {"webcams": [{
         "enabled": True, "snapshot_url": "http://camera.example/snapshot.jpg",

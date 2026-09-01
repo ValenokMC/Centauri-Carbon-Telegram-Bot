@@ -228,6 +228,24 @@ def test_mesh_and_macro_execution_have_separate_safe_paths(online_bot):
     assert called == ["LOAD_FILAMENT"]
 
 
+def test_cosmos_hardware_control_requires_confirmation(online_bot):
+    online_bot.cfg.update({"backend": "moonraker", "moonraker_allow_hardware_controls": True})
+    online_bot.backend_name = backend.MOONRAKER
+    calls = []
+    online_bot.moonraker = type("Moonraker", (), {
+        "set_light": lambda self, value: calls.append(value),
+    })()
+    online_bot.status = status(0, LightStatus={"SecondLight": 0})
+
+    handlers.handle_callback(online_bot, callback("light"))
+    confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
+    assert calls == []
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert calls == [True]
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert calls == [True]
+
+
 def test_connection_loss_and_recovery_replace_the_one_main_panel(bot):
     """Network notices must never sit above a separate stale status panel."""
     storage.set_message_id(77)

@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 
 QUERY_OBJECTS = (
     "webhooks", "virtual_sdcard", "print_stats", "extruder", "heater_bed",
-    "fan", "display_status", "gcode_move",
+    "fan", "aux_fan", "case_fan", "led case", "display_status", "gcode_move",
 )
 
 
@@ -111,7 +111,7 @@ def normalize_status(objects):
         "TotalTicks": max(elapsed, total),
         "Filename": filename,
         "TaskId": filename,
-        "PrintSpeedPct": 100,
+        "PrintSpeedPct": int(round(_number(move.get("speed_factor"), 1.0) * 100)),
     }
     return {
         "PrintInfo": print_info,
@@ -122,8 +122,10 @@ def normalize_status(objects):
         "CurrentFanSpeed": {
             "ModelFan": int(max(0, min(1, _number(
                 (objects.get("fan") or {}).get("speed")))) * 100),
-            "BoxFan": 0,
-            "AuxiliaryFan": 0,
+            "BoxFan": int(max(0, min(1, _number(
+                (objects.get("case_fan") or {}).get("speed")))) * 100),
+            "AuxiliaryFan": int(max(0, min(1, _number(
+                (objects.get("aux_fan") or {}).get("speed")))) * 100),
         },
         "CurrentCoord": {
             "X": _number(position[0] if len(position) > 0 else 0),
@@ -135,6 +137,8 @@ def normalize_status(objects):
             "PrintState": print_state,
             "Message": str(stats.get("message") or hooks.get("state_message") or ""),
         },
+        "LightStatus": {"SecondLight": int(bool(
+            ((objects.get("led case") or {}).get("color_data") or [[0, 0, 0, 0]])[0][3]))},
     }
 
 
@@ -281,6 +285,40 @@ class Client(object):
         if not name:
             raise MoonrakerError("некорректное имя макроса")
         self._json("/printer/gcode/script", method="POST", form={"script": name})
+
+    def _script(self, lines):
+        script = "\n".join(str(line) for line in lines if line)
+        if not script:
+            raise MoonrakerError("пустая команда")
+        self._json("/printer/gcode/script", method="POST", form={"script": script})
+
+    def set_light(self, enabled):
+        value = 1 if bool(enabled) else 0
+        self._script(["SET_LED LED=case WHITE=%d" % value, "SYNC_CAMERA_LED"])
+
+    def set_speed(self, percent):
+        percent = int(percent)
+        if percent not in (50, 75, 100, 125, 150):
+            raise MoonrakerError("недопустимая скорость")
+        self._script(["M220 S%d" % percent])
+
+    def set_temperatures(self, nozzle, bed):
+        nozzle, bed = int(nozzle), int(bed)
+        if (nozzle, bed) not in {(0, 0), (220, 60), (245, 80)}:
+            raise MoonrakerError("недопустимый температурный профиль")
+        self._script(["SET_HEATER_TEMPERATURE HEATER=extruder TARGET=%d" % nozzle,
+                      "SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET=%d" % bed])
+
+    def set_fans(self, values):
+        values = dict(values or {})
+        mapped = (("ModelFan", 1), ("AuxiliaryFan", 2), ("BoxFan", 3))
+        lines = []
+        for key, index in mapped:
+            percent = int(values.get(key, 0))
+            if percent not in (0, 25, 50, 75, 100):
+                raise MoonrakerError("недопустимая скорость вентилятора")
+            lines.append("M106 P%d S%d" % (index, round(percent * 255 / 100)))
+        self._script(lines)
 
     def history(self, limit=8):
         limit = max(1, min(20, int(limit)))

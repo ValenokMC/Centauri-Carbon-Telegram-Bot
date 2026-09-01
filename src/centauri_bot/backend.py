@@ -70,6 +70,8 @@ def allowed_actions(cfg):
             allowed.add(START)
         if cfg.get("moonraker_allow_file_delete", False):
             allowed.add(DELETE)
+        if cfg.get("moonraker_allow_hardware_controls", False):
+            allowed.update({LIGHT, SPEED, TEMPERATURE, FANS})
         if cfg.get("moonraker_macro_whitelist", []):
             allowed.add(RUN_MACRO)
         # Heater, fan, light, speed, macros and arbitrary G-code intentionally

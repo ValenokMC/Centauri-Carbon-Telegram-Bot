@@ -285,13 +285,9 @@ def _toggle_light(bot, chat, mid, query):
         return
     with bot.lock:
         lit = (((bot.status or {}).get("LightStatus") or {}).get("SecondLight") == 1)
-    ok, info = bot.perform(backend.LIGHT, not lit)
-    note = ("💡 Свет %s.\n\n" % ("выключен" if lit else "включён")) if ok \
-        else "⚠️ Свет не переключился (%s).\n\n" % info
-    bot.api.answer_callback(query["id"], note)
-    time.sleep(SETTLE_SEC)
-    bot.api.edit_message(chat, mid, bot.render(note), keyboard=bot.keyboard(),
-                         photo=bot.grab(max_age=5))
+    _ask_hardware(bot, chat, mid, query, backend.LIGHT, not lit,
+                  "💡 Свет %s" % ("включить" if not lit else "выключить"),
+                  "переключит свет корпуса и синхронизирует свет камеры")
 
 
 def _apply_fans(bot, chat, mid, query):
@@ -300,37 +296,35 @@ def _apply_fans(bot, chat, mid, query):
         bot.fan_draft = None
     target = _fan_current(bot)
     target.update(draft)
-    if not bot.action_allowed(backend.FANS):
-        note = CONTROL_OFF
-    else:
-        ok, info = bot.perform(backend.FANS, target)
-        note = ("🌀 Вентиляторы: обдув %d%% · корпус %d%% · доп %d%%.\n\n"
-                % (target["ModelFan"], target["BoxFan"], target["AuxiliaryFan"])) if ok \
-            else "⚠️ Вентиляторы не приняты (%s).\n\n" % info
-    bot.api.answer_callback(query["id"], note)
-    time.sleep(SETTLE_SEC)
-    bot.api.edit_message(chat, mid, bot.render(note), keyboard=bot.keyboard(),
-                         photo=bot.grab(max_age=5))
+    _ask_hardware(bot, chat, mid, query, backend.FANS, target,
+                  "🌀 Применить вентиляторы",
+                  "установит обдув %d%%, корпус %d%% и дополнительный %d%%" % (
+                      target["ModelFan"], target["BoxFan"], target["AuxiliaryFan"]))
 
 
 def _apply_setting(bot, chat, mid, query, data):
     _, what, value = data.split(":", 2)
     action = backend.SPEED if what == "speed" else backend.TEMPERATURE
-    if not bot.action_allowed(action):
-        note = CONTROL_OFF
-    elif what == "speed":
-        ok, info = bot.perform(backend.SPEED, int(value))
-        note = ("⚡ Скорость печати %s%%.\n\n" % value) if ok \
-            else "⚠️ Скорость не принялась (%s).\n\n" % info
+    if what == "speed":
+        _ask_hardware(bot, chat, mid, query, action, int(value),
+                      "⚡ Установить %s%%" % value,
+                      "изменит коэффициент скорости текущей печати")
     else:
         label, nozzle, bed = ui.HEAT_PRESETS.get(value, ("?", 0, 0))
-        ok, info = bot.perform(backend.TEMPERATURE, (nozzle, bed))
-        note = ("🌡 Нагрев: %s.\n\n" % label) if ok \
-            else "⚠️ Нагрев не принялся (%s).\n\n" % info
-    bot.api.answer_callback(query["id"], note)
-    time.sleep(SETTLE_SEC)
-    bot.api.edit_message(chat, mid, bot.render(note), keyboard=bot.keyboard(),
-                         photo=bot.grab(max_age=5))
+        _ask_hardware(bot, chat, mid, query, action, (nozzle, bed),
+                      "🌡 " + label, "установит сопло %d°C и стол %d°C" % (nozzle, bed))
+
+
+def _ask_hardware(bot, chat, mid, query, action, value, label, description):
+    if not bot.action_allowed(action):
+        bot.api.answer_callback(query["id"], CONTROL_OFF.strip())
+        return
+    token = bot.issue_control_confirmation(action, value)
+    bot.api.answer_callback(query["id"])
+    bot.api.edit_message(chat, mid, "<b>Подтвердить?</b>\n%s\n\nДействие: %s."
+                         % (escape(label), escape(description)),
+                         keyboard=ui.kb_confirm("control:%s:%s" % (action, token), "выполнить"),
+                         is_photo="photo" in query.get("message", {}))
 
 
 def _ask_confirmation(bot, chat, mid, query, what, is_photo):
@@ -408,6 +402,15 @@ def _ask_confirmation(bot, chat, mid, query, what, is_photo):
 def _do_action(bot, chat, mid, query, what):
     note = ""
     action = backend.START if what.startswith("print:") else (backend.DELETE if what.startswith("delete:") else (backend.RUN_MACRO if what.startswith("macro:") else None))
+    value = None
+    if what.startswith("control:"):
+        parts = what.split(":", 2)
+        candidate = parts[1] if len(parts) == 3 else ""
+        token = parts[2] if len(parts) == 3 else ""
+        if candidate in {backend.LIGHT, backend.SPEED, backend.TEMPERATURE, backend.FANS}:
+            value = bot.consume_control_confirmation(candidate, token)
+            if value is not None:
+                action = candidate
     if what.startswith("job:"):
         parts = what.split(":", 2)
         candidate = parts[1] if len(parts) == 3 else ""
@@ -457,6 +460,11 @@ def _do_action(bot, chat, mid, query, what):
         else:
             ok, info = bot.perform(backend.RUN_MACRO, name)
             note = "🧩 Макрос <code>%s</code> отправлен.\n\n" % escape(name) if ok else "⚠️ Макрос не запустился (%s).\n\n" % info
+    elif action in {backend.LIGHT, backend.SPEED, backend.TEMPERATURE, backend.FANS}:
+        ok, info = bot.perform(action, value)
+        names = {backend.LIGHT: "💡 Свет", backend.SPEED: "⚡ Скорость",
+                 backend.TEMPERATURE: "🌡 Нагрев", backend.FANS: "🌀 Вентиляторы"}
+        note = "%s: команда принята.\n\n" % names[action] if ok else "⚠️ Команда не принялась (%s).\n\n" % info
     bot.api.answer_callback(query["id"], note or "Готово")
     time.sleep(SETTLE_AFTER_ACTION_SEC)
     # Answering the same callback twice is refused by Telegram with "query is
