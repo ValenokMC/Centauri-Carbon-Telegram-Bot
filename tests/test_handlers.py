@@ -2,7 +2,7 @@
 """Access control, dangerous-command confirmation, and keyboard layout."""
 import pytest
 
-from centauri_bot import handlers, sdcp, storage, ui
+from centauri_bot import backend, handlers, sdcp, storage, ui
 
 from conftest import status
 
@@ -190,6 +190,21 @@ def test_back_recreates_one_message_when_both_edits_fail(bot):
     assert "Demo Centauri" in bot.api.sent[0][1]
 
 
+def test_cosmos_diagnostics_button_is_read_only_and_renders_health(bot):
+    bot.cfg["backend"] = "moonraker"
+    bot.backend_name = backend.MOONRAKER
+    bot.moonraker = type("Moonraker", (), {"diagnostics": lambda self: {
+        "moonraker_version": "v0.9", "klipper_version": "v0.13",
+        "klippy_state": "ready", "klippy_message": "", "warnings": 0,
+        "failed_components": 0, "object_count": 111,
+    }})()
+
+    handlers.handle_callback(bot, callback("diag"))
+
+    assert "Диагностика COSMOS" in bot.api.edited[-1][2]
+    assert "ready" in bot.api.edited[-1][2]
+
+
 def test_connection_loss_and_recovery_replace_the_one_main_panel(bot):
     """Network notices must never sit above a separate stale status panel."""
     storage.set_message_id(77)
@@ -277,6 +292,35 @@ def test_print_confirmation_stays_bound_to_original_file(online_bot):
     handlers.handle_callback(online_bot, callback(do_data))
     starts = [(cmd, data) for cmd, data in sent if cmd == sdcp.CMD_START]
     assert len(starts) == 1
+
+
+def test_delete_requires_a_fresh_one_use_confirmation_and_never_targets_current_print(online_bot):
+    online_bot.cfg.update({"backend": "moonraker", "moonraker_allow_file_delete": True})
+    online_bot.backend_name = backend.MOONRAKER
+    online_bot.moonraker = type("Moonraker", (), {"delete": lambda self, path: deleted.append(path)})()
+    online_bot.status = status(0)
+    online_bot.files = ["old.gcode"]
+    online_bot.refresh_files = lambda: (True, "Moonraker")
+    deleted = []
+
+    handlers.show_files(online_bot, OWNER, force_new=True)
+    delete_button = [button for row in online_bot.api.sent[-1][2] for button in row
+                     if button["callback_data"].startswith("ask:delete:")][0]
+    handlers.handle_callback(online_bot, callback(delete_button["callback_data"]))
+    confirm = online_bot.api.sent[-1][2][0][0]["callback_data"]
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert deleted == ["old.gcode"]
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert deleted == ["old.gcode"]
+
+    online_bot.files = ["current.gcode"]
+    online_bot.status = status(13, "current.gcode", progress=5)
+    handlers.show_files(online_bot, OWNER, force_new=True)
+    delete_button = [button for row in online_bot.api.sent[-1][2] for button in row
+                     if button["callback_data"].startswith("ask:delete:")][0]
+    handlers.handle_callback(online_bot, callback(delete_button["callback_data"]))
+    assert "текущей печати" in online_bot.api.answers[-1][1]
+    assert deleted == ["old.gcode"]
 
 
 def test_pause_asks_for_confirmation(online_bot):

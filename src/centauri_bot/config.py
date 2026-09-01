@@ -37,6 +37,9 @@ DEFAULTS = {
     # exists on purpose.
     "moonraker_allow_job_control": False,
     "moonraker_allow_remote_start": False,
+    # File deletion is a separate opt-in.  It always still needs a one-use
+    # confirmation tied to the exact file selected in Telegram.
+    "moonraker_allow_file_delete": False,
     "send_photo": True,
     "progress_every_pct": 0,        # 0 = no interim reports, 25 = every 25%
     "allow_control": True,          # False keeps the bot read-only

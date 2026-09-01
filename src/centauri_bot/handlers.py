@@ -9,6 +9,7 @@ other than the configured owner is answered with a refusal and goes no further.
 """
 import logging
 import time
+from html import escape
 
 from . import backend
 from . import printer_state as ps
@@ -53,6 +54,7 @@ def show_files(bot, chat, mid=None, is_photo=False, force_new=False):
     ok, info = bot.refresh_files()
     with bot.lock:
         files = list(bot.files or [])
+        file_info = dict(bot.file_info or {})
     if not files:
         text = "Список файлов получить не вышло (%s)." % info
         if force_new:
@@ -63,11 +65,14 @@ def show_files(bot, chat, mid=None, is_photo=False, force_new=False):
         else:
             bot.api.send_message(chat, text)
         return
-    body = ui.files_text(files)
+    body = ui.files_text(files, info=file_info)
     can_start = bot.action_allowed(backend.START)
     refs = bot.prepare_file_choices(files[:8]) if can_start else None
+    can_delete = bot.action_allowed(backend.DELETE)
+    delete_refs = bot.prepare_file_choices(files[:8], "delete-choice") if can_delete else None
     rows = ui.kb_files(files, allow_control=bot.cfg.get("allow_control", True),
-                       can_start=can_start, refs=refs)
+                       can_start=can_start, refs=refs, can_delete=can_delete,
+                       delete_refs=delete_refs)
     if force_new:
         bot.refresh_main(force_new=True, text=body, keyboard=rows)
     elif mid:
@@ -122,6 +127,14 @@ def handle_callback(bot, query):
     if data == "files":
         bot.api.answer_callback(query["id"], "Читаю список…")
         show_files(bot, chat, mid, is_photo)
+        return
+
+    if data == "diag":
+        bot.api.answer_callback(query["id"], "Проверяю COSMOS…")
+        ok, result = bot.diagnostics()
+        text = ui.diagnostics_text(result) if ok else "⚠️ Диагностика не прошла: %s" % result
+        bot.edit_main_from_callback(mid, text, keyboard=bot.keyboard(),
+                                    is_photo=is_photo)
         return
 
     if data.startswith("menu:"):
@@ -271,9 +284,27 @@ def _ask_confirmation(bot, chat, mid, query, what, is_photo):
         bot.api.send_message(
             chat,
             "🖨 <b>Запустить печать?</b>\n<i>%s</i>\n\n"
-            "Убедись по снимку, что стол пуст." % name,
+            "Убедись по снимку, что стол пуст." % escape(name),
             keyboard=ui.kb_confirm("print:%s" % confirmation, "печатать"),
             photo=bot.grab())
+        return
+    if what.startswith("delete:"):
+        if not bot.action_allowed(backend.DELETE):
+            bot.api.answer_callback(query["id"], CONTROL_OFF.strip())
+            return
+        choice = what.split(":", 1)[1]
+        path = bot.resolve_file_choice(choice, "delete-choice")
+        if not path:
+            bot.api.answer_callback(query["id"], "Список устарел. Открой файлы заново.")
+            return
+        with bot.lock:
+            current = (bot.status or {}).get("PrintInfo", {}).get("Filename")
+        if current == path:
+            bot.api.answer_callback(query["id"], "Нельзя удалить файл текущей печати.")
+            return
+        token = bot.issue_delete_confirmation(path)
+        bot.api.answer_callback(query["id"])
+        bot.api.send_message(chat, "🗑 <b>Удалить файл?</b>\n<i>%s</i>\n\nВосстановить его с принтера будет нельзя." % escape(path.rsplit("/", 1)[-1]), keyboard=ui.kb_confirm("delete:%s" % token, "удалить"))
         return
     action = {"pause": backend.PAUSE, "resume": backend.RESUME,
               "stop": backend.CANCEL}.get(what)
@@ -293,7 +324,7 @@ def _ask_confirmation(bot, chat, mid, query, what, is_photo):
 
 def _do_action(bot, chat, mid, query, what):
     note = ""
-    action = backend.START if what.startswith("print:") else None
+    action = backend.START if what.startswith("print:") else (backend.DELETE if what.startswith("delete:") else None)
     if what.startswith("job:"):
         parts = what.split(":", 2)
         candidate = parts[1] if len(parts) == 3 else ""
@@ -322,6 +353,19 @@ def _do_action(bot, chat, mid, query, what):
             note = "🖨 Печать запущена.\n\n" if ok else "⚠️ Не запустилось (%s).\n\n" % info
         else:
             note = "⚠️ Подтверждение устарело. Выбери файл заново.\n\n"
+    elif what.startswith("delete:"):
+        token = what.split(":", 1)[1]
+        path = bot.consume_delete_confirmation(token)
+        if path:
+            with bot.lock:
+                current = (bot.status or {}).get("PrintInfo", {}).get("Filename")
+            if current == path:
+                note = "⚠️ Файл текущей печати удалить нельзя.\n\n"
+            else:
+                ok, info = bot.perform(backend.DELETE, path)
+                note = "🗑 Файл удалён.\n\n" if ok else "⚠️ Удаление не прошло (%s).\n\n" % info
+        else:
+            note = "⚠️ Подтверждение устарело. Открой файлы заново.\n\n"
     bot.api.answer_callback(query["id"], note or "Готово")
     time.sleep(SETTLE_AFTER_ACTION_SEC)
     # Answering the same callback twice is refused by Telegram with "query is
@@ -355,6 +399,9 @@ def handle_message(bot, message):
     elif text.startswith("/files"):
         show_files(bot, chat, force_new=True)
         return
+    elif text.startswith("/diag") or text.startswith("/diagnostics"):
+        ok, result = bot.diagnostics()
+        bot.api.send_message(chat, ui.diagnostics_text(result) if ok else "⚠️ Диагностика не прошла: %s" % result)
     elif text.startswith("/help") or text.startswith("/start"):
         body, keyboard = ui.help_screen(
             bot.cfg.get("allow_control", True), allowed=bot.allowed_actions())

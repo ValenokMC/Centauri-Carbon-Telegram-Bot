@@ -16,10 +16,12 @@ BACKENDS = {SDCP, MOONRAKER}
 
 FILES = "files"
 SNAPSHOT = "snapshot"
+DIAGNOSTICS = "diagnostics"
 PAUSE = "pause"
 RESUME = "resume"
 CANCEL = "cancel"
 START = "start"
+DELETE = "delete"
 LIGHT = "light"
 SPEED = "speed"
 TEMPERATURE = "temperature"
@@ -57,10 +59,13 @@ def allowed_actions(cfg):
     if backend_name == SDCP:
         allowed.update(SDCP_CONTROL_ACTIONS)
     elif backend_name == MOONRAKER:
+        allowed.add(DIAGNOSTICS)
         if cfg.get("moonraker_allow_job_control", False):
             allowed.update(JOB_ACTIONS)
         if cfg.get("moonraker_allow_remote_start", False):
             allowed.add(START)
+        if cfg.get("moonraker_allow_file_delete", False):
+            allowed.add(DELETE)
         # Heater, fan, light, speed, macros and arbitrary G-code intentionally
         # remain unavailable.  Their names and semantics are installation-
         # specific, so pretending there is a universal safe mapping is risky.
@@ -109,4 +114,3 @@ class ConfirmationStore(object):
         if not item or item[0] != str(kind):
             return None
         return item[1]
-

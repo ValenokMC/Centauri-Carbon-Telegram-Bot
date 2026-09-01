@@ -61,6 +61,7 @@ class Bot(object):
         self.ws = None
         self.pending = {}          # RequestID -> Ack payload
         self.files = []
+        self.file_info = {}
         self.fan_draft = None
         self.offline_since = None
         self.loss_reported = False
@@ -109,11 +110,11 @@ class Bot(object):
     def action_allowed(self, action):
         return backend.is_allowed(self.cfg, action)
 
-    def prepare_file_choices(self, files):
+    def prepare_file_choices(self, files, kind="file-choice"):
         """Return short callback tokens bound to these exact file paths."""
-        return [self.confirmations.issue("file-choice", path) for path in files]
+        return [self.confirmations.issue(kind, path) for path in files]
 
-    def resolve_file_choice(self, token):
+    def resolve_file_choice(self, token, kind="file-choice"):
         """Resolve and consume a file-list choice.
 
         Numeric values are accepted only for keyboards made by releases before
@@ -124,7 +125,7 @@ class Bot(object):
             with self.lock:
                 files = list(self.files or [])
             return files[index] if 0 <= index < len(files) else None
-        return self.confirmations.consume("file-choice", token)
+        return self.confirmations.consume(kind, token)
 
     def issue_print_confirmation(self, path):
         return self.confirmations.issue("print", path)
@@ -137,6 +138,12 @@ class Bot(object):
                 files = list(self.files or [])
             return files[index] if 0 <= index < len(files) else None
         return self.confirmations.consume("print", token)
+
+    def issue_delete_confirmation(self, path):
+        return self.confirmations.issue("delete", path)
+
+    def consume_delete_confirmation(self, token):
+        return self.confirmations.consume("delete", token)
 
     def issue_action_confirmation(self, action):
         """Bind a one-use confirmation to one exact control action."""
@@ -296,11 +303,12 @@ class Bot(object):
             return False, "список файлов недоступен"
         if self.backend_name == backend.MOONRAKER:
             try:
-                files = self.moonraker.list_files()
+                records = self.moonraker.list_file_records()
             except moonraker.MoonrakerError as e:
                 return False, str(e)
             with self.lock:
-                self.files = files
+                self.files = [record["path"] for record in records]
+                self.file_info = {record["path"]: record for record in records}
             return True, "Moonraker"
         return self.run_command(sdcp.CMD_FILE_LIST, {"Url": "/local"}, wait=6)
 
@@ -329,10 +337,11 @@ class Bot(object):
 
         if self.backend_name == backend.MOONRAKER:
             methods = {
-                backend.PAUSE: self.moonraker.pause,
-                backend.RESUME: self.moonraker.resume,
-                backend.CANCEL: self.moonraker.cancel,
+                backend.PAUSE: lambda: self.moonraker.pause(),
+                backend.RESUME: lambda: self.moonraker.resume(),
+                backend.CANCEL: lambda: self.moonraker.cancel(),
                 backend.START: lambda: self.moonraker.start(value),
+                backend.DELETE: lambda: self.moonraker.delete(value),
             }
             method = methods.get(action)
             if method is None:
@@ -366,6 +375,17 @@ class Bot(object):
         else:
             return False, "неизвестная команда"
         return self.run_command(command[0], command[1])
+
+    def diagnostics(self):
+        """Return a safe read-only health summary for COSMOS."""
+        if not self.action_allowed(backend.DIAGNOSTICS):
+            return False, "диагностика недоступна"
+        if self.backend_name != backend.MOONRAKER:
+            return False, "диагностика COSMOS доступна только через Moonraker"
+        try:
+            return True, self.moonraker.diagnostics()
+        except moonraker.MoonrakerError as e:
+            return False, str(e)
 
     def light_off_if_night(self):
         """Turn the light off after a print, but only at night.
@@ -637,6 +657,7 @@ class Bot(object):
             {"command": "status", "description": "состояние принтера"},
             {"command": "snap", "description": "кадр с камеры"},
             {"command": "files", "description": "файлы на принтере"},
+            {"command": "diag", "description": "диагностика COSMOS"},
             {"command": "help", "description": "справка"},
         ])
         while not self.stopping.is_set():

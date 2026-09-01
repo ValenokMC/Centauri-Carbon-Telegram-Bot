@@ -9,6 +9,9 @@ shipping an honest single-language one.
 Pure functions only. Everything is passed in, nothing is read from a socket or
 a global, which is what lets tests assert on exact button layouts.
 """
+import datetime
+import html
+
 from . import backend
 from . import printer_state as ps
 from . import support
@@ -247,6 +250,8 @@ def kb_main(status, allow_control=True, detailed=False, maintenance=(False, Fals
         if settings:
             rows.append(settings)
     files_row = [{"text": "📂 Файлы", "callback_data": "files"}]
+    if backend.DIAGNOSTICS in allowed:
+        files_row.append({"text": "🩺 Диагностика", "callback_data": "diag"})
     if backend.FANS in allowed:
         files_row.append({"text": "🌀 Вентиляторы", "callback_data": "menu:fans"})
     rows.append(files_row)
@@ -307,7 +312,8 @@ def kb_fans(current, draft=None):
     return rows
 
 
-def kb_files(files, allow_control=True, limit=8, can_start=None, refs=None):
+def kb_files(files, allow_control=True, limit=8, can_start=None, refs=None,
+             can_delete=False, delete_refs=None):
     rows = []
     can_start = allow_control if can_start is None else bool(can_start)
     if can_start:
@@ -316,15 +322,44 @@ def kb_files(files, allow_control=True, limit=8, can_start=None, refs=None):
             ref = refs[i] if refs and i < len(refs) else str(i)
             rows.append([{"text": "🖨 %s" % base[:38],
                           "callback_data": "ask:print:%s" % ref}])
+    if can_delete:
+        for i, path in enumerate(files[:limit]):
+            base = path.rsplit("/", 1)[-1]
+            ref = delete_refs[i] if delete_refs and i < len(delete_refs) else str(i)
+            rows.append([{"text": "🗑 Удалить %s" % base[:29],
+                          "callback_data": "ask:delete:%s" % ref}])
     rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
     return rows
 
 
-def files_text(files, limit=8):
+def files_text(files, limit=8, info=None):
     lines = ["<b>Файлы на принтере</b> — последние %d из %d"
              % (min(limit, len(files)), len(files))]
+    info = info or {}
     for path in files[:limit]:
-        lines.append("• %s" % path.rsplit("/", 1)[-1])
+        record = info.get(path) or {}
+        extra = []
+        if record.get("size"):
+            extra.append("%.1f МБ" % (float(record["size"]) / 1_000_000))
+        if record.get("modified"):
+            extra.append(datetime.datetime.fromtimestamp(record["modified"]).strftime("%d.%m %H:%M"))
+        suffix = " · " + " · ".join(extra) if extra else ""
+        lines.append("• %s%s" % (html.escape(path.rsplit("/", 1)[-1]), suffix))
+    return "\n".join(lines)
+
+
+def diagnostics_text(data):
+    """Compact HTML-safe COSMOS health card, never exposing configuration."""
+    message = html.escape(str(data.get("klippy_message") or ""))[:240]
+    lines = ["<b>🩺 Диагностика COSMOS</b>",
+             "Moonraker: <code>%s</code>" % html.escape(str(data.get("moonraker_version") or "—")),
+             "Klipper: <code>%s</code>" % html.escape(str(data.get("klipper_version") or "—")),
+             "Состояние: <b>%s</b>" % html.escape(str(data.get("klippy_state") or "—")),
+             "Объектов Klipper: %s" % int(data.get("object_count") or 0),
+             "Предупреждений: %s · сбойных компонентов: %s" % (
+                 int(data.get("warnings") or 0), int(data.get("failed_components") or 0))]
+    if message:
+        lines.append("<i>%s</i>" % message)
     return "\n".join(lines)
 
 
@@ -333,6 +368,7 @@ HELP_TEXT_HEADER = (
     "/status — состояние со снимком и кнопками\n"
     "/snap — только кадр с камеры\n"
     "/files — файлы на принтере\n"
+    "/diag — диагностика COSMOS\n"
     "/help — эта справка\n\n"
     "<b>Кнопки под статусом</b>\n"
 )
@@ -363,6 +399,10 @@ def help_screen(allow_control=True, allowed=None):
     if backend.TEMPERATURE in allowed:
         names.append("нагрев")
     names.append("файлы")
+    if backend.DIAGNOSTICS in allowed:
+        names.append("диагностика COSMOS")
+    if backend.DELETE in allowed:
+        names.append("удаление файлов")
     if backend.FANS in allowed:
         names.append("вентиляторы")
     buttons = " · ".join(names) + "\n"

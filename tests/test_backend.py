@@ -35,6 +35,14 @@ def test_moonraker_job_control_and_remote_start_are_separate_opt_ins(base_config
     assert backend.START in backend.allowed_actions(base_config)
 
 
+def test_moonraker_file_deletion_is_a_separate_opt_in(base_config):
+    base_config.update({"backend": "moonraker", "moonraker_allow_file_delete": False})
+    assert backend.DIAGNOSTICS in backend.allowed_actions(base_config)
+    assert backend.DELETE not in backend.allowed_actions(base_config)
+    base_config["moonraker_allow_file_delete"] = True
+    assert backend.DELETE in backend.allowed_actions(base_config)
+
+
 def test_global_monitoring_mode_overrides_every_control_opt_in(base_config):
     base_config.update({
         "backend": "moonraker",
@@ -61,4 +69,3 @@ def test_confirmation_is_one_use_bound_to_value_and_expires():
     token = store.issue("print", "folder/later.gcode")
     now[0] = 111.0
     assert store.consume("print", token) is None
-

@@ -42,6 +42,21 @@ def _number(value, default=0.0):
         return float(default)
 
 
+def normalized_gcode_path(value):
+    """Return a safe relative printable path, or an empty string."""
+    path = str(value or "").strip().replace("\\", "/")
+    if not path or len(path) > 512 or "\x00" in path or path.startswith("/"):
+        return ""
+    parts = path.split("/")
+    if any(not part or part in (".", "..") for part in parts):
+        return ""
+    return path if path.lower().endswith((".gcode", ".gco", ".gc")) else ""
+
+
+def valid_gcode_path(value):
+    return bool(normalized_gcode_path(value))
+
+
 def normalize_status(objects):
     """Translate Klipper objects to the stable status shape used by the UI."""
     objects = objects or {}
@@ -180,14 +195,25 @@ class Client(object):
         return normalize_status(objects)
 
     def list_files(self):
+        return [item["path"] for item in self.list_file_records()]
+
+    def list_file_records(self):
+        """Return the documented file-list metadata without trusting it as a path."""
         result = self._json("/server/files/list?root=gcodes")
         files = result if isinstance(result, list) else (result or {}).get("files", [])
-        paths = []
+        records = []
         for item in files or []:
             path = item.get("path") if isinstance(item, dict) else None
-            if path and str(path).lower().endswith((".gcode", ".gco", ".gc")):
-                paths.append(str(path))
-        return sorted(set(paths), key=str.lower)
+            path = normalized_gcode_path(path)
+            if path:
+                records.append({
+                    "path": path,
+                    "size": max(0, int(_number(item.get("size")))),
+                    "modified": max(0, int(_number(item.get("modified")))),
+                    "permissions": str(item.get("permissions") or ""),
+                })
+        # A fresh upload is normally what a person wants to print first.
+        return sorted(records, key=lambda item: (-item["modified"], item["path"].lower()))
 
     def pause(self):
         self._json("/printer/print/pause", method="POST", form={})
@@ -199,8 +225,34 @@ class Client(object):
         self._json("/printer/print/cancel", method="POST", form={})
 
     def start(self, filename):
+        filename = normalized_gcode_path(filename)
+        if not filename:
+            raise MoonrakerError("некорректный путь к G-code")
         self._json("/printer/print/start", method="POST",
-                   form={"filename": str(filename)})
+                   form={"filename": filename})
+
+    def delete(self, filename):
+        filename = normalized_gcode_path(filename)
+        if not filename:
+            raise MoonrakerError("некорректный путь к G-code")
+        encoded = urllib.parse.quote(filename, safe="/")
+        self._json("/server/files/gcodes/" + encoded, method="DELETE")
+
+    def diagnostics(self):
+        """Read only, compact COSMOS health data suitable for Telegram."""
+        server = self._json("/server/info") or {}
+        printer = self._json("/printer/info") or {}
+        listed = self._json("/printer/objects/list") or {}
+        objects = listed.get("objects", []) if isinstance(listed, dict) else []
+        return {
+            "moonraker_version": str(server.get("moonraker_version") or "—"),
+            "klippy_state": str(server.get("klippy_state") or printer.get("state") or "—"),
+            "klippy_message": str(server.get("klippy_state_message") or printer.get("state_message") or ""),
+            "klipper_version": str(printer.get("software_version") or "—"),
+            "warnings": len(server.get("warnings") or []),
+            "failed_components": len(server.get("failed_components") or []),
+            "object_count": len(objects),
+        }
 
     def _camera_snapshot_url(self):
         if self.camera_url:

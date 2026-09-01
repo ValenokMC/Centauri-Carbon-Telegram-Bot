@@ -101,6 +101,52 @@ def test_file_list_filters_non_gcode_and_start_encodes_exact_path():
         "filename": ["parts/A & B.gcode"]}
 
 
+def test_file_records_keep_safe_metadata_and_delete_url_encodes_the_filename():
+    fake = FakeOpener([
+        {"result": [
+            {"path": "new.gcode", "size": 2_500_000, "modified": 200},
+            {"path": "old.gcode", "size": 10, "modified": 100},
+            {"path": "../escape.gcode", "size": 99},
+        ]},
+        {"result": {"item": {"path": "folder/A & B.gcode"}}},
+    ])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    assert client.list_file_records() == [
+        {"path": "new.gcode", "size": 2_500_000, "modified": 200, "permissions": ""},
+        {"path": "old.gcode", "size": 10, "modified": 100, "permissions": ""},
+    ]
+    client.delete("folder/A & B.gcode")
+    request, _ = fake.requests[1]
+    assert request.get_method() == "DELETE"
+    assert request.full_url.endswith("/server/files/gcodes/folder/A%20%26%20B.gcode")
+
+
+@pytest.mark.parametrize("path", ["", "/tmp/no.gcode", "../no.gcode", "folder/../no.gcode",
+                                   "notes.txt", "bad\\..\\no.gcode"])
+def test_unsafe_gcode_paths_are_rejected_without_http(path):
+    fake = FakeOpener([])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    with pytest.raises(moonraker.MoonrakerError, match="некорректный"):
+        client.delete(path)
+    assert fake.requests == []
+
+
+def test_diagnostics_uses_only_documented_read_endpoints():
+    fake = FakeOpener([
+        {"result": {"moonraker_version": "v0.9", "klippy_state": "ready",
+                    "warnings": ["one"], "failed_components": []}},
+        {"result": {"software_version": "v0.13", "state": "ready"}},
+        {"result": {"objects": ["webhooks", "toolhead", "extruder"]}},
+    ])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    assert client.diagnostics() == {
+        "moonraker_version": "v0.9", "klippy_state": "ready", "klippy_message": "",
+        "klipper_version": "v0.13", "warnings": 1, "failed_components": 0,
+        "object_count": 3,
+    }
+    assert [request.get_method() for request, _ in fake.requests] == ["GET", "GET", "GET"]
+
+
 def test_camera_refuses_unapproved_external_host_before_fetching_image():
     fake = FakeOpener([{"result": {"webcams": [{
         "enabled": True, "snapshot_url": "http://camera.example/snapshot.jpg",
@@ -117,4 +163,3 @@ def test_camera_refuses_unapproved_external_host_before_fetching_image():
 ])
 def test_invalid_base_urls_are_rejected(value):
     assert not moonraker.valid_base_url(value)
-
