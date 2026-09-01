@@ -128,7 +128,12 @@ def render(status, online, printer_name, header="", detailed=False,
     if not online:
         name, icon = "связь потеряна", "🔌"
 
-    filename = print_info.get("Filename") or ""
+    # Moonraker keeps the filename, layer count and elapsed time in
+    # ``print_stats`` after a cancelled job.  They describe the *last* job,
+    # not an active one.  Never show that stale job as resumable or give it
+    # live progress controls.
+    job_done = code in ps.STATUS_DONE
+    filename = "" if job_done else (print_info.get("Filename") or "")
     blocks = []
 
     # -- header: what is happening, and to what --------------------------
@@ -217,8 +222,14 @@ def kb_main(status, allow_control=True, detailed=False, maintenance=(False, Fals
     """
     status = status or {}
     print_info = status.get("PrintInfo") or {}
-    printing = print_info.get("Status") == ps.STATUS_PRINTING
-    busy = bool(print_info.get("Filename")) and (print_info.get("Progress", 0) or 0) < 100
+    code = print_info.get("Status")
+    printing = code == ps.STATUS_PRINTING
+    paused = code in ps.STATUS_PAUSED
+    # A cancelled/completed Moonraker job can retain its old filename and
+    # layer number indefinitely.  Controls must follow the live state, never
+    # that stale metadata.
+    busy = (bool(print_info.get("Filename")) and code not in ps.STATUS_DONE
+            and code not in (None, 0, 77))
     if allowed is None:
         allowed = (backend.SDCP_CONTROL_ACTIONS | backend.READ_ACTIONS
                    if allow_control else backend.READ_ACTIONS)
@@ -232,7 +243,7 @@ def kb_main(status, allow_control=True, detailed=False, maintenance=(False, Fals
     if allow_control:
         if printing and backend.PAUSE in allowed:
             ctl.append({"text": "⏸ Пауза", "callback_data": "ask:pause"})
-        elif busy and backend.RESUME in allowed:
+        elif paused and backend.RESUME in allowed:
             ctl.append({"text": "▶️ Продолжить", "callback_data": "ask:resume"})
         if busy and backend.CANCEL in allowed:
             ctl.append({"text": "⏹ Стоп", "callback_data": "ask:stop"})

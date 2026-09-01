@@ -500,6 +500,20 @@ def test_render_detailed_adds_fans_and_chamber():
     assert "камера" in detailed
 
 
+def test_cancelled_job_with_stale_moonraker_metadata_has_no_print_controls():
+    stopped = status(8, "cancelled.gcode", progress=0,
+                     CurrentLayer=40, TotalLayer=150)
+    keyboard = ui.kb_main(stopped, allowed={backend.PAUSE, backend.RESUME,
+                                             backend.CANCEL})
+    callbacks = [button.get("callback_data") for row in keyboard for button in row]
+    assert "ask:pause" not in callbacks
+    assert "ask:resume" not in callbacks
+    assert "ask:stop" not in callbacks
+    shown = ui.render(stopped, True, "Demo")
+    assert "cancelled.gcode" not in shown
+    assert "слой 40" not in shown
+
+
 def test_unknown_status_code_is_described_not_hidden():
     text = ui.render(status(77, "demo.gcode", progress=50), True, "Demo")
     assert "77" in text
