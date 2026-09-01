@@ -18,7 +18,8 @@ log = logging.getLogger(__name__)
 
 QUERY_OBJECTS = (
     "webhooks", "virtual_sdcard", "print_stats", "extruder", "heater_bed",
-    "fan", "aux_fan", "case_fan", "led case", "display_status", "gcode_move",
+    "fan", "fan_generic aux_fan", "fan_generic case_fan", "led case",
+    "display_status", "gcode_move",
 )
 
 
@@ -76,6 +77,14 @@ def normalize_status(objects):
     extruder = objects.get("extruder") or {}
     bed = objects.get("heater_bed") or {}
     move = objects.get("gcode_move") or {}
+    # COSMOS exposes the two enclosure fans as Klipper ``fan_generic``
+    # objects.  The short names were accepted in no version of the live
+    # object API, so using them made the UI show both fans as off even after
+    # their M106 P2/P3 commands had succeeded.
+    aux_fan = (objects.get("fan_generic aux_fan")
+               or objects.get("aux_fan") or {})
+    case_fan = (objects.get("fan_generic case_fan")
+                or objects.get("case_fan") or {})
 
     klippy_state = str(hooks.get("state") or "").lower()
     print_state = str(stats.get("state") or "standby").lower()
@@ -123,9 +132,9 @@ def normalize_status(objects):
             "ModelFan": int(max(0, min(1, _number(
                 (objects.get("fan") or {}).get("speed")))) * 100),
             "BoxFan": int(max(0, min(1, _number(
-                (objects.get("case_fan") or {}).get("speed")))) * 100),
+                case_fan.get("speed")))) * 100),
             "AuxiliaryFan": int(max(0, min(1, _number(
-                (objects.get("aux_fan") or {}).get("speed")))) * 100),
+                aux_fan.get("speed")))) * 100),
         },
         "CurrentCoord": {
             "X": _number(position[0] if len(position) > 0 else 0),

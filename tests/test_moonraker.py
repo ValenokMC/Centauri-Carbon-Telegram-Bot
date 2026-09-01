@@ -59,6 +59,14 @@ def test_normalize_printing_status_matches_existing_ui_shape():
     assert status["CurrentCoord"]["Z"] == 3.4
 
 
+def test_normalize_cosmos_reads_fan_generic_enclosure_fans():
+    objects = printing_objects()
+    objects["fan_generic aux_fan"] = {"speed": 0.25}
+    objects["fan_generic case_fan"] = {"speed": 0.75}
+    fans = moonraker.normalize_status(objects)["CurrentFanSpeed"]
+    assert fans == {"ModelFan": 50, "BoxFan": 75, "AuxiliaryFan": 25}
+
+
 @pytest.mark.parametrize("state,code", [
     ("standby", 0), ("paused", 6), ("complete", 9),
     ("cancelled", 8), ("error", 77),
@@ -80,6 +88,8 @@ def test_client_queries_documented_objects_and_sends_api_key_as_header():
     assert request.get_header("X-api-key") == "top-secret"
     assert "top-secret" not in request.full_url
     assert "/printer/objects/query?webhooks&virtual_sdcard&print_stats" in request.full_url
+    assert "fan_generic%20aux_fan" in request.full_url
+    assert "fan_generic%20case_fan" in request.full_url
     assert timeout == 5
 
 
