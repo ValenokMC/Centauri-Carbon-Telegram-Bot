@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 
 CONFIRM_LABELS = {
     "pause": ("поставить на паузу", "⏸ Поставить печать на паузу?"),
+    "resume": ("продолжить печать", "▶️ Продолжить печать?"),
     "stop": ("остановить",
              "⏹ <b>Остановить печать?</b>\nОтменить это будет нельзя."),
 }
@@ -274,31 +275,42 @@ def _ask_confirmation(bot, chat, mid, query, what, is_photo):
             keyboard=ui.kb_confirm("print:%s" % confirmation, "печатать"),
             photo=bot.grab())
         return
-    action = {"pause": backend.PAUSE, "stop": backend.CANCEL}.get(what)
+    action = {"pause": backend.PAUSE, "resume": backend.RESUME,
+              "stop": backend.CANCEL}.get(what)
     if action and not bot.action_allowed(action):
         bot.api.answer_callback(query["id"], CONTROL_OFF.strip())
         return
+    if not action:
+        bot.api.answer_callback(query["id"], "Неизвестное действие.")
+        return
     label, question = CONFIRM_LABELS.get(what, ("выполнить", "Выполнить?"))
+    token = bot.issue_action_confirmation(action)
     bot.api.answer_callback(query["id"])
-    bot.api.edit_message(chat, mid, question, keyboard=ui.kb_confirm(what, label),
+    bot.api.edit_message(chat, mid, question,
+                         keyboard=ui.kb_confirm("job:%s:%s" % (action, token), label),
                          is_photo=is_photo)
 
 
 def _do_action(bot, chat, mid, query, what):
     note = ""
-    action = ({"pause": backend.PAUSE, "resume": backend.RESUME,
-               "stop": backend.CANCEL}.get(what) or
-              (backend.START if what.startswith("print:") else None))
+    action = backend.START if what.startswith("print:") else None
+    if what.startswith("job:"):
+        parts = what.split(":", 2)
+        candidate = parts[1] if len(parts) == 3 else ""
+        token = parts[2] if len(parts) == 3 else ""
+        if candidate in backend.JOB_ACTIONS and bot.consume_action_confirmation(
+                candidate, token):
+            action = candidate
     if not action or not bot.action_allowed(action):
         note = CONTROL_OFF
-    elif what == "pause":
+    elif action == backend.PAUSE:
         ok, info = bot.perform(backend.PAUSE)
         note = "⏸ Команда паузы принята.\n\n" if ok else "⚠️ Пауза не прошла (%s).\n\n" % info
-    elif what == "resume":
+    elif action == backend.RESUME:
         ok, info = bot.perform(backend.RESUME)
         note = "▶️ Команда продолжения принята.\n\n" if ok \
             else "⚠️ Не продолжилось (%s).\n\n" % info
-    elif what == "stop":
+    elif action == backend.CANCEL:
         ok, info = bot.perform(backend.CANCEL)
         note = "⏹ Команда остановки принята.\n\n" if ok \
             else "⚠️ Не остановилось (%s).\n\n" % info

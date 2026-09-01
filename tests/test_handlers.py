@@ -246,11 +246,14 @@ def test_confirmed_stop_sends_the_stop_command(online_bot):
     sent_commands = []
     online_bot.run_command = lambda cmd, *a, **k: (
         sent_commands.append(cmd), (True, "Ack=0"))[1]
-    handlers.handle_callback(online_bot, callback("do:stop"))
+    handlers.handle_callback(online_bot, callback("ask:stop"))
+    confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
+    handlers.handle_callback(online_bot, callback(confirm))
     assert sdcp.CMD_STOP in sent_commands
 
 
 def test_print_confirmation_stays_bound_to_original_file(online_bot):
+    online_bot.status = status(0)
     online_bot.files = ["/local/original.gcode"]
     sent = []
     online_bot.run_command = lambda cmd, data=None, **kwargs: (
@@ -282,14 +285,19 @@ def test_pause_asks_for_confirmation(online_bot):
     assert "паузу" in text
 
 
-def test_resume_needs_no_confirmation(online_bot):
-    """Resuming is not destructive, and an extra tap on a paused print at 3am
-    helps nobody."""
+def test_resume_asks_for_one_use_confirmation(online_bot):
+    online_bot.status = status(6, "Demo_Print.gcode", progress=50)
     sent_commands = []
     online_bot.run_command = lambda cmd, *a, **k: (
         sent_commands.append(cmd), (True, "Ack=0"))[1]
-    handlers.handle_callback(online_bot, callback("do:resume"))
+    handlers.handle_callback(online_bot, callback("ask:resume"))
+    assert sent_commands == []
+    confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
+    handlers.handle_callback(online_bot, callback(confirm))
     assert sdcp.CMD_RESUME in sent_commands
+    sent_commands.clear()
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert sent_commands == []
 
 
 def test_control_commands_are_refused_in_monitoring_only_mode(online_bot):
@@ -300,6 +308,22 @@ def test_control_commands_are_refused_in_monitoring_only_mode(online_bot):
     handlers.handle_callback(online_bot, callback("do:stop"))
     assert sent_commands == []
     assert "выключено" in online_bot.api.answers[-1][1]
+
+
+def test_confirmed_job_action_fails_closed_after_disconnect(online_bot):
+    handlers.handle_callback(online_bot, callback("ask:pause"))
+    confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
+    online_bot.online = False
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert "не в сети" in online_bot.api.answers[-1][1]
+
+
+def test_job_action_refuses_wrong_live_state(online_bot):
+    handlers.handle_callback(online_bot, callback("ask:pause"))
+    confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
+    online_bot.status = status(0)
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert "не выполняется" in online_bot.api.answers[-1][1]
 
 
 # ------------------------------------------------------------- keyboards

@@ -138,6 +138,14 @@ class Bot(object):
             return files[index] if 0 <= index < len(files) else None
         return self.confirmations.consume("print", token)
 
+    def issue_action_confirmation(self, action):
+        """Bind a one-use confirmation to one exact control action."""
+        return self.confirmations.issue("job-action", action)
+
+    def consume_action_confirmation(self, action, token):
+        confirmed = self.confirmations.consume("job-action", token)
+        return confirmed == action
+
     # ------------------------------------------------------------- camera
 
     def grab(self, max_age=0):
@@ -300,6 +308,24 @@ class Bot(object):
         """Execute one named operation after a final permission check."""
         if not self.action_allowed(action):
             return False, "команда запрещена настройками"
+
+        # Re-check live state at execution time.  A confirmation screen can be
+        # left open while the printer disconnects or changes state; the old
+        # button must then fail closed instead of sending a stale command.
+        if action not in backend.READ_ACTIONS:
+            if not self.online or not self.status:
+                return False, "принтер не в сети"
+            code = (self.status.get("PrintInfo") or {}).get("Status")
+            if code == 77:
+                return False, "принтер в состоянии ошибки"
+            if action == backend.PAUSE and code != ps.STATUS_PRINTING:
+                return False, "печать сейчас не выполняется"
+            if action == backend.RESUME and code not in ps.STATUS_PAUSED:
+                return False, "принтер сейчас не на паузе"
+            if action == backend.CANCEL and code in (None, 0, 8, 9):
+                return False, "активной печати нет"
+            if action == backend.START and code not in (0, 8, 9):
+                return False, "принтер занят"
 
         if self.backend_name == backend.MOONRAKER:
             methods = {

@@ -230,7 +230,7 @@ def kb_main(status, allow_control=True, detailed=False, maintenance=(False, Fals
         if printing and backend.PAUSE in allowed:
             ctl.append({"text": "⏸ Пауза", "callback_data": "ask:pause"})
         elif busy and backend.RESUME in allowed:
-            ctl.append({"text": "▶️ Продолжить", "callback_data": "do:resume"})
+            ctl.append({"text": "▶️ Продолжить", "callback_data": "ask:resume"})
         if busy and backend.CANCEL in allowed:
             ctl.append({"text": "⏹ Стоп", "callback_data": "ask:stop"})
         if ctl:
