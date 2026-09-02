@@ -24,6 +24,7 @@ RUN_MACRO = "run-macro"
 PAUSE = "pause"
 RESUME = "resume"
 CANCEL = "cancel"
+EXCLUDE_OBJECT = "exclude-object"
 START = "start"
 DELETE = "delete"
 LIGHT = "light"
@@ -32,7 +33,7 @@ TEMPERATURE = "temperature"
 FANS = "fans"
 
 READ_ACTIONS = frozenset({FILES, SNAPSHOT, DIAGNOSTICS, HISTORY, HEIGHT_MAP, MACROS})
-JOB_ACTIONS = frozenset({PAUSE, RESUME, CANCEL})
+JOB_ACTIONS = frozenset({PAUSE, RESUME, CANCEL, EXCLUDE_OBJECT})
 SDCP_CONTROL_ACTIONS = frozenset({
     PAUSE, RESUME, CANCEL, START, LIGHT, SPEED, TEMPERATURE, FANS,
 })

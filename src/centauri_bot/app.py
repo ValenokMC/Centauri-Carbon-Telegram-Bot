@@ -179,6 +179,20 @@ class Bot(object):
     def consume_macro_confirmation(self, token):
         return self.confirmations.consume("macro", token)
 
+    def prepare_object_choices(self, values):
+        """Bind buttons to an exact object and the current print filename."""
+        return [self.confirmations.issue("exclude-choice", value)
+                for value in values]
+
+    def resolve_object_choice(self, token):
+        return self.confirmations.consume("exclude-choice", token)
+
+    def issue_object_confirmation(self, value):
+        return self.confirmations.issue("exclude-object", value)
+
+    def consume_object_confirmation(self, token):
+        return self.confirmations.consume("exclude-object", token)
+
     # ------------------------------------------------------------- camera
 
     def grab(self, max_age=0):
@@ -360,14 +374,40 @@ class Bot(object):
                 return False, "принтер сейчас не на паузе"
             if action == backend.CANCEL and code in (None, 0, 8, 9):
                 return False, "активной печати нет"
+            if (action == backend.EXCLUDE_OBJECT
+                    and code != ps.STATUS_PRINTING and code not in ps.STATUS_PAUSED):
+                return False, "активной печати нет"
             if action == backend.START and code not in (0, 8, 9):
                 return False, "принтер занят"
 
         if self.backend_name == backend.MOONRAKER:
+            if action == backend.EXCLUDE_OBJECT:
+                payload = value if isinstance(value, dict) else {}
+                object_name = moonraker.normalized_object_name(payload.get("name"))
+                expected_file = str(payload.get("filename") or "")
+                if not object_name or not expected_file:
+                    return False, "подтверждение объекта некорректно"
+                try:
+                    live = self.moonraker.exclude_object_state()
+                except moonraker.MoonrakerError as e:
+                    return False, str(e)
+                if live.get("PrintState") not in ("printing", "paused"):
+                    return False, "активной печати уже нет"
+                if live.get("Filename") != expected_file:
+                    return False, "задание печати сменилось"
+                names = list(live.get("Objects") or [])
+                excluded = set(live.get("ExcludedObjects") or [])
+                active = [name for name in names if name not in excluded]
+                if object_name not in active:
+                    return False, "объект уже исключён или больше не существует"
+                if len(active) < 2:
+                    return False, "нельзя убрать единственный оставшийся объект"
+                value = object_name
             methods = {
                 backend.PAUSE: lambda: self.moonraker.pause(),
                 backend.RESUME: lambda: self.moonraker.resume(),
                 backend.CANCEL: lambda: self.moonraker.cancel(),
+                backend.EXCLUDE_OBJECT: lambda: self.moonraker.exclude_object(value),
                 backend.START: lambda: self.moonraker.start(value),
                 backend.DELETE: lambda: self.moonraker.delete(value),
                 backend.RUN_MACRO: lambda: self.moonraker.run_macro(value),
@@ -381,6 +421,13 @@ class Bot(object):
                 return False, "эта команда не поддерживается Moonraker-режимом"
             try:
                 method()
+                if action == backend.EXCLUDE_OBJECT:
+                    with self.lock:
+                        state = ((self.status or {}).get("ExcludeObject") or {})
+                        excluded = list(state.get("ExcludedObjects") or [])
+                        if value not in excluded:
+                            excluded.append(value)
+                        state["ExcludedObjects"] = excluded
                 return True, "Moonraker"
             except moonraker.MoonrakerError as e:
                 return False, str(e)
@@ -417,6 +464,16 @@ class Bot(object):
             return False, "диагностика COSMOS доступна только через Moonraker"
         try:
             return True, self.moonraker.diagnostics()
+        except moonraker.MoonrakerError as e:
+            return False, str(e)
+
+    def exclude_objects(self):
+        """Read a fresh object list instead of trusting the polling cache."""
+        if (not self.action_allowed(backend.EXCLUDE_OBJECT)
+                or self.backend_name != backend.MOONRAKER):
+            return False, "исключение объектов доступно только через Moonraker"
+        try:
+            return True, self.moonraker.exclude_object_state()
         except moonraker.MoonrakerError as e:
             return False, str(e)
 

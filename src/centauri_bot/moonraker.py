@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 QUERY_OBJECTS = (
     "webhooks", "virtual_sdcard", "print_stats", "extruder", "heater_bed",
     "fan", "fan_generic aux_fan", "fan_generic case_fan", "led case",
-    "display_status", "gcode_move",
+    "display_status", "gcode_move", "exclude_object",
 )
 
 
@@ -60,11 +60,40 @@ def valid_gcode_path(value):
 
 
 MACRO_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+OBJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:+-]{0,127}$")
 
 
 def normalized_macro_name(value):
     name = str(value or "").strip().upper()
     return name if MACRO_RE.match(name) and not name.startswith("_") else ""
+
+
+def normalized_object_name(value):
+    """Return a Klipper object name safe to place in a fixed G-code command."""
+    name = str(value or "").strip()
+    return name if OBJECT_RE.match(name) else ""
+
+
+def normalize_exclude_state(objects):
+    """Keep only exact, command-safe names from Klipper's exclude_object data."""
+    raw = (objects or {}).get("exclude_object") or {}
+    names = []
+    for item in raw.get("objects") or []:
+        value = item.get("name") if isinstance(item, dict) else item
+        name = normalized_object_name(value)
+        if name and name not in names:
+            names.append(name)
+    excluded = []
+    for value in raw.get("excluded_objects") or []:
+        name = normalized_object_name(value)
+        if name and name in names and name not in excluded:
+            excluded.append(name)
+    current = normalized_object_name(raw.get("current_object"))
+    return {
+        "Objects": names,
+        "ExcludedObjects": excluded,
+        "CurrentObject": current if current in names else "",
+    }
 
 
 def normalize_status(objects):
@@ -146,6 +175,7 @@ def normalize_status(objects):
             "PrintState": print_state,
             "Message": str(stats.get("message") or hooks.get("state_message") or ""),
         },
+        "ExcludeObject": normalize_exclude_state(objects),
         "LightStatus": {"SecondLight": int(bool(
             ((objects.get("led case") or {}).get("color_data") or [[0, 0, 0, 0]])[0][3]))},
     }
@@ -245,6 +275,27 @@ class Client(object):
 
     def cancel(self):
         self._json("/printer/print/cancel", method="POST", form={})
+
+    def exclude_object_state(self):
+        """Return fresh object and job identity data for a safe exclusion."""
+        result = self._json("/printer/objects/query?exclude_object&print_stats")
+        objects = (result or {}).get("status") or {}
+        if not objects:
+            raise MoonrakerError("пустой статус объектов Klipper")
+        state = normalize_exclude_state(objects)
+        stats = objects.get("print_stats") or {}
+        state.update({
+            "PrintState": str(stats.get("state") or "").lower(),
+            "Filename": str(stats.get("filename") or ""),
+        })
+        return state
+
+    def exclude_object(self, name):
+        """Exclude one exact slicer-declared object; arbitrary G-code is refused."""
+        name = normalized_object_name(name)
+        if not name:
+            raise MoonrakerError("некорректное имя объекта")
+        self._script(["EXCLUDE_OBJECT NAME=%s" % name])
 
     def start(self, filename):
         filename = normalized_gcode_path(filename)

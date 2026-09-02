@@ -14,6 +14,9 @@ this project uses [Semantic Versioning](https://semver.org/).
   controls.
 - Backend capability policy: Moonraker starts read-only, with separate opt-ins
   for pause/resume/cancel and remote file start.
+- A confirmed "exclude object" control for multi-object COSMOS prints. The bot
+  binds the confirmation to the exact object and print file, then rechecks both
+  against Moonraker immediately before sending the fixed Klipper command.
 
 ### Security
 

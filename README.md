@@ -121,14 +121,16 @@ Consent can be withdrawn by re-running `Setup.cmd`. Details: [PRIVACY.md](PRIVAC
 **Controlling** *(optional — the wizard offers a monitoring-only mode)*
 
 - Pause · resume · stop
+- On COSMOS, exclude one failed model while the other objects keep printing
 - Chamber light on and off, and an automatic switch-off at night after a print
 - Print speed: 50 / 75 / 100 / 125 / 150 %
 - Nozzle and bed heating presets
 - All three fans, collected as a draft and sent in one command
 - Browse the files on the printer and start one
 
-The full list above applies to stock SDCP firmware. On COSMOS, pause/resume/cancel
-and remote file start are separate opt-ins. Heater, fan, light, speed, macro and
+The full list above applies to stock SDCP firmware. On COSMOS,
+pause/resume/cancel and single-object exclusion share the job-control opt-in;
+remote file start is enabled separately. Heater, fan, light, speed, macro and
 arbitrary G-code controls stay unavailable until an installation-specific safe
 mapping exists.
 

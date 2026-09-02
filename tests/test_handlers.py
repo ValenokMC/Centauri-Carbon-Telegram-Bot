@@ -246,6 +246,66 @@ def test_cosmos_hardware_control_requires_confirmation(online_bot):
     assert calls == [True]
 
 
+def test_exclude_object_lists_live_models_confirms_and_rechecks_job(online_bot):
+    online_bot.cfg.update({"backend": "moonraker",
+                           "moonraker_allow_job_control": True})
+    online_bot.backend_name = backend.MOONRAKER
+    names = ["CUBE.DRC_ID_0_COPY_0", "PLUG.DRC_ID_1_COPY_0"]
+    live = {"Objects": names, "ExcludedObjects": [],
+            "CurrentObject": names[0], "PrintState": "printing",
+            "Filename": "Demo_Print.gcode"}
+    excluded = []
+    online_bot.moonraker = type("Moonraker", (), {
+        "exclude_object_state": lambda self: dict(live),
+        "exclude_object": lambda self, name: excluded.append(name),
+    })()
+    online_bot.status = status(
+        13, "Demo_Print.gcode", progress=50,
+        ExcludeObject={"Objects": names, "ExcludedObjects": [],
+                       "CurrentObject": names[0]})
+
+    handlers.handle_callback(online_bot, callback("objects"))
+    text, keyboard = online_bot.api.edited[-1][2:]
+    assert "Объекты текущей печати" in text
+    ask = [button for row in keyboard for button in row
+           if button["callback_data"].startswith("ask:exclude:")][1]
+
+    handlers.handle_callback(online_bot, callback(ask["callback_data"]))
+    confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
+    assert excluded == []
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert excluded == [names[1]]
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert excluded == [names[1]]
+
+
+def test_exclude_object_confirmation_refuses_a_changed_print(online_bot):
+    online_bot.cfg.update({"backend": "moonraker",
+                           "moonraker_allow_job_control": True})
+    online_bot.backend_name = backend.MOONRAKER
+    names = ["FIRST", "SECOND"]
+    live = {"Objects": names, "ExcludedObjects": [], "CurrentObject": "FIRST",
+            "PrintState": "printing", "Filename": "Demo_Print.gcode"}
+    excluded = []
+    online_bot.moonraker = type("Moonraker", (), {
+        "exclude_object_state": lambda self: dict(live),
+        "exclude_object": lambda self, name: excluded.append(name),
+    })()
+    online_bot.status = status(
+        13, "Demo_Print.gcode", ExcludeObject={"Objects": names,
+        "ExcludedObjects": [], "CurrentObject": "FIRST"})
+
+    handlers.handle_callback(online_bot, callback("objects"))
+    ask = [button for row in online_bot.api.edited[-1][3] for button in row
+           if button["callback_data"].startswith("ask:exclude:")][0]
+    handlers.handle_callback(online_bot, callback(ask["callback_data"]))
+    confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
+    live["Filename"] = "another.gcode"
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert excluded == []
+    assert "задание печати сменилось" in online_bot.api.answers[-1][1]
+
+
 def test_connection_loss_and_recovery_replace_the_one_main_panel(bot):
     """Network notices must never sit above a separate stale status panel."""
     storage.set_message_id(77)
@@ -426,6 +486,21 @@ def test_printing_shows_pause_and_stop():
     assert any("Пауза" in l for l in labels)
     assert any("Стоп" in l for l in labels)
     assert not any("Продолжить" in l for l in labels)
+
+
+def test_exclude_button_only_appears_for_multiple_active_objects():
+    allowed = {backend.PAUSE, backend.CANCEL, backend.EXCLUDE_OBJECT}
+    multiple = status(13, "demo.gcode", ExcludeObject={
+        "Objects": ["ONE", "TWO"], "ExcludedObjects": [],
+        "CurrentObject": "ONE"})
+    labels = [b["text"] for row in ui.kb_main(multiple, allowed=allowed)
+              for b in row]
+    assert any("Убрать объект" in label for label in labels)
+
+    multiple["ExcludeObject"]["ExcludedObjects"] = ["TWO"]
+    labels = [b["text"] for row in ui.kb_main(multiple, allowed=allowed)
+              for b in row]
+    assert not any("Убрать объект" in label for label in labels)
 
 
 def test_paused_shows_resume_not_pause():

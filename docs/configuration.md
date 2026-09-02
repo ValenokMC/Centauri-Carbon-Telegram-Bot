@@ -41,7 +41,7 @@ stopped. It is plain JSON.
 | `moonraker_timeout_sec` | `5` | Per-request timeout. |
 | `moonraker_camera_url` | `""` | Optional snapshot URL. Blank asks Moonraker for its enabled webcam. |
 | `moonraker_allow_external_camera` | `false` | Allows a camera URL on a host different from Moonraker. Keep false unless the camera is deliberately separate. |
-| `moonraker_allow_job_control` | `false` | Enables pause, resume and cancel. Separate from the global `allow_control` switch. |
+| `moonraker_allow_job_control` | `false` | Enables pause, resume, cancel and confirmed exclusion of one model from a multi-object print. Separate from the global `allow_control` switch. |
 | `moonraker_allow_remote_start` | `false` | Enables starting a selected G-code file after a one-use confirmation. Separate because it starts a hot machine. |
 
 Moonraker mode does not expose arbitrary G-code, macros, restarts, firmware

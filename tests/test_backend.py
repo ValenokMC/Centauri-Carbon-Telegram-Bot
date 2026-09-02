@@ -28,7 +28,8 @@ def test_moonraker_job_control_and_remote_start_are_separate_opt_ins(base_config
         "moonraker_allow_remote_start": False,
     })
     allowed = backend.allowed_actions(base_config)
-    assert {backend.PAUSE, backend.RESUME, backend.CANCEL} <= allowed
+    assert {backend.PAUSE, backend.RESUME, backend.CANCEL,
+            backend.EXCLUDE_OBJECT} <= allowed
     assert backend.START not in allowed
 
     base_config["moonraker_allow_remote_start"] = True

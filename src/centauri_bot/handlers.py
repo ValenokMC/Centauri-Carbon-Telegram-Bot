@@ -133,6 +133,31 @@ def show_macros(bot, chat, mid=None, is_photo=False, force_new=False):
                    ui.macros_text(names, enabled), ui.kb_macros(enabled, refs))
 
 
+def show_objects(bot, chat, mid=None, is_photo=False, force_new=False):
+    ok, state = bot.exclude_objects()
+    if not ok:
+        _show_readonly(bot, chat, mid, is_photo, force_new,
+                       "⚠️ Объекты получить не вышло: %s" % state, ui.kb_back())
+        return
+    names = list(state.get("Objects") or [])
+    excluded = set(state.get("ExcludedObjects") or [])
+    active = [name for name in names if name not in excluded]
+    if state.get("PrintState") not in ("printing", "paused"):
+        text = "🧩 Сейчас нет активной печати с отдельными объектами."
+        rows = ui.kb_back()
+    elif len(active) < 2:
+        text = ("🧩 Убрать модель нельзя: в задании не размечено несколько "
+                "объектов или остался только один.")
+        rows = ui.kb_back()
+    else:
+        values = [{"name": name, "filename": state.get("Filename") or ""}
+                  for name in active]
+        refs = bot.prepare_object_choices(values)
+        text = ui.objects_text(state)
+        rows = ui.kb_objects(active, refs, state.get("CurrentObject") or "")
+    _show_readonly(bot, chat, mid, is_photo, force_new, text, rows)
+
+
 def handle_callback(bot, query):
     chat = str(query["message"]["chat"]["id"])
     mid = query["message"]["message_id"]
@@ -201,6 +226,11 @@ def handle_callback(bot, query):
     if data == "macros":
         bot.api.answer_callback(query["id"], "Читаю макросы…")
         show_macros(bot, chat, mid, is_photo)
+        return
+
+    if data == "objects":
+        bot.api.answer_callback(query["id"], "Читаю объекты печати…")
+        show_objects(bot, chat, mid, is_photo)
         return
 
     if data.startswith("menu:"):
@@ -366,6 +396,27 @@ def _ask_confirmation(bot, chat, mid, query, what, is_photo):
         bot.api.answer_callback(query["id"])
         bot.api.send_message(chat, "🗑 <b>Удалить файл?</b>\n<i>%s</i>\n\nВосстановить его с принтера будет нельзя." % escape(path.rsplit("/", 1)[-1]), keyboard=ui.kb_confirm("delete:%s" % token, "удалить"))
         return
+    if what.startswith("exclude:"):
+        if not bot.action_allowed(backend.EXCLUDE_OBJECT):
+            bot.api.answer_callback(query["id"], CONTROL_OFF.strip())
+            return
+        choice = what.split(":", 1)[1]
+        value = bot.resolve_object_choice(choice)
+        if not isinstance(value, dict) or not value.get("name"):
+            bot.api.answer_callback(query["id"],
+                                    "Список устарел. Открой объекты заново.")
+            return
+        token = bot.issue_object_confirmation(value)
+        bot.api.answer_callback(query["id"])
+        bot.api.edit_message(
+            chat, mid,
+            "❌ <b>Убрать модель из текущей печати?</b>\n%s\n\n"
+            "Klipper пропустит все оставшиеся движения этой модели. "
+            "Уже напечатанная часть останется на столе; вернуть её в это задание нельзя."
+            % escape(ui.object_label(value["name"])),
+            keyboard=ui.kb_confirm("exclude:%s" % token, "убрать модель"),
+            is_photo=is_photo)
+        return
     if what.startswith("macro:"):
         choice = what.split(":", 1)[1]
         name = bot.resolve_macro_choice(choice)
@@ -401,7 +452,10 @@ def _ask_confirmation(bot, chat, mid, query, what, is_photo):
 
 def _do_action(bot, chat, mid, query, what):
     note = ""
-    action = backend.START if what.startswith("print:") else (backend.DELETE if what.startswith("delete:") else (backend.RUN_MACRO if what.startswith("macro:") else None))
+    action = (backend.START if what.startswith("print:") else
+              backend.DELETE if what.startswith("delete:") else
+              backend.EXCLUDE_OBJECT if what.startswith("exclude:") else
+              backend.RUN_MACRO if what.startswith("macro:") else None)
     value = None
     if what.startswith("control:"):
         parts = what.split(":", 2)
@@ -452,6 +506,16 @@ def _do_action(bot, chat, mid, query, what):
                 note = "🗑 Файл удалён.\n\n" if ok else "⚠️ Удаление не прошло (%s).\n\n" % info
         else:
             note = "⚠️ Подтверждение устарело. Открой файлы заново.\n\n"
+    elif what.startswith("exclude:"):
+        token = what.split(":", 1)[1]
+        value = bot.consume_object_confirmation(token)
+        if not isinstance(value, dict) or not value.get("name"):
+            note = "⚠️ Подтверждение устарело. Открой объекты заново.\n\n"
+        else:
+            ok, info = bot.perform(backend.EXCLUDE_OBJECT, value)
+            note = ("🧩 Модель <b>%s</b> убрана из текущей печати.\n\n"
+                    % escape(ui.object_label(value["name"]))) if ok \
+                else "⚠️ Убрать модель не вышло (%s).\n\n" % escape(info)
     elif what.startswith("macro:"):
         token = what.split(":", 1)[1]
         name = bot.consume_macro_confirmation(token)

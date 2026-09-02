@@ -72,13 +72,16 @@ buttons are absent, and a command arriving anyway is refused in code. Choose it
 in the wizard if you never need to pause or stop remotely.
 
 Moonraker adds another layer: an old `allow_control: true` does not carry broad
-control across a firmware migration. Pause/resume/cancel and remote file start
-are separate opt-ins. Arbitrary G-code, macros and service or firmware restarts
+control across a firmware migration. Pause/resume/cancel and single-object
+exclusion share a job-control opt-in; remote file start is enabled separately.
+Arbitrary G-code, macros and service or firmware restarts
 are not exposed.
 
 ## Dangerous actions
 
-Stop, pause and starting a print all require an explicit confirmation. Starting
+Stop, pause, excluding one model and starting a print all require an explicit
+confirmation. An object confirmation is bound to the exact object name and
+print file, which are checked again immediately before execution. Starting
 a print also shows a camera frame first, so you can see whether the bed is
 clear.
 

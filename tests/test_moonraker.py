@@ -43,6 +43,14 @@ def printing_objects():
         "heater_bed": {"temperature": 59.8, "target": 60},
         "fan": {"speed": 0.5},
         "gcode_move": {"gcode_position": [10, 20, 3.4, 1]},
+        "exclude_object": {
+            "objects": [
+                {"name": "CUBE.DRC_ID_0_COPY_0", "center": [140, 128]},
+                {"name": "PLUG.DRC_ID_1_COPY_0", "center": [112, 128]},
+            ],
+            "excluded_objects": [],
+            "current_object": "CUBE.DRC_ID_0_COPY_0",
+        },
     }
 
 
@@ -57,6 +65,10 @@ def test_normalize_printing_status_matches_existing_ui_shape():
     assert status["TempOfNozzle"] == 211.2
     assert status["CurrentFanSpeed"]["ModelFan"] == 50
     assert status["CurrentCoord"]["Z"] == 3.4
+    assert status["ExcludeObject"] == {
+        "Objects": ["CUBE.DRC_ID_0_COPY_0", "PLUG.DRC_ID_1_COPY_0"],
+        "ExcludedObjects": [], "CurrentObject": "CUBE.DRC_ID_0_COPY_0",
+    }
 
 
 def test_normalize_cosmos_reads_fan_generic_enclosure_fans():
@@ -191,6 +203,25 @@ def test_hardware_controls_only_emit_fixed_validated_cosmos_commands():
     ]
     with pytest.raises(moonraker.MoonrakerError, match="недопустимая"):
         client.set_speed(101)
+
+
+def test_object_exclusion_rechecks_live_job_and_emits_one_fixed_command():
+    fake = FakeOpener([
+        {"result": {"status": printing_objects()}},
+        {"result": "ok"},
+    ])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    state = client.exclude_object_state()
+    assert state["Filename"] == "parts/cube.gcode"
+    assert state["PrintState"] == "printing"
+    client.exclude_object("PLUG.DRC_ID_1_COPY_0")
+    request, _ = fake.requests[-1]
+    assert urllib.parse.parse_qs(request.data.decode()) == {
+        "script": ["EXCLUDE_OBJECT NAME=PLUG.DRC_ID_1_COPY_0"]}
+
+    with pytest.raises(moonraker.MoonrakerError, match="некорректное"):
+        client.exclude_object("cube\nCANCEL_PRINT")
+    assert len(fake.requests) == 2
 
 
 def test_camera_refuses_unapproved_external_host_before_fetching_image():

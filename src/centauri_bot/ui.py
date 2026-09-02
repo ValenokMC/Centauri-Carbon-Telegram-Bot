@@ -51,6 +51,21 @@ def plural(n, one, few, many):
     return many
 
 
+def object_label(name):
+    """Turn an Orca/Klipper identifier into a compact Telegram label."""
+    label = str(name or "")
+    for marker in (".DRC_ID_", ".STL_ID_", ".STEP_ID_"):
+        label = label.split(marker, 1)[0]
+    return label.replace("_", " ") or "без имени"
+
+
+def active_objects(status):
+    state = (status or {}).get("ExcludeObject") or {}
+    excluded = set(state.get("ExcludedObjects") or [])
+    return [name for name in (state.get("Objects") or [])
+            if name not in excluded]
+
+
 def bar(pct, code=None, width=10):
     """Progress bar. The fill colour tracks the state: green while printing,
     yellow if the print has stalled halfway. Readable at a glance, unread."""
@@ -249,6 +264,10 @@ def kb_main(status, allow_control=True, detailed=False, maintenance=(False, Fals
             ctl.append({"text": "⏹ Стоп", "callback_data": "ask:stop"})
         if ctl:
             rows.append(ctl)
+        if ((printing or paused) and backend.EXCLUDE_OBJECT in allowed
+                and len(active_objects(status)) > 1):
+            rows.append([{"text": "🧩 Убрать объект",
+                          "callback_data": "objects"}])
         settings = []
         lit = ((status.get("LightStatus") or {}).get("SecondLight") == 1)
         if backend.LIGHT in allowed:
@@ -348,6 +367,32 @@ def kb_files(files, allow_control=True, limit=8, can_start=None, refs=None,
             ref = delete_refs[i] if delete_refs and i < len(delete_refs) else str(i)
             rows.append([{"text": "🗑 Удалить %s" % base[:29],
                           "callback_data": "ask:delete:%s" % ref}])
+    rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
+    return rows
+
+
+def objects_text(state):
+    names = list(state.get("Objects") or [])
+    excluded = set(state.get("ExcludedObjects") or [])
+    current = state.get("CurrentObject") or ""
+    active = [name for name in names if name not in excluded]
+    lines = ["<b>🧩 Объекты текущей печати</b>",
+             "Осталось: %d из %d" % (len(active), len(names))]
+    for name in active:
+        prefix = "▶️" if name == current else "•"
+        suffix = " · сейчас печатается" if name == current else ""
+        lines.append("%s %s%s" % (
+            prefix, html.escape(object_label(name)), suffix))
+    lines.append("\nВыбранная модель больше печататься не будет; уже напечатанная часть останется на столе.")
+    return "\n".join(lines)
+
+
+def kb_objects(names, refs, current=""):
+    rows = []
+    for name, ref in zip(names, refs):
+        prefix = "▶️ " if name == current else ""
+        rows.append([{"text": "❌ %s%s" % (prefix, object_label(name)[:35]),
+                      "callback_data": "ask:exclude:" + ref}])
     rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
     return rows
 
@@ -465,6 +510,8 @@ def help_screen(allow_control=True, allowed=None):
         names.append("пауза/продолжить")
     if backend.CANCEL in allowed:
         names.append("стоп")
+    if backend.EXCLUDE_OBJECT in allowed:
+        names.append("убрать объект")
     if backend.LIGHT in allowed:
         names.append("свет")
     if backend.SPEED in allowed:
