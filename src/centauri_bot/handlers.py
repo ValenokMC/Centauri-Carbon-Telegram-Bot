@@ -29,14 +29,6 @@ CONFIRM_LABELS = {
 
 CONTROL_OFF = "Управление выключено в настройках.\n\n"
 
-MACRO_DESCRIPTIONS = {
-    "CHECK_CALIBRATION": "покажет на экране принтера состояние калибровок",
-    "CLEAN_NOZZLE": "нагреет сопло, выполнит homing и переместит его в зону очистки",
-    "LOAD_FILAMENT": "нагреет сопло и подаст филамент",
-    "UNLOAD_FILAMENT": "выполнит homing, переместит голову и выгрузит филамент",
-    "MOVE_TO_TRAY": "выполнит homing и переместит сопло в задний лоток",
-}
-
 # The printer needs a moment to act on a command before its next status is
 # worth rendering; without this the message redraws showing the old state and
 # looks like the button did nothing. Named so the tests can shrink it - a suite
@@ -426,11 +418,12 @@ def _ask_confirmation(bot, chat, mid, query, what, is_photo):
         token = bot.issue_macro_confirmation(name)
         bot.api.answer_callback(query["id"])
         bot.api.edit_message(chat, mid,
-                             "🧩 <b>Запустить макрос?</b>\n<code>%s</code>\n\n"
-                             "Действие: %s.\n\n"
+                             "🧩 <b>Запустить «%s»?</b>\n\n"
+                             "Что произойдёт: %s.\n\n"
+                             "Системное имя: <code>%s</code>\n\n"
                              "Макрос может двигать механизмы или менять состояние принтера."
-                             % (escape(name), escape(MACRO_DESCRIPTIONS.get(
-                                 name, "действие не описано в боте"))),
+                             % (escape(ui.macro_label(name)),
+                                escape(ui.macro_description(name)), escape(name)),
                              keyboard=ui.kb_confirm("macro:%s" % token, "запустить"),
                              is_photo=is_photo)
         return
@@ -523,7 +516,8 @@ def _do_action(bot, chat, mid, query, what):
             note = "⚠️ Макрос не разрешён или подтверждение устарело.\n\n"
         else:
             ok, info = bot.perform(backend.RUN_MACRO, name)
-            note = "🧩 Макрос <code>%s</code> отправлен.\n\n" % escape(name) if ok else "⚠️ Макрос не запустился (%s).\n\n" % info
+            note = "🧩 Действие «%s» запущено.\n\n" % escape(ui.macro_label(name)) \
+                if ok else "⚠️ Макрос не запустился (%s).\n\n" % info
     elif action in {backend.LIGHT, backend.SPEED, backend.TEMPERATURE, backend.FANS}:
         ok, info = bot.perform(action, value)
         names = {backend.LIGHT: "💡 Свет", backend.SPEED: "⚡ Скорость",

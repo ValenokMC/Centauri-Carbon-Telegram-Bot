@@ -219,13 +219,37 @@ def test_mesh_and_macro_execution_have_separate_safe_paths(online_bot):
     assert "Карта высот" in online_bot.api.edited[-1][2]
 
     handlers.handle_callback(online_bot, callback("macros"))
+    macro_text = online_bot.api.edited[-1][2]
+    assert "Загрузить пластик" in macro_text
+    assert "подача продолжится после подтверждения" in macro_text
     macro_button = [button for row in online_bot.api.edited[-1][3] for button in row
                     if button["callback_data"].startswith("ask:macro:")][0]
+    assert macro_button["text"] == "▶️ Загрузить пластик"
     handlers.handle_callback(online_bot, callback(macro_button["callback_data"]))
+    confirmation_text = online_bot.api.edited[-1][2]
+    assert "Запустить «Загрузить пластик»?" in confirmation_text
+    assert "Системное имя: <code>LOAD_FILAMENT</code>" in confirmation_text
     confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
     assert called == []
     handlers.handle_callback(online_bot, callback(confirm))
     assert called == ["LOAD_FILAMENT"]
+    assert "Действие «Загрузить пластик» запущено" in online_bot.api.edited[-1][2]
+
+
+def test_every_owner_approved_cosmos_macro_has_a_russian_action_name():
+    expected = {
+        "CHECK_CALIBRATION": "Проверить калибровки",
+        "CLEAN_NOZZLE": "Очистить сопло",
+        "LOAD_FILAMENT": "Загрузить пластик",
+        "UNLOAD_FILAMENT": "Выгрузить пластик",
+        "MOVE_TO_TRAY": "Переместить голову к заднему лотку",
+    }
+    keyboard = ui.kb_macros(list(expected), ["ref-%d" % i for i in range(len(expected))])
+
+    assert [row[0]["text"] for row in keyboard[:-1]] == [
+        "▶️ " + expected[name] for name in expected]
+    assert all(ui.macro_description(name) != "назначение не описано в боте"
+               for name in expected)
 
 
 def test_cosmos_hardware_control_requires_confirmation(online_bot):

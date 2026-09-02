@@ -18,6 +18,12 @@ this project uses [Semantic Versioning](https://semver.org/).
   binds the confirmation to the exact object and print file, then rechecks both
   against Moonraker immediately before sending the fixed Klipper command.
 
+### Changed
+
+- The five owner-approved COSMOS macros now use clear Russian action names in
+  Telegram. The macro screen and confirmation explain what each action does;
+  the original Klipper name remains visible only as a technical identifier.
+
 ### Security
 
 - File-start confirmations are one-use, expire after five minutes and bind to

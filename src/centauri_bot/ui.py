@@ -28,6 +28,31 @@ FAN_KEYS = ("ModelFan", "BoxFan", "AuxiliaryFan")
 FAN_LEVELS = (0, 25, 50, 75, 100)
 FAN_HUMAN = {"ModelFan": "обдув", "BoxFan": "корпус", "AuxiliaryFan": "доп"}
 
+MACRO_UI = {
+    "CHECK_CALIBRATION": (
+        "Проверить калибровки",
+        "покажет на экране принтера, какие обязательные калибровки COSMOS выполнены",
+    ),
+    "CLEAN_NOZZLE": (
+        "Очистить сопло",
+        "нагреет сопло, выполнит базирование X/Y и автоматически очистит сопло о заднюю щётку",
+    ),
+    "LOAD_FILAMENT": (
+        "Загрузить пластик",
+        "нагреет сопло, переместит голову к заднему лотку и попросит вставить пластик; "
+        "подача продолжится после подтверждения на экране принтера",
+    ),
+    "UNLOAD_FILAMENT": (
+        "Выгрузить пластик",
+        "выполнит базирование X/Y, отрежет пруток и отведёт его назад для извлечения",
+    ),
+    "MOVE_TO_TRAY": (
+        "Переместить голову к заднему лотку",
+        "выполнит базирование X/Y и переместит печатающую голову к заднему лотку; "
+        "нагрев и подачу пластика не включает",
+    ),
+}
+
 
 # ------------------------------------------------------------------ helpers
 
@@ -461,19 +486,32 @@ def macros_text(names, enabled):
     enabled = set(enabled or [])
     if not names:
         return "<b>🧩 Макросы COSMOS</b>\n\nMoonraker не сообщил доступных пользовательских макросов."
-    lines = ["<b>🧩 Макросы COSMOS</b>",
-             "Установлено: %d · разрешено к запуску: %d" % (len(names), len(enabled))]
+    lines = ["<b>🧩 Действия COSMOS</b>"]
     if enabled:
-        lines.append("Разрешённые макросы появятся кнопками ниже и каждый потребует подтверждения.")
+        lines.append("Что можно запустить из бота (каждое действие потребует подтверждения):")
+        for name in names:
+            if name in enabled:
+                lines.append("• <b>%s</b> — %s." % (
+                    html.escape(macro_label(name)), html.escape(macro_description(name))))
     else:
-        lines.append("Запуск выключен: whitelist пока пуст. Служебные макросы скрыты.")
+        lines.append("Запуск действий выключен: список разрешённых макросов пока пуст. "
+                     "Служебные макросы COSMOS скрыты.")
     return "\n".join(lines)
+
+
+def macro_label(name):
+    return MACRO_UI.get(name, ("Макрос %s" % name, ""))[0]
+
+
+def macro_description(name):
+    return MACRO_UI.get(name, ("", "назначение не описано в боте"))[1]
 
 
 def kb_macros(names, refs):
     rows = []
     for name, ref in zip(names, refs):
-        rows.append([{"text": "▶️ " + name, "callback_data": "ask:macro:" + ref}])
+        rows.append([{"text": "▶️ " + macro_label(name),
+                      "callback_data": "ask:macro:" + ref}])
     rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
     return rows
 
