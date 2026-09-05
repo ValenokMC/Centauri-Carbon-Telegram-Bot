@@ -119,7 +119,7 @@ def show_macros(bot, chat, mid=None, is_photo=False, force_new=False):
         _show_readonly(bot, chat, mid, is_photo, force_new,
                        "⚠️ Макросы получить не вышло: %s" % names, ui.kb_back())
         return
-    enabled = [name for name in names if bot.macro_allowed(name)]
+    enabled = ui.macro_order(name for name in names if bot.macro_allowed(name))
     refs = bot.prepare_macro_choices(enabled)
     _show_readonly(bot, chat, mid, is_photo, force_new,
                    ui.macros_text(names, enabled), ui.kb_macros(enabled, refs))

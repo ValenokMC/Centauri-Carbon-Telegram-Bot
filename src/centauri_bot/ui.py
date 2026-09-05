@@ -45,10 +45,6 @@ MACRO_UI = {
         "Проверить калибровки",
         "покажет на экране принтера, какие обязательные калибровки COSMOS выполнены",
     ),
-    "CLEAN_NOZZLE": (
-        "Очистить сопло",
-        "нагреет сопло, выполнит базирование X/Y и автоматически очистит сопло о заднюю щётку",
-    ),
     "LOAD_FILAMENT": (
         "Загрузить пластик",
         "нагреет сопло, переместит голову к заднему лотку и попросит вставить пластик; "
@@ -58,12 +54,20 @@ MACRO_UI = {
         "Выгрузить пластик",
         "выполнит базирование X/Y, отрежет пруток и отведёт его назад для извлечения",
     ),
+    "CLEAN_NOZZLE": (
+        "Очистить сопло",
+        "нагреет сопло, выполнит базирование X/Y и автоматически очистит сопло о заднюю щётку",
+    ),
     "MOVE_TO_TRAY": (
         "Переместить голову к заднему лотку",
         "выполнит базирование X/Y и переместит печатающую голову к заднему лотку; "
         "нагрев и подачу пластика не включает",
     ),
 }
+
+# Порядок кнопок и описаний берётся отсюда: Moonraker отдаёт макросы
+# в своём порядке, поэтому раскладываем их сами.
+MACRO_ORDER = tuple(MACRO_UI)
 
 
 # ------------------------------------------------------------------ helpers
@@ -565,14 +569,19 @@ def macros_text(names, enabled):
     lines = ["<b>🧩 Действия COSMOS</b>"]
     if enabled:
         lines.append("Что можно запустить из бота (каждое действие потребует подтверждения):")
-        for name in names:
-            if name in enabled:
-                lines.append("• <b>%s</b> — %s." % (
-                    html.escape(macro_label(name)), html.escape(macro_description(name))))
+        for name in macro_order(n for n in names if n in enabled):
+            lines.append("• <b>%s</b> — %s." % (
+                html.escape(macro_label(name)), html.escape(macro_description(name))))
     else:
         lines.append("Запуск действий выключен: список разрешённых макросов пока пуст. "
                      "Служебные макросы COSMOS скрыты.")
     return "\n".join(lines)
+
+
+def macro_order(names):
+    """Sort macros as MACRO_UI lists them; unknown ones keep printer order, at the end."""
+    rank = {name: i for i, name in enumerate(MACRO_ORDER)}
+    return sorted(names, key=lambda name: rank.get(name, len(rank)))
 
 
 def macro_label(name):
