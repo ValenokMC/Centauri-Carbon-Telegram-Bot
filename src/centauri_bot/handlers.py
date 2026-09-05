@@ -125,6 +125,25 @@ def show_macros(bot, chat, mid=None, is_photo=False, force_new=False):
                    ui.macros_text(names, enabled), ui.kb_macros(enabled, refs))
 
 
+def show_bed_calibration(bot, chat, mid=None, is_photo=False, force_new=False):
+    """Second screen for bed calibration: pick the temperature to take the mesh at."""
+    ok, names = bot.macros()
+    if not ok:
+        _show_readonly(bot, chat, mid, is_photo, force_new,
+                       "⚠️ Макросы получить не вышло: %s" % names, ui.kb_back())
+        return
+    enabled = ui.macro_order(name for name in names
+                             if name in ui.BED_CALIB_MACROS and bot.macro_allowed(name))
+    if not enabled:
+        _show_readonly(bot, chat, mid, is_photo, force_new,
+                       "⚠️ Калибровка стола недоступна: ни один из макросов "
+                       "CALIBRATE_BED_* не разрешён в настройках бота.", ui.kb_back())
+        return
+    refs = bot.prepare_macro_choices(enabled)
+    _show_readonly(bot, chat, mid, is_photo, force_new,
+                   ui.bed_calibration_text(), ui.kb_bed_temps(enabled, refs))
+
+
 def show_objects(bot, chat, mid=None, is_photo=False, force_new=False):
     ok, state = bot.exclude_objects()
     if not ok:
@@ -218,6 +237,11 @@ def handle_callback(bot, query):
     if data == "macros":
         bot.api.answer_callback(query["id"], "Читаю макросы…")
         show_macros(bot, chat, mid, is_photo)
+        return
+
+    if data == "bedcalib":
+        bot.api.answer_callback(query["id"])
+        show_bed_calibration(bot, chat, mid, is_photo)
         return
 
     if data == "objects":

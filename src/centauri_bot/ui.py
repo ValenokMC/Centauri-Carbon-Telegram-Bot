@@ -30,9 +30,21 @@ FAN_HUMAN = {"ModelFan": "обдув детали", "BoxFan": "вытяжка",
              "AuxiliaryFan": "приток"}
 
 MACRO_UI = {
-    "CALIBRATE_BED": (
-        "Калибровать стол",
+    "CALIBRATE_BED_60": (
+        "Стол на 60 °C · PLA, TPU",
+        "прогреет стол до 60 °C, запаркуется, очистит сопло, выдержит минуту, "
+        "найдёт ноль тензодатчиком и снимет сетку 9x9. Около десяти минут. "
+        "Результат живёт только в памяти — сохранить отдельной кнопкой",
+    ),
+    "CALIBRATE_BED_80": (
+        "Стол на 80 °C · PETG",
         "прогреет стол до 80 °C, запаркуется, очистит сопло, выдержит минуту, "
+        "найдёт ноль тензодатчиком и снимет сетку 9x9. Около десяти минут. "
+        "Результат живёт только в памяти — сохранить отдельной кнопкой",
+    ),
+    "CALIBRATE_BED_100": (
+        "Стол на 100 °C · ABS, ASA",
+        "прогреет стол до 100 °C, запаркуется, очистит сопло, выдержит минуту, "
         "найдёт ноль тензодатчиком и снимет сетку 9x9. Около десяти минут. "
         "Результат живёт только в памяти — сохранить отдельной кнопкой",
     ),
@@ -68,6 +80,18 @@ MACRO_UI = {
 # Порядок кнопок и описаний берётся отсюда: Moonraker отдаёт макросы
 # в своём порядке, поэтому раскладываем их сами.
 MACRO_ORDER = tuple(MACRO_UI)
+
+# Значок показывает группу: калибровка, пластик, обслуживание.
+MACRO_ICON = {
+    "CALIBRATE_BED_60": "📐", "CALIBRATE_BED_80": "📐", "CALIBRATE_BED_100": "📐",
+    "SAVE_CALIBRATION": "📐", "CHECK_CALIBRATION": "📐",
+    "LOAD_FILAMENT": "🧵", "UNLOAD_FILAMENT": "🧵",
+    "CLEAN_NOZZLE": "🧽", "MOVE_TO_TRAY": "🧽",
+}
+
+# Эти три прячутся за одной кнопкой: температура выбирается на втором экране.
+BED_CALIB_MACROS = ("CALIBRATE_BED_60", "CALIBRATE_BED_80", "CALIBRATE_BED_100")
+BED_CALIB_BUTTON = "📐 Калибровать стол"
 
 
 # ------------------------------------------------------------------ helpers
@@ -569,7 +593,15 @@ def macros_text(names, enabled):
     lines = ["<b>🧩 Действия COSMOS</b>"]
     if enabled:
         lines.append("Что можно запустить из бота (каждое действие потребует подтверждения):")
+        bed_shown = False
         for name in macro_order(n for n in names if n in enabled):
+            if name in BED_CALIB_MACROS:
+                if bed_shown:
+                    continue
+                bed_shown = True
+                lines.append("• <b>Калибровать стол</b> — снимет сетку стола; "
+                             "температуру выберете на следующем шаге.")
+                continue
             lines.append("• <b>%s</b> — %s." % (
                 html.escape(macro_label(name)), html.escape(macro_description(name))))
     else:
@@ -584,6 +616,10 @@ def macro_order(names):
     return sorted(names, key=lambda name: rank.get(name, len(rank)))
 
 
+def macro_icon(name):
+    return MACRO_ICON.get(name, "▶️")
+
+
 def macro_label(name):
     return MACRO_UI.get(name, ("Макрос %s" % name, ""))[0]
 
@@ -593,12 +629,39 @@ def macro_description(name):
 
 
 def kb_macros(names, refs):
-    rows = []
+    """Bed calibration folds into one button - the temperature is picked next."""
+    rows, bed_shown = [], False
     for name, ref in zip(names, refs):
-        rows.append([{"text": "▶️ " + macro_label(name),
+        if name in BED_CALIB_MACROS:
+            if bed_shown:
+                continue
+            bed_shown = True
+            rows.append([{"text": BED_CALIB_BUTTON, "callback_data": "bedcalib"}])
+            continue
+        rows.append([{"text": "%s %s" % (macro_icon(name), macro_label(name)),
                       "callback_data": "ask:macro:" + ref}])
     rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
     return rows
+
+
+def kb_bed_temps(names, refs):
+    """Temperature picker for the bed mesh."""
+    rows = [[{"text": "📐 " + macro_label(name),
+              "callback_data": "ask:macro:" + ref}]
+            for name, ref in zip(names, refs)]
+    rows.append([{"text": "↩️ Назад к действиям", "callback_data": "macros"}])
+    return rows
+
+
+def bed_calibration_text():
+    return (
+        "<b>📐 Калибровка стола</b>\n\n"
+        "Сетку снимают на той температуре, на которой будете печатать: "
+        "горячая плита выгибается иначе, чем холодная.\n\n"
+        "Займёт около десяти минут. Результат ляжет только в память принтера — "
+        "чтобы он пережил перезапуск, сразу после калибровки нажмите "
+        "«Сохранить калибровку».\n\n"
+        "Выберите температуру стола:")
 
 
 HELP_TEXT_HEADER = (

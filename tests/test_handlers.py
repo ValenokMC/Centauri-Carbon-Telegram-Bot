@@ -224,7 +224,7 @@ def test_mesh_and_macro_execution_have_separate_safe_paths(online_bot):
     assert "подача продолжится после подтверждения" in macro_text
     macro_button = [button for row in online_bot.api.edited[-1][3] for button in row
                     if button["callback_data"].startswith("ask:macro:")][0]
-    assert macro_button["text"] == "▶️ Загрузить пластик"
+    assert macro_button["text"] == "%s Загрузить пластик" % ui.macro_icon("LOAD_FILAMENT")
     handlers.handle_callback(online_bot, callback(macro_button["callback_data"]))
     confirmation_text = online_bot.api.edited[-1][2]
     assert "Запустить «Загрузить пластик»?" in confirmation_text
@@ -246,8 +246,9 @@ def test_every_owner_approved_cosmos_macro_has_a_russian_action_name():
     }
     keyboard = ui.kb_macros(list(expected), ["ref-%d" % i for i in range(len(expected))])
 
+    # Значок показывает группу действия; подпись обязана остаться русской.
     assert [row[0]["text"] for row in keyboard[:-1]] == [
-        "▶️ " + expected[name] for name in expected]
+        "%s %s" % (ui.macro_icon(name), expected[name]) for name in expected]
     assert all(ui.macro_description(name) != "назначение не описано в боте"
                for name in expected)
 
