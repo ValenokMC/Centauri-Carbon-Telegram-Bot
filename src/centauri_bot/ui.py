@@ -577,9 +577,14 @@ def height_map_text(mesh):
             "Профиль: <code>%s</code> · %d×%d точек\n"
             "Минимум: %.3f мм · максимум: %.3f мм\n"
             "Разброс: %.3f мм\n\n"
-            "Синий — ниже, красный — выше. Это сохранённая сетка: команда не запускает измерение."
+            "Синий — ниже, красный — выше.\n"
+            "Низ картинки — передний край стола, у дверцы; верх — дальняя стенка.\n\n"
+            "Профиль %s.\n"
+            "Это сохранённая сетка: команда не запускает измерение."
             % (html.escape(str(mesh.get("profile") or "—")), len(points),
-               len(points[0]) if points else 0, low, high, high - low))
+               len(points[0]) if points else 0, low, high, high - low,
+               "загружен в память принтера" if mesh.get("loaded")
+               else "лежит сохранённым, в память не загружен"))
 
 
 def history_text(jobs):
@@ -650,6 +655,45 @@ def kb_macros(names, refs):
                       "callback_data": "ask:macro:" + ref}])
     rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
     return rows
+
+
+def prompt_text(prompt):
+    """The dialog the printer is showing on its own screen, as a message."""
+    lines = ["<b>🖐 %s</b>" % html.escape(str(prompt.get("title") or "Принтер спрашивает"))]
+    for line in prompt.get("text") or []:
+        lines.append(html.escape(str(line)))
+    lines.append("")
+    lines.append("Это окно сейчас открыто на экране принтера. "
+                 "Кнопки ниже нажимают ровно то же самое.")
+    return "\n".join(lines)
+
+
+def kb_prompt(buttons, refs):
+    """Buttons the printer itself offered - the gcode is shown, not guessed."""
+    rows = [[{"text": "🖐 %s" % label, "callback_data": "prompt:" + ref}]
+            for (label, _gcode), ref in zip(buttons, refs)]
+    rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
+    return rows
+
+
+def kb_after_calibration(ref):
+    """Shown when a bed calibration ends: the mesh is still only in memory."""
+    return [[{"text": "💾 Сохранить калибровку", "callback_data": "ask:macro:" + ref}],
+            [{"text": "🗺 Показать карту стола", "callback_data": "mesh"}],
+            [{"text": "↩️ Назад к статусу", "callback_data": "refresh"}]]
+
+
+def macro_done_text(name, seconds, needs_save):
+    lines = ["<b>✅ «%s» — готово</b>" % html.escape(macro_label(name)),
+             "Заняло %s." % hhmm(seconds)]
+    if needs_save:
+        lines += ["",
+                  "Сетка снята, но живёт <b>только в памяти принтера</b>. "
+                  "Без сохранения она пропадёт при первом же перезапуске.",
+                  "",
+                  "Сохранение записывает её в printer.cfg и перезапускает прошивку — "
+                  "около полуминуты."]
+    return "\n".join(lines)
 
 
 def kb_bed_temps(names, refs):

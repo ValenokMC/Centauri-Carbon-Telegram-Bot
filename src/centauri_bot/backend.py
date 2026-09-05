@@ -21,6 +21,8 @@ HISTORY = "history"
 HEIGHT_MAP = "height-map"
 MACROS = "macros"
 RUN_MACRO = "run-macro"
+# Кнопка из подсказки самого принтера: разрешена вместе с макросами.
+PROMPT = "prompt-action"
 PAUSE = "pause"
 RESUME = "resume"
 CANCEL = "cancel"
@@ -74,7 +76,7 @@ def allowed_actions(cfg):
         if cfg.get("moonraker_allow_hardware_controls", False):
             allowed.update({LIGHT, SPEED, TEMPERATURE, FANS})
         if cfg.get("moonraker_macro_whitelist", []):
-            allowed.add(RUN_MACRO)
+            allowed.update({RUN_MACRO, PROMPT})
         # Heater, fan, light, speed, macros and arbitrary G-code intentionally
         # remain unavailable.  Their names and semantics are installation-
         # specific, so pretending there is a universal safe mapping is risky.

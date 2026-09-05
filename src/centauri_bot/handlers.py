@@ -239,6 +239,20 @@ def handle_callback(bot, query):
         show_macros(bot, chat, mid, is_photo)
         return
 
+    if data.startswith("prompt:"):
+        # Кнопка из окна, которое принтер сам открыл у себя на экране.
+        gcode = bot.resolve_prompt_choice(data.split(":", 1)[1])
+        if not gcode:
+            bot.api.answer_callback(query["id"],
+                                    "Кнопка устарела — обновите статус.")
+            return
+        ok, info = bot.perform(backend.PROMPT, gcode)
+        bot.api.answer_callback(query["id"],
+                                "Отправлено." if ok else "Не прошло: %s" % info)
+        with bot.lock:
+            bot.prompt_shown = None      # пусть следующий опрос покажет новое окно
+        return
+
     if data == "bedcalib":
         bot.api.answer_callback(query["id"])
         show_bed_calibration(bot, chat, mid, is_photo)

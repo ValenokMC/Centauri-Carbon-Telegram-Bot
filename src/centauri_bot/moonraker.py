@@ -23,8 +23,24 @@ QUERY_OBJECTS = (
 )
 
 
+# Что разрешено запускать по кнопке из подсказки принтера: имя макроса
+# (COSMOS зовёт свои служебные с подчёркивания) и до шести простых KEY=VALUE.
+# Команда приходит от прошивки, а не от пользователя, поэтому форма проверяется
+# жёстко: произвольный G-code так не пролезет.
+PROMPT_ACTION_RE = re.compile(
+    r"^_?[A-Z][A-Z0-9_]{0,63}(?: [A-Z0-9_]{1,32}=[-A-Za-z0-9_.]{1,32}){0,6}$")
+
+
 class MoonrakerError(Exception):
     """A safe, human-readable Moonraker failure."""
+
+
+class MoonrakerOffline(MoonrakerError):
+    """The request never got an answer: timeout or network.
+
+    Separate from errors Klipper itself reported, because a long macro
+    looks exactly like a dead link - see run_macro.
+    """
 
 
 def valid_base_url(value):
@@ -213,7 +229,7 @@ class Client(object):
             raise MoonrakerError("HTTP %s" % exc.code)
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
             reason = getattr(exc, "reason", exc)
-            raise MoonrakerError("нет связи: %s" % reason)
+            raise MoonrakerOffline("нет связи: %s" % reason)
         if len(raw) > max_bytes:
             raise MoonrakerError("ответ слишком большой")
         return raw
@@ -352,11 +368,33 @@ class Client(object):
                     names.append(name)
         return sorted(set(names))
 
+    def gcode_busy(self):
+        """True while Klipper is executing gcode - a macro, a print, anything."""
+        try:
+            result = self._json("/printer/objects/query?idle_timeout") or {}
+        except MoonrakerError:
+            return False
+        block = (result.get("status") or {}).get("idle_timeout") or {}
+        return str(block.get("state")) == "Printing"
+
     def run_macro(self, name):
+        """A timeout here is not a failure: long macros hold the request open.
+
+        /printer/gcode/script answers only when the script ends, and
+        BED_MESH_CALIBRATE runs about ten minutes - far past our 5 s.
+        Klipper flips idle_timeout to "Printing" while any gcode runs,
+        so when the link goes quiet we ask the printer who is right.
+        Errors Klipper reported itself still come through as failures.
+        """
         name = normalized_macro_name(name)
         if not name:
             raise MoonrakerError("некорректное имя макроса")
-        self._json("/printer/gcode/script", method="POST", form={"script": name})
+        try:
+            self._json("/printer/gcode/script", method="POST",
+                       form={"script": name})
+        except MoonrakerOffline:
+            if not self.gcode_busy():
+                raise
 
     def _script(self, lines):
         script = "\n".join(str(line) for line in lines if line)
@@ -398,11 +436,75 @@ class Client(object):
         jobs = result.get("jobs", []) if isinstance(result, dict) else []
         return [job for job in jobs if isinstance(job, dict)][:limit]
 
+    def gcode_store(self, count=40):
+        result = self._json("/server/gcode_store?count=%d" % int(count)) or {}
+        store = result.get("gcode_store")
+        return store if isinstance(store, list) else []
+
+    def active_prompt(self, count=40):
+        """The dialog COSMOS is showing on the printer screen, if any.
+
+        Klipper macros drive that screen with "action:prompt_*" lines in the
+        gcode responses - the same feed Mainsail listens to. Reading them lets
+        the bot put the very same buttons into Telegram, instead of leaving the
+        user to walk to the printer and press LOAD there.
+        """
+        prompt = shown = None
+        for entry in self.gcode_store(count):
+            text = str((entry or {}).get("message") or "").strip()
+            if text.startswith("//"):
+                text = text[2:].strip()
+            if not text.startswith("action:prompt"):
+                continue
+            command, _, tail = text[len("action:"):].partition(" ")
+            tail = tail.strip()
+            if command == "prompt_begin":
+                prompt = {"title": tail, "text": [], "buttons": []}
+            elif prompt is None:
+                continue
+            elif command == "prompt_text":
+                prompt["text"].append(tail)
+            elif command in ("prompt_button", "prompt_footer_button"):
+                label, _, rest = tail.partition("|")
+                gcode = rest.split("|")[0].strip()
+                if label.strip() and PROMPT_ACTION_RE.match(gcode):
+                    prompt["buttons"].append((label.strip(), gcode))
+            elif command == "prompt_show":
+                shown = prompt
+            elif command in ("prompt_end", "prompt_close"):
+                prompt = shown = None
+        return shown
+
+    def run_prompt_action(self, gcode):
+        """Run one command that the printer's own prompt offered."""
+        gcode = str(gcode or "").strip()
+        if not PROMPT_ACTION_RE.match(gcode):
+            raise MoonrakerError("недопустимая команда подсказки")
+        try:
+            self._json("/printer/gcode/script", method="POST", form={"script": gcode})
+        except MoonrakerOffline:
+            if not self.gcode_busy():
+                raise
+
     def bed_mesh(self):
+        """The saved mesh, whether or not a profile is loaded into memory.
+
+        profile_name is empty until something loads a profile - Mainsail does it
+        when its heightmap tab opens. Keying off it made the map look missing
+        unless the web UI happened to be open, so fall back to the saved
+        profiles: "default" first, since PRINT_START uses exactly that one.
+        """
         result = self._json("/printer/objects/query?bed_mesh") or {}
         mesh = ((result.get("status") or {}).get("bed_mesh") or {})
-        profile = str(mesh.get("profile_name") or "")
-        points = ((mesh.get("profiles") or {}).get(profile) or {}).get("points")
+        profiles = mesh.get("profiles") or {}
+        loaded = str(mesh.get("profile_name") or "")
+        порядок = [loaded, "default"] + sorted(profiles)
+        profile, points = "", None
+        for имя in порядок:
+            узел = profiles.get(имя) if имя else None
+            if isinstance(узел, dict) and isinstance(узел.get("points"), list):
+                profile, points = имя, узел["points"]
+                break
         if not profile or not isinstance(points, list):
             raise MoonrakerError("сохранённая сетка стола не найдена")
         try:
@@ -411,7 +513,7 @@ class Client(object):
             raise MoonrakerError("сетка стола содержит некорректные данные")
         if not rows or not rows[0] or any(len(row) != len(rows[0]) for row in rows):
             raise MoonrakerError("сетка стола неполная")
-        return {"profile": profile, "points": rows,
+        return {"profile": profile, "points": rows, "loaded": profile == loaded,
                 "mesh_min": mesh.get("mesh_min"), "mesh_max": mesh.get("mesh_max")}
 
     def _camera_snapshot_url(self):

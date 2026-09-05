@@ -29,6 +29,12 @@ def render(points, cell=42):
     cols = len(rows[0])
     if any(len(row) != cols for row in rows):
         raise ValueError("неровная сетка")
+    # Klipper выдаёт строки от минимального Y к максимальному, то есть
+    # первая строка - передний край стола, у дверцы. В картинке нулевая
+    # строка рисуется сверху, поэтому без переворота карта выходит вверх
+    # ногами: низ картинки оказывался дальней стенкой. Переворачиваем,
+    # чтобы вид совпадал с тем, как на стол смотрят - и с Mainsail.
+    rows = rows[::-1]
     values = [value for row in rows for value in row]
     low, high = min(values), max(values)
     spread = high - low or 1.0

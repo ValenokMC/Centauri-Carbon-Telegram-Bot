@@ -70,6 +70,12 @@ class Bot(object):
         self.frame_time = 0.0
         self.print_frame = None
         self.print_frame_time = 0.0
+        # Макрос, запущенный из бота: (имя, когда, видели ли его в работе).
+        # Нужен, чтобы доложить об окончании — HTTP-вызов возвращается сразу,
+        # а сама калибровка идёт ещё десять минут.
+        self.macro_watch = None
+        self.prompt_shown = None   # подпись показанной подсказки принтера
+        self.prompt_tick = 0
 
         self.lifecycle = ps.PrinterLifecycle(cfg.get("progress_every_pct") or 0)
         self.maintenance = ps.MaintenanceCounter()
@@ -178,6 +184,13 @@ class Bot(object):
 
     def consume_macro_confirmation(self, token):
         return self.confirmations.consume("macro", token)
+
+    def prepare_prompt_choices(self, actions):
+        """Bind the printer's own prompt commands to short callback tokens."""
+        return [self.confirmations.issue("prompt-choice", g) for g in actions]
+
+    def resolve_prompt_choice(self, token):
+        return self.confirmations.consume("prompt-choice", token)
 
     def prepare_object_choices(self, values):
         """Bind buttons to an exact object and the current print filename."""
@@ -411,6 +424,7 @@ class Bot(object):
                 backend.START: lambda: self.moonraker.start(value),
                 backend.DELETE: lambda: self.moonraker.delete(value),
                 backend.RUN_MACRO: lambda: self.moonraker.run_macro(value),
+                backend.PROMPT: lambda: self.moonraker.run_prompt_action(value),
                 backend.LIGHT: lambda: self.moonraker.set_light(value),
                 backend.SPEED: lambda: self.moonraker.set_speed(value),
                 backend.TEMPERATURE: lambda: self.moonraker.set_temperatures(value[0], value[1]),
@@ -421,6 +435,9 @@ class Bot(object):
                 return False, "эта команда не поддерживается Moonraker-режимом"
             try:
                 method()
+                if action == backend.RUN_MACRO:
+                    with self.lock:
+                        self.macro_watch = (value, self.clock(), False)
                 if action == backend.EXCLUDE_OBJECT:
                     with self.lock:
                         state = ((self.status or {}).get("ExcludeObject") or {})
@@ -597,6 +614,76 @@ class Bot(object):
                 nozzle = float((self.status or {}).get("TempOfNozzle") or 0)
             self.cooldown_pending = nozzle > float(self.cfg.get("cooldown_temp_c", 50))
 
+    def _watch_macro(self):
+        """Report when a macro started from the bot has finished.
+
+        /printer/gcode/script answers only when the script ends, so the button
+        press cannot tell us anything about the ten minutes that follow. Klipper
+        keeps idle_timeout at "Printing" while gcode runs, so we watch that.
+        """
+        with self.lock:
+            watch = self.macro_watch
+        if not watch:
+            return
+        name, started, seen_busy = watch
+        try:
+            busy = self.moonraker.gcode_busy()
+        except Exception:
+            return
+        if busy:
+            with self.lock:
+                self.macro_watch = (name, started, True)
+            return
+        # Klipper flips to "Printing" a moment after the command lands; without
+        # this grace the watcher would call every macro finished instantly.
+        if not seen_busy and self.clock() - started < 20:
+            return
+        with self.lock:
+            self.macro_watch = None
+        self._report_macro_done(name, int(self.clock() - started))
+
+    def _report_macro_done(self, name, seconds):
+        needs_save = name in ui.BED_CALIB_MACROS
+        keyboard = None
+        if needs_save and self.macro_allowed("SAVE_CALIBRATION"):
+            keyboard = ui.kb_after_calibration(
+                self.prepare_macro_choices(["SAVE_CALIBRATION"])[0])
+        try:
+            self.refresh_main(force_new=True,
+                              text=ui.macro_done_text(name, seconds, needs_save),
+                              keyboard=keyboard)
+        except Exception as e:
+            log.warning("macro report did not go out: %r", e)
+
+    def _watch_prompt(self):
+        """Mirror the dialog from the printer screen into Telegram."""
+        if not self.action_allowed(backend.PROMPT):
+            return
+        with self.lock:
+            self.prompt_tick += 1
+            tick = self.prompt_tick
+        if tick % 3:            # раз в три опроса: подсказка не срочная
+            return
+        try:
+            prompt = self.moonraker.active_prompt()
+        except Exception:
+            return
+        signature = None if not prompt else (
+            prompt["title"], tuple(prompt["text"]),
+            tuple(gcode for _label, gcode in prompt["buttons"]))
+        with self.lock:
+            same = signature == self.prompt_shown
+            self.prompt_shown = signature
+        if signature is None or same:
+            return
+        refs = self.prepare_prompt_choices(
+            [gcode for _label, gcode in prompt["buttons"]])
+        try:
+            self.refresh_main(force_new=True, text=ui.prompt_text(prompt),
+                              keyboard=ui.kb_prompt(prompt["buttons"], refs))
+        except Exception as e:
+            log.warning("prompt did not go out: %r", e)
+
     def _maybe_notify_cooldown(self, status):
         if not self.cooldown_pending:
             return
@@ -670,6 +757,8 @@ class Bot(object):
                 if had_reported:
                     self.show_connection_restored()
                 self._handle_status(status)
+                self._watch_macro()
+                self._watch_prompt()
             except Exception as e:
                 log.info("printer: Moonraker unavailable - %s", e)
                 with self.lock:
