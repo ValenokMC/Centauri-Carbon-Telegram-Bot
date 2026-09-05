@@ -127,6 +127,7 @@ ALLOWED = {
     "tests/test_orca_and_support.py": {"private-ipv4", "print-host"},
     "tests/test_templates.py": {"private-ipv4", "print-host"},
     # Documentation has to show the user what an address looks like.
+    "docs/centauri-carbon-2.md": {"private-ipv4"},
     "docs/configuration.md": {"private-ipv4"},
     "docs/installation.md": {"private-ipv4"},
     "docs/troubleshooting.md": {"private-ipv4", "print-host"},
@@ -137,6 +138,8 @@ ALLOWED = {
     "SECURITY.md": {"telegram-token", "private-ipv4", "print-host"},
     ".github/ISSUE_TEMPLATE/01-bug.yml": {"telegram-token", "private-ipv4"},
     ".github/ISSUE_TEMPLATE/02-installation.yml": {"private-ipv4"},
+    # Разведчик печатает пример команды запуска в своей же справке.
+    "tools/cc2-probe.py": {"private-ipv4"},
 }
 
 # Never scanned. Not exemptions - these simply must not exist in a clean tree,
