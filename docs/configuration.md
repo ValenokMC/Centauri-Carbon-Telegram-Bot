@@ -32,9 +32,19 @@ stopped. It is plain JSON.
 
 ## Printer backend
 
+The setup wizard asks the printer which firmware it runs before offering the
+choice, so most people never touch these keys by hand. `backend: "auto"` repeats
+that probe on every start: Moonraker is asked first on ports 80 and 7125, and the
+stock SDCP port 3030 is only consulted when Moonraker stays silent. Nothing is
+guessed - if neither answers, the bot exits with an explanation rather than
+running against the wrong protocol.
+
+Prefer a fixed `"sdcp"` or `"moonraker"` once the printer is known: it removes
+two network probes from every start and makes the mode obvious in the config.
+
 | Key | Default | What it does |
 |---|---|---|
-| `backend` | `"sdcp"` | `"sdcp"` for stock Elegoo V1.4.x; `"moonraker"` for OpenCentauri/COSMOS. |
+| `backend` | `"sdcp"` | `"sdcp"` for stock Elegoo V1.4.x, `"moonraker"` for OpenCentauri/COSMOS, or `"auto"` to ask the printer at startup. |
 | `moonraker_url` | `""` | Full Moonraker base URL. If blank in Moonraker mode, `http://<printer_ip>` is used. |
 | `moonraker_api_key` | `""` | Optional API key, sent only in the `X-Api-Key` header. Treat this file as secret. |
 | `moonraker_poll_sec` | `2` | Status polling interval. Moonraker documents one to two seconds for polling clients. |

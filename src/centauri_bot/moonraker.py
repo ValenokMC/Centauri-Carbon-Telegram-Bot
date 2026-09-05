@@ -254,6 +254,15 @@ class Client(object):
             raise MoonrakerError(str(message)[:240])
         return payload.get("result", payload)
 
+    def printer_info(self):
+        """Klipper's own identification: version, hostname, state.
+
+        Answers even when Klipper sits in an error state, which makes it the
+        honest probe for "is there a Moonraker on this address at all" - unlike
+        status(), which raises as soon as the object list comes back empty.
+        """
+        return self._json("/printer/info") or {}
+
     def status(self):
         query = "&".join(urllib.parse.quote(item) for item in QUERY_OBJECTS)
         result = self._json("/printer/objects/query?" + query)

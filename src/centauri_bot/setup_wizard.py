@@ -19,6 +19,7 @@ import sys
 import time
 
 from . import backend
+from . import detect as detect_mod
 from . import config as config_mod
 from . import moonraker
 from . import paths
@@ -228,19 +229,40 @@ def _describe(sender, chat):
                                   chat.get("id"))
 
 
-def ask_backend(existing=None):
-    head("5. Прошивка и протокол")
+НАЗВАНИЯ_РЕЖИМОВ = {
+    backend.SDCP: "Штатная прошивка Elegoo V1.4.x (SDCP)",
+    backend.MOONRAKER: "OpenCentauri / COSMOS (Moonraker)",
+}
+
+
+def ask_backend(host=None, existing=None):
+    """Determine the firmware, asking only when the printer stays silent."""
+    head("6. Прошивка и протокол")
     if existing in backend.BACKENDS and not ask_yes(
             "Сменить прежний режим %s?" % existing, default=False):
-        return existing
+        return existing, ""
+
+    угадано, url, пояснение = "", "", ""
+    if host:
+        say("  %sСпрашиваю сам принтер, что на нём стоит...%s" % (DIM, RESET))
+        угадано, url, пояснение = detect_mod.detect(host)
+    if угадано:
+        ok(пояснение)
+        if ask_yes("Использовать режим «%s»?" % НАЗВАНИЯ_РЕЖИМОВ[угадано],
+                   default=True):
+            return угадано, url
+    elif пояснение:
+        warn(пояснение)
+
+    say("  %sОпределить не вышло — выбери вручную.%s" % (DIM, RESET))
     return ask_choice("Что установлено на принтере", [
-        (backend.SDCP, "Штатная прошивка Elegoo V1.4.x (SDCP)"),
-        (backend.MOONRAKER, "OpenCentauri / COSMOS (Moonraker)"),
-    ])
+        (backend.SDCP, НАЗВАНИЯ_РЕЖИМОВ[backend.SDCP]),
+        (backend.MOONRAKER, НАЗВАНИЯ_РЕЖИМОВ[backend.MOONRAKER]),
+    ]), ""
 
 
 def ask_printer(existing=None):
-    head("6. Принтер")
+    head("5. Принтер")
     say("  %sАдрес принтера в локальной сети. Его видно на экране принтера:" % DIM)
     say("  Настройки → Сеть. Обычно это 192.168.x.x.%s" % RESET)
     while True:
@@ -250,9 +272,12 @@ def ask_printer(existing=None):
         bad("Это не похоже на IP-адрес или имя хоста.")
 
 
-def ask_moonraker(host, existing):
+def ask_moonraker(host, existing, detected_url=""):
     head("7. Moonraker")
-    default_url = existing.get("moonraker_url") or ("http://%s" % host)
+    # Адрес, на который Moonraker уже ответил при определении прошивки, важнее
+    # старой записи в конфиге: он проверен только что.
+    default_url = (detected_url or existing.get("moonraker_url")
+                   or ("http://%s" % host))
     while True:
         url = ask("Адрес Moonraker", default=default_url)
         if moonraker.valid_base_url(url):
@@ -370,11 +395,15 @@ def run(api_factory=TelegramAPI, argv=None):
             bad("Без chat_id бот не сможет тебе писать. Настройка не завершена.")
             return 1
 
-        backend_name = ask_backend(existing.get("backend") if existing else None)
+        # Адрес спрашиваем раньше режима: зная адрес, можно спросить сам
+        # принтер, какая на нём прошивка, вместо того чтобы гадать вслепую.
         host = ask_printer(existing.get("printer_ip") or None)
+        backend_name, detected_url = ask_backend(
+            host, existing.get("backend") if existing else None)
         moonraker_url, moonraker_api_key = "", ""
         if backend_name == backend.MOONRAKER:
-            moonraker_url, moonraker_api_key = ask_moonraker(host, existing)
+            moonraker_url, moonraker_api_key = ask_moonraker(
+                host, existing, detected_url)
         status_ok, camera_ok = check_printer(
             host, backend_name, moonraker_url, moonraker_api_key)
         if not status_ok and not ask_yes(

@@ -9,6 +9,12 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Firmware auto-detection. The setup wizard now asks the printer which firmware
+  it runs instead of making the user pick, and `backend: "auto"` repeats that
+  probe on every start. Moonraker answering `/printer/info` is positive proof of
+  OpenCentauri/COSMOS; the stock SDCP port is only consulted when it stays
+  silent, and an unanswered printer is reported rather than guessed at.
+
 - OpenCentauri/COSMOS support through a dependency-free Moonraker polling
   backend for status, files, webcam snapshots and explicitly enabled job
   controls.

@@ -3,6 +3,7 @@
 import sys
 
 from . import config as config_mod
+from . import detect as detect_mod
 from . import logging_setup
 from . import paths
 
@@ -25,6 +26,11 @@ def cmd_run():
         print(str(e))
         return 1
     logging_setup.configure(cfg.get("log_level", "INFO"))
+    try:
+        cfg = detect_mod.resolve(cfg, log=print)
+    except LookupError as e:
+        print("Определить прошивку не вышло: %s" % e)
+        return 1
     Bot(cfg).run()
     return 0
 

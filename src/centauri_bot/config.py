@@ -155,6 +155,10 @@ def validate(cfg):
         problems.append("owner_user_id must be a positive Telegram user id")
     if not valid_host(cfg.get("printer_ip")):
         problems.append("printer_ip is not a valid IP address or hostname")
+    # "auto" разрешено: конкретный бэкенд определится при запуске, опросом
+    # принтера. Проверять его тут нечем — сети на этом этапе трогать нельзя.
+    if str(cfg.get("backend", "")).strip().lower() == "auto":
+        return problems
     selected = backend_mod.name(cfg)
     if not selected:
         problems.append("backend must be 'sdcp' or 'moonraker'")
