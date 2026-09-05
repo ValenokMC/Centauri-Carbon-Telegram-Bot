@@ -26,7 +26,8 @@ SPEEDS = [50, 75, 100, 125, 150]
 
 FAN_KEYS = ("ModelFan", "BoxFan", "AuxiliaryFan")
 FAN_LEVELS = (0, 25, 50, 75, 100)
-FAN_HUMAN = {"ModelFan": "обдув", "BoxFan": "корпус", "AuxiliaryFan": "доп"}
+FAN_HUMAN = {"ModelFan": "обдув детали", "BoxFan": "вытяжка",
+             "AuxiliaryFan": "приток"}
 
 MACRO_UI = {
     "CHECK_CALIBRATION": (
@@ -241,9 +242,9 @@ def render(status, online, printer_name, header="", detailed=False,
         env = ["🏠 камера %.0f°" % (status.get("TempOfBox") or 0)]
         fans = status.get("CurrentFanSpeed") or {}
         if fans:
-            env.append("🌀 обдув %s%% · корпус %s%% · доп %s%%" % (
-                fans.get("ModelFan", 0), fans.get("BoxFan", 0),
-                fans.get("AuxiliaryFan", 0)))
+            env.append("🌀 обдув детали %s%% · приток %s%% · вытяжка %s%%" % (
+                fans.get("ModelFan", 0), fans.get("AuxiliaryFan", 0),
+                fans.get("BoxFan", 0)))
         light = (status.get("LightStatus") or {}).get("SecondLight")
         if light is not None:
             env.append("💡 свет горит" if light == 1 else "🌙 свет выключен")
@@ -394,8 +395,9 @@ def kb_fans(current, draft=None):
     rows = []
     # Five steps plus a label do not fit on one row - the buttons get clipped.
     # So the label with the chosen value gets its own line, with the steps under it.
-    for key, label in (("ModelFan", "🌀 обдув"), ("BoxFan", "🏠 корпус"),
-                       ("AuxiliaryFan", "💨 доп")):
+    for key, label in (("ModelFan", "🌀 обдув детали"),
+                       ("AuxiliaryFan", "💨 приток в корпус"),
+                       ("BoxFan", "🏠 вытяжка наружу")):
         val = draft.get(key, current.get(key, 0))
         shown = "выкл" if val == 0 else "%d%%" % val
         changed_mark = " ✎" if key in draft and draft[key] != current.get(key, 0) else ""

@@ -320,8 +320,8 @@ def _apply_fans(bot, chat, mid, query):
     target.update(draft)
     _ask_hardware(bot, chat, mid, query, backend.FANS, target,
                   "🌀 Применить вентиляторы",
-                  "установит обдув %d%%, корпус %d%% и дополнительный %d%%" % (
-                      target["ModelFan"], target["BoxFan"], target["AuxiliaryFan"]))
+                  "установит обдув детали %d%%, приток %d%% и вытяжку %d%%" % (
+                      target["ModelFan"], target["AuxiliaryFan"], target["BoxFan"]))
 
 
 def _apply_setting(bot, chat, mid, query, data):
