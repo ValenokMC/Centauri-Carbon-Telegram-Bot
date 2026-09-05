@@ -560,8 +560,10 @@ class Bot(object):
         elif event.kind == ps.PAUSED:
             text = self.render("⏸ <b>Печать на паузе</b>\nПродолжить — кнопкой ниже.\n")
         elif event.kind == ps.STALLED:
-            text = self.render("⚠️ <b>Печать прервалась — нужен ты</b>\n"
-                               "Неожиданная остановка, код %s.\n" % event.code)
+            # The status object carries Klipper's own reason for the stop;
+            # ui.stall_header prefers it over the bare numeric code.
+            status, _ = self._snapshot()
+            text = self.render(ui.stall_header(status, event.code))
         elif event.kind == ps.PROGRESS:
             text = self.render("📊 <b>Идёт печать</b>\n")
         elif event.kind == ps.FINISHED:

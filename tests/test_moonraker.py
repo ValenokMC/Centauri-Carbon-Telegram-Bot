@@ -2,6 +2,7 @@
 """Moonraker translation and HTTP client tests; no socket is opened."""
 import io
 import json
+import urllib.error
 import urllib.parse
 
 import pytest
@@ -159,14 +160,36 @@ def test_diagnostics_uses_only_documented_read_endpoints():
                     "warnings": ["one"], "failed_components": []}},
         {"result": {"software_version": "v0.13", "state": "ready"}},
         {"result": {"objects": ["webhooks", "toolhead", "extruder"]}},
+        {"result": {"system_memory": {"total": 117232, "available": 29300}}},
     ])
     client = moonraker.Client("http://printer.local", opener=fake)
     assert client.diagnostics() == {
         "moonraker_version": "v0.9", "klippy_state": "ready", "klippy_message": "",
         "klipper_version": "v0.13", "warnings": 1, "failed_components": 0,
-        "object_count": 3,
+        "object_count": 3, "memory_total": 117232, "memory_available": 29300,
     }
-    assert [request.get_method() for request, _ in fake.requests] == ["GET", "GET", "GET"]
+    assert [request.get_method() for request, _ in fake.requests] == ["GET"] * 4
+
+
+def test_diagnostics_still_answers_when_proc_stats_is_unavailable():
+    """An older Moonraker answers 404 here. The memory line is worth having,
+    but never at the price of the whole diagnostics card."""
+
+    class Failing(FakeOpener):
+        def __call__(self, request, timeout):
+            if request.full_url.endswith("/machine/proc_stats"):
+                raise urllib.error.HTTPError(request.full_url, 404, "no", None, None)
+            return FakeOpener.__call__(self, request, timeout)
+
+    fake = Failing([
+        {"result": {"moonraker_version": "v0.9", "klippy_state": "ready"}},
+        {"result": {"software_version": "v0.13", "state": "ready"}},
+        {"result": {"objects": ["webhooks"]}},
+    ])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    result = client.diagnostics()
+    assert result["klippy_state"] == "ready"
+    assert result["memory_total"] == 0 and result["memory_available"] == 0
 
 
 def test_macros_history_and_saved_mesh_use_read_endpoints_until_macro_is_confirmed():

@@ -614,8 +614,51 @@ def test_cancelled_job_with_stale_moonraker_metadata_has_no_print_controls():
 
 
 def test_unknown_status_code_is_described_not_hidden():
-    text = ui.render(status(77, "demo.gcode", progress=50), True, "Demo")
-    assert "77" in text
+    # 77 used to stand in for "unknown" here. It is now a named state - the
+    # Moonraker backend's "Klipper is not ready" - so an arbitrary code takes
+    # its place and the intent of this test is unchanged.
+    text = ui.render(status(42, "demo.gcode", progress=50), True, "Demo")
+    assert "42" in text
+
+
+def test_klipper_shutdown_shows_the_reason_not_a_bare_code():
+    payload = status(77, "demo.gcode", progress=50, Moonraker={
+        "KlippyState": "shutdown",
+        "Message": "MCU 'hotend' shutdown: Timer too close\n"
+                   "This often indicates the host computer is overloaded.",
+    })
+    text = ui.render(payload, True, "Demo")
+    assert "Timer too close" in text
+    assert "код 77" not in text
+    # Klipper appends four lines of generic host-load advice to every shutdown.
+    # Only the first line names the fault, so the rest must not reach the chat.
+    assert "overloaded" not in text
+
+
+def test_stall_header_prefers_the_reason_and_falls_back_to_the_code():
+    with_reason = ui.stall_header(
+        {"Moonraker": {"Message": "MCU 'mcu' shutdown: Timer too close"}}, 77)
+    assert "Timer too close" in with_reason
+    assert "77" not in with_reason
+
+    without_reason = ui.stall_header({}, 77)
+    assert "77" in without_reason
+
+
+def test_diagnostics_card_reports_board_memory():
+    text = ui.diagnostics_text({"memory_total": 117232, "memory_available": 29300})
+    assert "28.6" in text and "114" in text
+    assert "zram" not in text
+
+
+def test_diagnostics_card_warns_when_memory_looks_like_a_missing_zram():
+    # 15 MB free is what this board shows when COSMOS's zram swap never started.
+    text = ui.diagnostics_text({"memory_total": 117232, "memory_available": 15104})
+    assert "zram" in text and "/proc/swaps" in text
+
+
+def test_diagnostics_card_survives_a_backend_without_memory_data():
+    assert "нет данных" in ui.diagnostics_text({})
 
 
 def test_progress_bar_turns_yellow_when_stalled():

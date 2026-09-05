@@ -134,6 +134,36 @@ def cancelled_text(snapshot, reached):
                snapshot.get("CurrentLayer", "?"), snapshot.get("TotalLayer", "?")))
 
 
+def klipper_reason(status):
+    """The one line of Klipper's shutdown message that says what happened.
+
+    Klipper appends four lines of generic advice about host load to every
+    shutdown message. Only the first line names the actual fault, and only it
+    fits a phone screen, so the rest is deliberately dropped.
+    """
+    message = ((status or {}).get("Moonraker") or {}).get("Message") or ""
+    for line in str(message).splitlines():
+        line = line.strip()
+        if line:
+            return line[:160]
+    return ""
+
+
+def stall_header(status, code):
+    """Header for an unexpected stop.
+
+    A bare number ("код 77") tells the owner nothing while a print is dying.
+    Prefer Klipper's own reason and keep the number only as the fallback for
+    codes that arrived without one.
+    """
+    reason = klipper_reason(status)
+    if reason:
+        return ("⚠️ <b>Печать прервалась — нужен ты</b>\n"
+                "🛑 <i>%s</i>\n" % html.escape(reason))
+    return ("⚠️ <b>Печать прервалась — нужен ты</b>\n"
+            "Неожиданная остановка, код %s.\n" % code)
+
+
 # ------------------------------------------------------------------ status text
 
 def render(status, online, printer_name, header="", detailed=False,
@@ -187,6 +217,12 @@ def render(status, online, printer_name, header="", detailed=False,
     if filename and online:
         summary += " · %s%%" % print_info.get("Progress", 0)
     top.append(summary)
+    # The code alone is not actionable. Klipper says why it stopped, so that
+    # line goes directly under the summary where it will be read first.
+    if code == ps.STATUS_KLIPPY_ERROR:
+        reason = klipper_reason(status)
+        if reason:
+            top.append("🛑 <i>%s</i>" % html.escape(reason))
     if filename:
         top.append("📄 <i>%s</i>" % filename)
     # The camera is deliberately not shown here: a third emoji pushed the line
@@ -438,6 +474,32 @@ def files_text(files, limit=8, info=None):
     return "\n".join(lines)
 
 
+# Measured on this printer: with COSMOS's zram swap running, free memory held
+# above 26 MB through a whole print; with zram silently not started it sat at
+# 14-15 MB and prints died with "Timer too close". 20 MB separates the two
+# states cleanly, which is what makes free memory usable as a zram alarm.
+LOW_MEMORY_KB = 20 * 1024
+
+
+def memory_line(data):
+    """Free memory on the printer board, and a warning when it runs short.
+
+    Moonraker exposes no swap figure, so this is an indirect check: too little
+    free memory is what a missing zram swap looks like from the outside.
+    """
+    total = int(data.get("memory_total") or 0)
+    available = int(data.get("memory_available") or 0)
+    if not total or not available:
+        return "Память платы: <i>нет данных</i>"
+    line = "Память платы: <b>%.1f МБ</b> свободно из %.0f МБ" % (
+        available / 1024.0, total / 1024.0)
+    if available < LOW_MEMORY_KB:
+        line += ("\n⚠️ Мало свободной памяти — так выглядит непущенный zram. "
+                 "На принтере проверь <code>cat /proc/swaps</code>: там должен "
+                 "быть <code>/dev/zram0</code>.")
+    return line
+
+
 def diagnostics_text(data):
     """Compact HTML-safe COSMOS health card, never exposing configuration."""
     message = html.escape(str(data.get("klippy_message") or ""))[:240]
@@ -446,6 +508,7 @@ def diagnostics_text(data):
              "Klipper: <code>%s</code>" % html.escape(str(data.get("klipper_version") or "—")),
              "Состояние: <b>%s</b>" % html.escape(str(data.get("klippy_state") or "—")),
              "Объектов Klipper: %s" % int(data.get("object_count") or 0),
+             memory_line(data),
              "Предупреждений: %s · сбойных компонентов: %s" % (
                  int(data.get("warnings") or 0), int(data.get("failed_components") or 0))]
     if message:

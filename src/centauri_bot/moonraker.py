@@ -317,6 +317,16 @@ class Client(object):
         printer = self._json("/printer/info") or {}
         listed = self._json("/printer/objects/list") or {}
         objects = listed.get("objects", []) if isinstance(listed, dict) else []
+        # Board memory. Moonraker reports no swap figure, and COSMOS's zram has
+        # silently failed to start before - so free memory is the signal that is
+        # actually reachable from here. It sits near 15 MB when zram is missing
+        # and near 30 MB when it is running. Never let this break /diag: the
+        # rest of the card is more important than the memory line.
+        memory = {}
+        try:
+            memory = (self._json("/machine/proc_stats") or {}).get("system_memory") or {}
+        except MoonrakerError:
+            memory = {}
         return {
             "moonraker_version": str(server.get("moonraker_version") or "—"),
             "klippy_state": str(server.get("klippy_state") or printer.get("state") or "—"),
@@ -325,6 +335,8 @@ class Client(object):
             "warnings": len(server.get("warnings") or []),
             "failed_components": len(server.get("failed_components") or []),
             "object_count": len(objects),
+            "memory_total": int(_number(memory.get("total"))),
+            "memory_available": int(_number(memory.get("available"))),
         }
 
     def list_macros(self):
