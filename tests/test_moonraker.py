@@ -91,7 +91,9 @@ def test_normalize_print_states(state, code):
 
 
 def test_client_queries_documented_objects_and_sends_api_key_as_header():
-    fake = FakeOpener([{"result": {"status": printing_objects()}}])
+    # Второй ответ — метаданные файла: статус спрашивает у них оценку слайсера.
+    fake = FakeOpener([{"result": {"status": printing_objects()}},
+                       {"result": {"estimated_time": 3600}}])
     client = moonraker.Client("http://printer.local", api_key="top-secret",
                               opener=fake)
     status = client.status()
@@ -263,3 +265,49 @@ def test_camera_refuses_unapproved_external_host_before_fetching_image():
 ])
 def test_invalid_base_urls_are_rejected(value):
     assert not moonraker.valid_base_url(value)
+
+
+def test_remaining_time_comes_from_the_slicer_estimate():
+    """Позиция в файле занижает остаток: верхние слои идут медленнее нижних."""
+    fake = FakeOpener([{"result": {"status": printing_objects()}},
+                       {"result": {"estimated_time": 6949}}])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    info = client.status()["PrintInfo"]
+
+    assert info["TotalTicks"] == 6949
+    assert info["CurrentTicks"] == 600
+    # По файлу вышло бы 2400 всего, то есть остаток втрое короче настоящего.
+    assert "/server/files/metadata" in fake.requests[1][0].full_url
+
+
+def test_remaining_time_falls_back_to_file_position_without_metadata():
+    fake = FakeOpener([{"result": {"status": printing_objects()}},
+                       {"result": {}}])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    info = client.status()["PrintInfo"]
+
+    assert info["TotalTicks"] == 2400          # 600 с при прогрессе 0.25
+
+
+def test_slicer_estimate_is_dropped_once_the_print_runs_longer():
+    """Оценка, которую печать уже перерасходовала, показала бы ноль навсегда."""
+    objects = printing_objects()
+    objects["print_stats"]["print_duration"] = 9000
+    fake = FakeOpener([{"result": {"status": objects}},
+                       {"result": {"estimated_time": 6949}}])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    info = client.status()["PrintInfo"]
+
+    assert info["TotalTicks"] == 36000         # 9000 с при прогрессе 0.25
+
+
+def test_slicer_estimate_is_asked_once_per_file():
+    fake = FakeOpener([{"result": {"status": printing_objects()}},
+                       {"result": {"estimated_time": 6949}},
+                       {"result": {"status": printing_objects()}}])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    client.status()
+    client.status()
+
+    метаданные = [r for r, _ in fake.requests if "/server/files/metadata" in r.full_url]
+    assert len(метаданные) == 1

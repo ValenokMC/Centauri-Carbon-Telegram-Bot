@@ -112,7 +112,7 @@ def normalize_exclude_state(objects):
     }
 
 
-def normalize_status(objects):
+def normalize_status(objects, estimated_time=0):
     """Translate Klipper objects to the stable status shape used by the UI."""
     objects = objects or {}
     hooks = objects.get("webhooks") or {}
@@ -151,7 +151,14 @@ def normalize_status(objects):
                             _number(display.get("progress")))
     progress = max(0, min(100, int(round(progress_fraction * 100))))
     elapsed = max(0, int(_number(stats.get("print_duration"))))
-    total = int(elapsed / progress_fraction) if progress_fraction > 0 else 0
+    # Сколько всего займёт печать. Позиция в файле — плохая мера времени:
+    # первые слои идут медленно, заполнение быстро, и линейный пересчёт
+    # занижает остаток тем сильнее, чем ближе верх детали. Поэтому берём
+    # оценку слайсера, ту же, что показывает экран принтера. Она приходит из
+    # метаданных файла; если их нет, остаётся старый пересчёт по файлу.
+    by_file = int(elapsed / progress_fraction) if progress_fraction > 0 else 0
+    by_slicer = max(0, int(_number(estimated_time)))
+    total = by_slicer if by_slicer > elapsed else by_file
     info = stats.get("info") or {}
     filename = str(stats.get("filename") or card.get("file_path") or "")
     position = move.get("gcode_position") or [0, 0, 0, 0]
@@ -211,6 +218,7 @@ class Client(object):
         self.opener = opener or urllib.request.urlopen
         self.camera_url = str(camera_url or "").strip()
         self.allow_external_camera = bool(allow_external_camera)
+        self._eta_cache = ("", 0)
 
     def _url(self, path):
         return urllib.parse.urljoin(self.base_url + "/", path.lstrip("/"))
@@ -263,13 +271,36 @@ class Client(object):
         """
         return self._json("/printer/info") or {}
 
+    def estimated_time(self, filename):
+        """Slicer estimate for this file, in seconds; 0 when unknown.
+
+        Cached per file name: metadata never changes while a job runs, and this
+        is called on every status poll.
+        """
+        filename = str(filename or "")
+        if not filename:
+            return 0
+        if self._eta_cache[0] == filename:
+            return self._eta_cache[1]
+        seconds = 0
+        try:
+            meta = self._json("/server/files/metadata?" + urllib.parse.urlencode(
+                {"filename": filename})) or {}
+            seconds = max(0, int(_number(meta.get("estimated_time"))))
+        except MoonrakerError:
+            seconds = 0
+        self._eta_cache = (filename, seconds)
+        return seconds
+
     def status(self):
         query = "&".join(urllib.parse.quote(item) for item in QUERY_OBJECTS)
         result = self._json("/printer/objects/query?" + query)
         objects = (result or {}).get("status") or {}
         if not objects:
             raise MoonrakerError("пустой статус Klipper")
-        return normalize_status(objects)
+        stats = objects.get("print_stats") or {}
+        return normalize_status(
+            objects, self.estimated_time(stats.get("filename")))
 
     def list_files(self):
         return [item["path"] for item in self.list_file_records()]
