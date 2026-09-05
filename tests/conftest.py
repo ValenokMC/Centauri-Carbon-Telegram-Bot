@@ -9,6 +9,7 @@ Two things are guaranteed here, and there is a test that checks each of them:
     autouse, so even a test that forgets to ask for it is isolated.
 """
 import os
+import socket
 import sys
 
 import pytest
@@ -18,6 +19,25 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from centauri_bot import config as config_mod   # noqa: E402
 from centauri_bot import paths, storage         # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def no_real_network(monkeypatch):
+    """Make the "no test opens a socket" promise above impossible to forget.
+
+    Firmware detection knocks on TCP ports to tell a stock printer from one
+    running COSMOS. Left unguarded, a wizard test reached the real network and
+    then passed or failed depending on what happened to be listening on the
+    machine running it - green on CI, red on a desk with a printer on it.
+
+    A test that means to speak MQTT or HTTP replaces the socket layer with its
+    own fake afterwards, and its patch wins over this one.
+    """
+    def refuse(*args, **kwargs):
+        raise OSError("тест попытался открыть настоящий сокет")
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket, "create_connection", refuse)
 
 
 @pytest.fixture(autouse=True)

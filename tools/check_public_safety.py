@@ -128,6 +128,7 @@ ALLOWED = {
     "tests/test_templates.py": {"private-ipv4", "print-host"},
     # Documentation has to show the user what an address looks like.
     "docs/centauri-carbon-2.md": {"private-ipv4"},
+    "docs/centauri-carbon-2-probe_RU.md": {"private-ipv4"},
     "docs/configuration.md": {"private-ipv4"},
     "docs/installation.md": {"private-ipv4"},
     "docs/troubleshooting.md": {"private-ipv4", "print-host"},

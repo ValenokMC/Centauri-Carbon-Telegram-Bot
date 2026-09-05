@@ -68,6 +68,9 @@ somebody else's printer, and it should be safe to hand to a stranger.
 python tools/cc2-probe.py --ip 192.168.1.50 --code 12345678
 ```
 
+Step-by-step instructions for whoever runs it, in Russian, are in
+[centauri-carbon-2-probe_RU.md](centauri-carbon-2-probe_RU.md).
+
 The access code never reaches the log - it is replaced on the way out. The
 serial number does, because it is part of every topic name; anyone uneasy about
 that can replace it before sending the file on.
