@@ -668,12 +668,37 @@ def prompt_text(prompt):
     return "\n".join(lines)
 
 
+# Styles COSMOS puts on a prompt button when the choice is not a small one.
+RISKY_PROMPT_STYLES = ("warning", "error")
+
+
+def prompt_is_risky(style):
+    return str(style or "").lower() in RISKY_PROMPT_STYLES
+
+
 def kb_prompt(buttons, refs):
-    """Buttons the printer itself offered - the gcode is shown, not guessed."""
-    rows = [[{"text": "🖐 %s" % label, "callback_data": "prompt:" + ref}]
-            for (label, _gcode), ref in zip(buttons, refs)]
+    """Buttons the printer itself offered.
+
+    A button the firmware marked as a warning gets a confirmation screen
+    instead of firing on the tap. COSMOS marks "Calibrate All" that way, and it
+    sits one tap away from "Close" on the calibration prompt - a full
+    calibration started by a misplaced thumb would be an expensive surprise.
+    """
+    rows = []
+    for (label, _gcode, style), ref in zip(buttons, refs):
+        risky = prompt_is_risky(style)
+        rows.append([{"text": "%s %s" % ("⚠️" if risky else "🖐", label),
+                      "callback_data": ("askprompt:" if risky else "prompt:") + ref}])
     rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
     return rows
+
+
+def prompt_confirm_text(label, gcode):
+    return ("<b>⚠️ %s</b>\n\n"
+            "Принтер пометил эту кнопку как опасную.\n\n"
+            "Будет отправлено: <code>%s</code>\n\n"
+            "Если сейчас идёт печать — она пострадает."
+            % (html.escape(label), html.escape(gcode)))
 
 
 def kb_after_calibration(ref):

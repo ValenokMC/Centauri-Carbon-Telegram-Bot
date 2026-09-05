@@ -506,9 +506,15 @@ class Client(object):
                 prompt["text"].append(tail)
             elif command in ("prompt_button", "prompt_footer_button"):
                 label, _, rest = tail.partition("|")
-                gcode = rest.split("|")[0].strip()
+                parts = rest.split("|")
+                gcode = parts[0].strip()
+                # The third field is the printer's own styling, and COSMOS uses
+                # it to mark the dangerous choices - "Calibrate All" arrives as
+                # "warning". That is the firmware telling us which buttons must
+                # not fire on a single tap, so it is carried through.
+                style = parts[1].strip().lower() if len(parts) > 1 else ""
                 if label.strip() and PROMPT_ACTION_RE.match(gcode):
-                    prompt["buttons"].append((label.strip(), gcode))
+                    prompt["buttons"].append((label.strip(), gcode, style))
             elif command == "prompt_show":
                 shown = prompt
             elif command in ("prompt_end", "prompt_close"):

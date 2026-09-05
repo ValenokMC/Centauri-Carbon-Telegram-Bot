@@ -239,6 +239,22 @@ def handle_callback(bot, query):
         show_macros(bot, chat, mid, is_photo)
         return
 
+    if data.startswith("askprompt:"):
+        # Кнопка, которую сам принтер пометил предупреждением.
+        gcode = bot.resolve_prompt_choice(data.split(":", 1)[1])
+        if not gcode:
+            bot.api.answer_callback(query["id"],
+                                    "Кнопка устарела — обновите статус.")
+            return
+        token = bot.prepare_prompt_choices([gcode])[0]
+        bot.api.answer_callback(query["id"])
+        bot.api.edit_message(chat, mid,
+                             ui.prompt_confirm_text(gcode, gcode),
+                             keyboard=ui.kb_confirm("prompt:%s" % token,
+                                                    "отправить"),
+                             is_photo=is_photo)
+        return
+
     if data.startswith("prompt:"):
         # Кнопка из окна, которое принтер сам открыл у себя на экране.
         gcode = bot.resolve_prompt_choice(data.split(":", 1)[1])
@@ -547,6 +563,17 @@ def _do_action(bot, chat, mid, query, what):
             note = ("🧩 Модель <b>%s</b> убрана из текущей печати.\n\n"
                     % escape(ui.object_label(value["name"]))) if ok \
                 else "⚠️ Убрать модель не вышло (%s).\n\n" % escape(info)
+    elif what.startswith("prompt:"):
+        # Подтверждённая кнопка подсказки, помеченной принтером как опасная.
+        gcode = bot.resolve_prompt_choice(what.split(":", 1)[1])
+        if not gcode:
+            note = "⚠️ Подтверждение устарело.\n\n"
+        else:
+            ok, info = bot.perform(backend.PROMPT, gcode)
+            note = ("🖐 Отправлено принтеру.\n\n" if ok
+                    else "⚠️ Не прошло: %s\n\n" % info)
+        with bot.lock:
+            bot.prompt_shown = None
     elif what.startswith("macro:"):
         token = what.split(":", 1)[1]
         name = bot.consume_macro_confirmation(token)

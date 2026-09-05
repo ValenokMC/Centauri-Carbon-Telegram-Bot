@@ -670,14 +670,14 @@ class Bot(object):
             return
         signature = None if not prompt else (
             prompt["title"], tuple(prompt["text"]),
-            tuple(gcode for _label, gcode in prompt["buttons"]))
+            tuple(gcode for _label, gcode, _style in prompt["buttons"]))
         with self.lock:
             same = signature == self.prompt_shown
             self.prompt_shown = signature
         if signature is None or same:
             return
         refs = self.prepare_prompt_choices(
-            [gcode for _label, gcode in prompt["buttons"]])
+            [gcode for _label, gcode, _style in prompt["buttons"]])
         try:
             self.refresh_main(force_new=True, text=ui.prompt_text(prompt),
                               keyboard=ui.kb_prompt(prompt["buttons"], refs))
