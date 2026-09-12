@@ -35,6 +35,7 @@ def test_an_upload_answer_without_the_result_wrapper_is_understood():
 
 @pytest.mark.parametrize("name,data", [
     ("notes.txt", b"x"), ("../a.gcode", b"x"), ("dir/a.gcode", b"x"), ("a.gcode", b""),
+    ("a\r\nContent-Disposition: form-data; name=\"root\"\r\n\r\nconfig.gcode", b"x"),
 ])
 def test_upload_refuses_bad_names_and_empty_files_before_any_request(name, data):
     api, fake = client([])

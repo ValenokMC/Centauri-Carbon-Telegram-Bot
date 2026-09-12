@@ -383,7 +383,9 @@ class Client(object):
         does. The multipart body is built by hand to stay dependency-free.
         """
         name = normalized_gcode_path(filename)
-        if not name or "/" in name:
+        # The name goes into a multipart header: a line break there would let
+        # it add form fields of its own.
+        if not name or "/" in name or not name.isprintable():
             raise MoonrakerError("некорректное имя G-code")
         data = bytes(data or b"")
         if not data:
