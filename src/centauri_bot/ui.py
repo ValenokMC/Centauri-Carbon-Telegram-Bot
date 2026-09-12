@@ -465,7 +465,7 @@ def kb_fans(current, draft=None):
 
 
 def kb_files(files, allow_control=True, limit=8, can_start=None, refs=None,
-             can_delete=False, delete_refs=None):
+             can_delete=False, delete_refs=None, delete_all_ref=None):
     rows = []
     can_start = allow_control if can_start is None else bool(can_start)
     if can_start:
@@ -480,6 +480,9 @@ def kb_files(files, allow_control=True, limit=8, can_start=None, refs=None,
             ref = delete_refs[i] if delete_refs and i < len(delete_refs) else str(i)
             rows.append([{"text": "🗑 Удалить %s" % base[:29],
                           "callback_data": "ask:delete:%s" % ref}])
+        if delete_all_ref and len(files) > 1:
+            rows.append([{"text": "🗑 Удалить все файлы (%d)" % len(files),
+                          "callback_data": "ask:delall:%s" % delete_all_ref}])
     rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
     return rows
 

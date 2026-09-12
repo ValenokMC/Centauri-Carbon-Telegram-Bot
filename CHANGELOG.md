@@ -19,6 +19,11 @@ this project uses [Semantic Versioning](https://semver.org/).
   that could not be made, turns into a question with the reasons. Jobs survive
   a restart. New settings: `schedule_utc_offset`, `schedule_reminder_min`,
   `schedule_late_grace_min`.
+- "Delete all files" on the COSMOS file screen, behind the existing
+  `moonraker_allow_file_delete` opt-in. The confirmation is one-use and bound to
+  the list as it was shown, so a file uploaded meanwhile is kept; the file being
+  printed is always kept, and planned starts that would lose their file are
+  counted in the question.
 
 - Firmware auto-detection. The setup wizard now asks the printer which firmware
   it runs instead of making the user pick, and `backend: "auto"` repeats that
@@ -37,6 +42,9 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The "printer cooled down" notice repeats the frame taken when the print
+  ended, with the bed still up, instead of a fresh frame of the lowered bed.
+  "Refresh" still shows the live camera.
 - The five owner-approved COSMOS macros now use clear Russian action names in
   Telegram. The macro screen and confirmation explain what each action does;
   the original Klipper name remains visible only as a technical identifier.

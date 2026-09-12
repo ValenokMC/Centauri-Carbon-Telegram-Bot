@@ -74,9 +74,13 @@ def show_files(bot, chat, mid=None, is_photo=False, force_new=False):
     refs = bot.prepare_file_choices(files[:8]) if can_start else None
     can_delete = bot.action_allowed(backend.DELETE)
     delete_refs = bot.prepare_file_choices(files[:8], "delete-choice") if can_delete else None
+    # Bound to the list as shown: a file uploaded after this screen is never
+    # swept away by a button that did not know about it.
+    delete_all_ref = (bot.confirmations.issue("delete-all-choice", tuple(files))
+                      if can_delete and len(files) > 1 else None)
     rows = ui.kb_files(files, allow_control=bot.cfg.get("allow_control", True),
                        can_start=can_start, refs=refs, can_delete=can_delete,
-                       delete_refs=delete_refs)
+                       delete_refs=delete_refs, delete_all_ref=delete_all_ref)
     if force_new:
         bot.refresh_main(force_new=True, text=body, keyboard=rows)
     elif mid:
@@ -463,6 +467,31 @@ def _ask_confirmation(bot, chat, mid, query, what, is_photo):
         bot.api.answer_callback(query["id"])
         bot.api.send_message(chat, "🗑 <b>Удалить файл?</b>\n<i>%s</i>\n\nВосстановить его с принтера будет нельзя." % escape(path.rsplit("/", 1)[-1]), keyboard=ui.kb_confirm("delete:%s" % token, "удалить"))
         return
+    if what.startswith("delall:"):
+        if not bot.action_allowed(backend.DELETE):
+            bot.api.answer_callback(query["id"], CONTROL_OFF.strip())
+            return
+        paths = bot.confirmations.consume("delete-all-choice", what.split(":", 1)[1])
+        if not paths:
+            bot.api.answer_callback(query["id"], "Список устарел. Открой файлы заново.")
+            return
+        with bot.lock:
+            current = (bot.status or {}).get("PrintInfo", {}).get("Filename")
+        paths = tuple(path for path in paths if path != current)
+        if not paths:
+            bot.api.answer_callback(query["id"], "Удалять нечего: остался только файл текущей печати.")
+            return
+        token = bot.confirmations.issue("delete-all", paths)
+        planned = sum(1 for job in bot.scheduled_jobs() if job.get("path") in paths) \
+            if bot.schedule_available() else 0
+        text = "🗑 <b>Удалить все файлы с принтера (%d)?</b>\n\nВосстановить их будет нельзя." % len(paths)
+        if current:
+            text += "\nФайл текущей печати останется."
+        if planned:
+            text += "\n⏰ Запланированных стартов с этими файлами: %d — они не смогут начаться." % planned
+        bot.api.answer_callback(query["id"])
+        bot.api.send_message(chat, text, keyboard=ui.kb_confirm("delall:%s" % token, "удалить все"))
+        return
     if what.startswith("exclude:"):
         if not bot.action_allowed(backend.EXCLUDE_OBJECT):
             bot.api.answer_callback(query["id"], CONTROL_OFF.strip())
@@ -521,7 +550,7 @@ def _ask_confirmation(bot, chat, mid, query, what, is_photo):
 def _do_action(bot, chat, mid, query, what):
     note = ""
     action = (backend.START if what.startswith(("print:", "sched:", "schedrun:")) else
-              backend.DELETE if what.startswith("delete:") else
+              backend.DELETE if what.startswith(("delete:", "delall:")) else
               backend.EXCLUDE_OBJECT if what.startswith("exclude:") else
               backend.RUN_MACRO if what.startswith("macro:") else None)
     value = None
@@ -596,6 +625,28 @@ def _do_action(bot, chat, mid, query, what):
                 note = "🗑 Файл удалён.\n\n" if ok else "⚠️ Удаление не прошло (%s).\n\n" % info
         else:
             note = "⚠️ Подтверждение устарело. Открой файлы заново.\n\n"
+    elif what.startswith("delall:"):
+        paths = bot.confirmations.consume("delete-all", what.split(":", 1)[1])
+        if not paths:
+            note = "⚠️ Подтверждение устарело. Открой файлы заново.\n\n"
+        else:
+            removed, failed = 0, []
+            for path in paths:
+                # The print may have started while the question was open.
+                with bot.lock:
+                    current = (bot.status or {}).get("PrintInfo", {}).get("Filename")
+                if path == current:
+                    continue
+                ok, info = bot.perform(backend.DELETE, path)
+                if ok:
+                    removed += 1
+                else:
+                    failed.append(info)
+            note = "🗑 Удалено файлов: %d.\n\n" % removed
+            if failed:
+                note = "⚠️ Удалено %d, не удалилось %d (%s).\n\n" % (
+                    removed, len(failed), escape(str(failed[0])))
+            bot.refresh_files()
     elif what.startswith("exclude:"):
         token = what.split(":", 1)[1]
         value = bot.consume_object_confirmation(token)

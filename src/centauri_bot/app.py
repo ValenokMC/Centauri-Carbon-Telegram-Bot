@@ -65,6 +65,7 @@ class Bot(object):
         self.files = []
         self.file_info = {}
         self.cooldown_pending = False
+        self.cooldown_photo = None
         self.fan_draft = None
         self.offline_since = None
         self.loss_reported = False
@@ -748,6 +749,10 @@ class Bot(object):
             with self.lock:
                 nozzle = float((self.status or {}).get("TempOfNozzle") or 0)
             self.cooldown_pending = nozzle > float(self.cfg.get("cooldown_temp_c", 50))
+            # By the time the nozzle has cooled the bed has long dropped, and a
+            # fresh frame shows the part sunk out of view. The cooled notice
+            # repeats the finish frame; "Refresh" still shows the live camera.
+            self.cooldown_photo = photo if self.cooldown_pending else None
 
     def _watch_macro(self):
         """Report when a macro started from the bot has finished.
@@ -829,9 +834,11 @@ class Bot(object):
         if info.get("Status") == ps.STATUS_PRINTING or nozzle > threshold or target > 0:
             return
         self.cooldown_pending = False
+        shot, self.cooldown_photo = self.cooldown_photo, None
         try:
             self.refresh_main(force_new=True, text=self.render(
-                "❄️ <b>Принтер остыл</b>\nСопло %.0f°C — можно безопасно заняться деталью.\n" % nozzle))
+                "❄️ <b>Принтер остыл</b>\nСопло %.0f°C — можно безопасно заняться деталью.\n" % nozzle),
+                photo=shot or False)
         except Exception as e:
             log.warning("cooldown notification did not go out: %r", e)
 

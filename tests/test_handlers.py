@@ -449,6 +449,63 @@ def test_delete_requires_a_fresh_one_use_confirmation_and_never_targets_current_
     assert deleted == ["old.gcode"]
 
 
+def _delete_all_bot(online_bot, files, deleted):
+    online_bot.cfg.update({"backend": "moonraker", "moonraker_allow_file_delete": True})
+    online_bot.backend_name = backend.MOONRAKER
+    online_bot.moonraker = type("Moonraker", (), {"delete": lambda self, path: deleted.append(path)})()
+    online_bot.files = list(files)
+    online_bot.refresh_files = lambda: (True, "Moonraker")
+
+
+def _delete_all_button(online_bot):
+    handlers.show_files(online_bot, OWNER, force_new=True)
+    found = [button for row in online_bot.api.sent[-1][2] for button in row
+             if button["callback_data"].startswith("ask:delall:")]
+    return found[0] if found else None
+
+
+def test_delete_all_removes_the_listed_files_once_after_confirmation(online_bot):
+    deleted = []
+    _delete_all_bot(online_bot, ["a.gcode", "b.gcode", "c.gcode"], deleted)
+    online_bot.status = status(0)
+
+    button = _delete_all_button(online_bot)
+    assert "(3)" in button["text"]
+    handlers.handle_callback(online_bot, callback(button["callback_data"]))
+    assert deleted == []
+    assert "Удалить все файлы" in online_bot.api.sent[-1][1]
+
+    # A file uploaded while the question is open is not part of what was confirmed.
+    online_bot.files.append("new.gcode")
+    confirm = online_bot.api.sent[-1][2][0][0]["callback_data"]
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert deleted == ["a.gcode", "b.gcode", "c.gcode"]
+
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert deleted == ["a.gcode", "b.gcode", "c.gcode"]
+
+
+def test_delete_all_keeps_the_file_being_printed(online_bot):
+    deleted = []
+    _delete_all_bot(online_bot, ["current.gcode", "old.gcode"], deleted)
+    online_bot.status = status(13, "current.gcode", progress=5)
+
+    handlers.handle_callback(online_bot, callback(_delete_all_button(online_bot)["callback_data"]))
+    assert "текущей печати останется" in online_bot.api.sent[-1][1]
+    handlers.handle_callback(online_bot, callback(online_bot.api.sent[-1][2][0][0]["callback_data"]))
+    assert deleted == ["old.gcode"]
+
+
+def test_delete_all_is_absent_without_delete_permission_or_with_one_file(online_bot):
+    deleted = []
+    _delete_all_bot(online_bot, ["only.gcode"], deleted)
+    assert _delete_all_button(online_bot) is None
+
+    online_bot.files = ["a.gcode", "b.gcode"]
+    online_bot.cfg["moonraker_allow_file_delete"] = False
+    assert _delete_all_button(online_bot) is None
+
+
 def test_pause_asks_for_confirmation(online_bot):
     handlers.handle_callback(online_bot, callback("ask:pause"))
     text = online_bot.api.edited[-1][2]
