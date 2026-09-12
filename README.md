@@ -127,6 +127,10 @@ Consent can be withdrawn by re-running `Setup.cmd`. Details: [PRIVACY.md](PRIVAC
 - Nozzle and bed heating presets
 - All three fans, collected as a draft and sent in one command
 - Browse the files on the printer and start one
+- On COSMOS, send a `.gcode` into the chat: it is uploaded to the printer and
+  started now or at a set time. A planned start first checks that the printer
+  is idle, the file is still there, the filament sensor sees filament and
+  nothing has printed since — otherwise it asks instead of starting
 
 The full list above applies to stock SDCP firmware. On COSMOS,
 pause/resume/cancel and single-object exclusion share the job-control opt-in;

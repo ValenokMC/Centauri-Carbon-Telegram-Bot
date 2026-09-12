@@ -19,12 +19,14 @@ Written for someone about to change the code. If you only want to run the bot,
                         ├──────────────────────────────┤
                         │  keepalive_loop               │
                         │  refresh_loop                 │
+                        │  schedule_loop                │
                         └──────────────────────────────┘
    camera          ◄──── SDCP MJPEG or Moonraker snapshot (on demand)
    stats endpoint  ◄──── telemetry_loop (only after explicit opt-in, monthly)
 ```
 
-Four normal threads, plus one optional statistics thread, one shared `Bot`
+Four normal threads (five on COSMOS, where `schedule_loop` reminds about and
+starts planned prints), plus one optional statistics thread, one shared `Bot`
 object, one re-entrant lock around the mutable
 parts. No inbound sockets: everything is an outgoing connection.
 
@@ -34,7 +36,7 @@ parts. No inbound sockets: everything is an outgoing connection.
 |---|---|---|
 | `paths.py` | Where user data lives | filesystem |
 | `config.py` | Defaults, validation, atomic save, **redaction** | filesystem |
-| `storage.py` | `state.json`, `maintenance.json`, seen status codes | filesystem |
+| `storage.py` | `state.json`, `maintenance.json`, `schedule.json`, seen status codes | filesystem |
 | `logging_setup.py` | Rotating logs with the token scrubbed | filesystem |
 | `telegram_api.py` | Bot API over a persistent HTTPS connection | network |
 | `sdcp.py` | WebSocket framing, SDCP commands, MJPEG grab | network |
@@ -43,13 +45,14 @@ parts. No inbound sockets: everything is an outgoing connection.
 | `printer_state.py` | **Pure.** Status codes → lifecycle events | no |
 | `ui.py` | **Pure.** Status text and keyboards | no |
 | `support.py` | **Pure.** Links and the 30-day rule | no |
+| `schedule.py` | **Pure.** Delayed starts: reading a start time, jobs, the start-or-ask decision | no |
 | `telemetry.py` | Explicit opt-in, minimal monthly heartbeat | network, filesystem |
 | `handlers.py` | What a button or a command does | via `Bot` |
 | `app.py` | The threads and the shared state | via the above |
 | `setup_wizard.py` | First run | network, filesystem |
 | `autostart.py` | Task Scheduler registration | subprocess |
 
-The four **pure** modules hold most of the logic worth getting right, and can be
+The five **pure** modules hold most of the logic worth getting right, and can be
 tested by calling a function and looking at what comes back. That is deliberate:
 they were extracted from a single 1300-line script, and the extraction was only
 safe because characteristic tests were written against the original behaviour

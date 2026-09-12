@@ -9,6 +9,17 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Delayed print start on COSMOS. A `.gcode` sent into the chat is uploaded to
+  the printer and offered for printing now or at a set time: quick choices
+  ("in 2 h", "tomorrow 07:00") or a typed time in the owner's zone. A reminder
+  with a camera frame goes out before the start, and `/plan` lists and cancels
+  planned starts. At the start time the print begins on its own only when the
+  printer is idle, the file is still there, the filament sensor sees filament
+  and no print has run since the job was planned; any doubt, including a check
+  that could not be made, turns into a question with the reasons. Jobs survive
+  a restart. New settings: `schedule_utc_offset`, `schedule_reminder_min`,
+  `schedule_late_grace_min`.
+
 - Firmware auto-detection. The setup wizard now asks the printer which firmware
   it runs instead of making the user pick, and `backend: "auto"` repeats that
   probe on every start. Moonraker answering `/printer/info` is positive proof of

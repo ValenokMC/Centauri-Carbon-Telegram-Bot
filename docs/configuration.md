@@ -84,6 +84,33 @@ than this first backend can safely infer.
 | `night_from` | `22` | Hour night starts, local time. |
 | `night_to` | `8` | Hour night ends. The window may cross midnight. |
 
+## Delayed starts
+
+Needs `backend: "moonraker"` and `moonraker_allow_remote_start: true`. Send a
+`.gcode` file into the chat and the bot uploads it to the printer, then offers
+to start it now or at a set time. A file already on the printer can be planned
+from its print confirmation. Telegram hands bots files of up to 20 MB: upload
+anything larger from the slicer and plan it from the file list. `/plan` lists
+the planned starts and cancels them.
+
+| Key | Default | What it does |
+|---|---|---|
+| `schedule_utc_offset` | `""` | The owner's time zone, as `+03:00`. Blank uses the clock of the machine running the bot — right at home, wrong on a server that runs in UTC. |
+| `schedule_reminder_min` | `10` | A heads-up with a camera frame this many minutes before a start. `0` turns it off. |
+| `schedule_late_grace_min` | `15` | If the bot was down and only gets to a job later than this, it asks instead of starting. |
+
+At the start time the print starts on its own only if the printer is connected
+and idle, the file is still there, an enabled filament sensor (if there is one)
+sees filament, and Moonraker's history shows no print since the job was planned.
+Anything else — including a check that could not be made — produces a message
+with the reasons and **Start now** / **Cancel** buttons instead. The bed is the
+one thing no sensor sees, which is why any print in between counts as a reason:
+it may have left a part on the plate.
+
+Planned jobs are kept in `schedule.json` in the data folder and survive a
+restart. Every job still needs its own confirmation in the chat, and there are
+at most ten at a time.
+
 ## Maintenance reminder
 
 | Key | Default | What it does |
