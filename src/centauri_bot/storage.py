@@ -4,6 +4,7 @@
 state.json  — the id of the pinned status message, install date, the date the
               support note was last shown.
 maintenance.json — accumulated print hours and the date of the last lubrication.
+schedule.json — planned print starts.
 
 Every write is atomic. These files are rewritten every few minutes while a
 print runs, and a half-written state.json used to mean a duplicated status
@@ -16,6 +17,7 @@ import threading
 import time
 
 from . import paths
+from . import schedule
 
 
 _lock = threading.RLock()
@@ -150,3 +152,20 @@ def remember_code(code):
                 f.write("%s\tseen %s\n" % (code, time.strftime("%Y-%m-%d %H:%M:%S")))
         except OSError:
             pass
+
+
+# ------------------------------------------------------------ schedule.json
+
+def load_schedule():
+    """Planned print starts. A malformed entry is dropped, never fatal."""
+    with _lock:
+        d = _read(paths.schedule_path(), {"jobs": []})
+    jobs = d.get("jobs")
+    if not isinstance(jobs, list):
+        return []
+    return [job for job in jobs if schedule.valid_job(job)]
+
+
+def save_schedule(jobs):
+    with _lock:
+        _write(paths.schedule_path(), {"jobs": list(jobs)})

@@ -12,6 +12,7 @@ import tempfile
 from . import paths
 from . import backend as backend_mod
 from . import moonraker
+from . import schedule
 
 
 # Values a fresh install starts from. Only the four identity fields are blank;
@@ -64,6 +65,12 @@ DEFAULTS = {
     "light_off_at_night": True,
     "night_from": 22,
     "night_to": 8,
+    # Delayed print starts (COSMOS with remote start allowed). A blank offset
+    # means the clock of the machine running the bot; a server is usually in
+    # UTC, so put the owner's zone here as "+03:00".
+    "schedule_utc_offset": "",
+    "schedule_reminder_min": 10,
+    "schedule_late_grace_min": 15,
     "log_level": "INFO",
 }
 
@@ -155,6 +162,10 @@ def validate(cfg):
         problems.append("owner_user_id must be a positive Telegram user id")
     if not valid_host(cfg.get("printer_ip")):
         problems.append("printer_ip is not a valid IP address or hostname")
+    try:
+        schedule.parse_offset(cfg.get("schedule_utc_offset", ""))
+    except ValueError:
+        problems.append("schedule_utc_offset must be blank or look like +03:00")
     # "auto" разрешено: конкретный бэкенд определится при запуске, опросом
     # принтера. Проверять его тут нечем — сети на этом этапе трогать нельзя.
     if str(cfg.get("backend", "")).strip().lower() == "auto":

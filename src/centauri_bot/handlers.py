@@ -13,9 +13,12 @@ from html import escape
 
 from . import backend
 from . import heightmap
+from . import moonraker
 from . import printer_state as ps
+from . import schedule
 from . import storage
 from . import ui
+from .telegram_api import TelegramError
 
 
 log = logging.getLogger(__name__)
@@ -185,10 +188,26 @@ def handle_callback(bot, query):
         bot.api.answer_callback(query["id"])
         return
 
+    # Any other button ends a "type your own time" prompt: the owner has moved
+    # on, and the next ordinary message must not be read as a start time.
+    if not data.startswith("sched"):
+        with bot.lock:
+            bot.schedule_draft = None
+
+    if data == "plan":
+        bot.api.answer_callback(query["id"])
+        show_plan(bot, chat, mid, is_photo)
+        return
+
+    if data.startswith(("sched:", "schedcancel:", "schedrun:")):
+        _schedule_callback(bot, chat, mid, query, data, is_photo)
+        return
+
     if data == "help":
         bot.api.answer_callback(query["id"])
         text, keyboard = ui.help_screen(
-            bot.cfg.get("allow_control", True), allowed=bot.allowed_actions())
+            bot.cfg.get("allow_control", True), allowed=bot.allowed_actions(),
+            can_schedule=bot.schedule_available())
         bot.api.edit_message(chat, mid, text, keyboard=keyboard, is_photo=is_photo)
         return
 
@@ -417,11 +436,13 @@ def _ask_confirmation(bot, chat, mid, query, what, is_photo):
         name = path.rsplit("/", 1)[-1]
         confirmation = bot.issue_print_confirmation(path)
         bot.api.answer_callback(query["id"])
+        schedule_ref = (bot.confirmations.issue("schedule-path", path)
+                        if bot.schedule_available() else None)
         bot.api.send_message(
             chat,
             "🖨 <b>Запустить печать?</b>\n<i>%s</i>\n\n"
             "Убедись по снимку, что стол пуст." % escape(name),
-            keyboard=ui.kb_confirm("print:%s" % confirmation, "печатать"),
+            keyboard=ui.kb_print_confirm(confirmation, schedule_ref),
             photo=bot.grab())
         return
     if what.startswith("delete:"):
@@ -499,7 +520,7 @@ def _ask_confirmation(bot, chat, mid, query, what, is_photo):
 
 def _do_action(bot, chat, mid, query, what):
     note = ""
-    action = (backend.START if what.startswith("print:") else
+    action = (backend.START if what.startswith(("print:", "sched:", "schedrun:")) else
               backend.DELETE if what.startswith("delete:") else
               backend.EXCLUDE_OBJECT if what.startswith("exclude:") else
               backend.RUN_MACRO if what.startswith("macro:") else None)
@@ -540,6 +561,28 @@ def _do_action(bot, chat, mid, query, what):
             note = "🖨 Печать запущена.\n\n" if ok else "⚠️ Не запустилось (%s).\n\n" % info
         else:
             note = "⚠️ Подтверждение устарело. Выбери файл заново.\n\n"
+    elif what.startswith("sched:"):
+        choice = bot.confirmations.consume("schedule-confirm", what.split(":", 1)[1])
+        if not choice or not bot.schedule_available():
+            note = "⚠️ Подтверждение устарело. Выберите время заново.\n\n"
+        else:
+            path, start = choice
+            job, error = bot.add_scheduled(path, start)
+            note = (ui.schedule_added_note(
+                        path, schedule.format_when(start, bot.clock(), bot.schedule_tz()))
+                    if job else "⚠️ Не запланировал: %s.\n\n" % escape(error))
+    elif what.startswith("schedrun:"):
+        job_id = bot.confirmations.consume("schedule-run", what.split(":", 1)[1])
+        job = schedule.find(bot.scheduled_jobs(), job_id) if job_id else None
+        if not job:
+            note = "⚠️ Задание уже отменено или подтверждение устарело.\n\n"
+        else:
+            ok, info = bot.perform(backend.START, job["path"])
+            if ok:
+                bot.cancel_scheduled(job["id"])
+                note = "🖨 Печать запущена.\n\n"
+            else:
+                note = "⚠️ Не запустилось (%s).\n\n" % info
     elif what.startswith("delete:"):
         token = what.split(":", 1)[1]
         path = bot.consume_delete_confirmation(token)
@@ -603,15 +646,23 @@ def handle_message(bot, message):
     # here too, without text. Answering them is a loop: pin -> service ->
     # answer -> pin again, and the bot buries the chat by itself. Anything that
     # is not text from a human is skipped.
-    if message.get("from", {}).get("is_bot") or not (message.get("text") or "").strip():
+    document = message.get("document")
+    if message.get("from", {}).get("is_bot") or not (
+            (message.get("text") or "").strip() or isinstance(document, dict)):
         return
     chat = str(message["chat"]["id"])
-    text = message["text"].strip().lower()
+    text = (message.get("text") or "").strip().lower()
 
     sender = message.get("from", {}).get("id")
     if not _is_owner(bot, chat, sender):
         bot.api.send_message(chat, "Этот бот личный.")
         log.info("message from a foreign chat was refused")
+        return
+
+    if isinstance(document, dict):
+        handle_document(bot, chat, document)
+        return
+    if _maybe_schedule_text(bot, chat, text):
         return
 
     # Whatever the bot answers, the status with its buttons goes out last, so
@@ -620,6 +671,9 @@ def handle_message(bot, message):
         bot.api.send_message(chat, "📷 " + time.strftime("%H:%M:%S"), photo=bot.grab())
     elif text.startswith("/files"):
         show_files(bot, chat, force_new=True)
+        return
+    elif text.startswith("/plan"):
+        show_plan(bot, chat, force_new=True)
         return
     elif text.startswith("/diag") or text.startswith("/diagnostics"):
         ok, result = bot.diagnostics()
@@ -635,7 +689,8 @@ def handle_message(bot, message):
         return
     elif text.startswith("/help") or text.startswith("/start"):
         body, keyboard = ui.help_screen(
-            bot.cfg.get("allow_control", True), allowed=bot.allowed_actions())
+            bot.cfg.get("allow_control", True), allowed=bot.allowed_actions(),
+            can_schedule=bot.schedule_available())
         bot.api.send_message(chat, body, keyboard=keyboard)
         _maybe_help_reminder(bot, chat)
         return
@@ -657,3 +712,184 @@ def _maybe_help_reminder(bot, chat):
                                   keyboard=support.reminder_keyboard())
     if answer.get("ok"):
         bot.confirm_support_note_shown()
+
+
+# ------------------------------------------------------------ scheduled starts
+
+# Telegram's Bot API hands out files up to this size and no bigger.
+MAX_DOCUMENT_BYTES = 20_000_000
+# How long a "type your own time" prompt keeps listening for the answer.
+DRAFT_TTL_SEC = 600
+
+
+def _document_name(document):
+    """A safe G-code file name from what Telegram reports, or ""."""
+    raw = str(document.get("file_name") or "").replace("\\", "/").rsplit("/", 1)[-1]
+    raw = "".join(ch for ch in raw if ch.isprintable()).strip()[:200]
+    return moonraker.normalized_gcode_path(raw)
+
+
+def handle_document(bot, chat, document):
+    """A G-code sent into the chat: download, upload, offer print or schedule."""
+    if not bot.schedule_available():
+        bot.api.send_message(
+            chat, "📥 Файлы принимаю только с COSMOS и при разрешённом запуске "
+                  "печати из бота (<code>moonraker_allow_remote_start</code>).")
+        return
+    name = _document_name(document)
+    if not name:
+        bot.api.send_message(chat, "📥 Это не G-code. Пришлите файл <code>.gcode</code>.")
+        return
+    size = int(document.get("file_size") or 0)
+    if size > MAX_DOCUMENT_BYTES:
+        bot.api.send_message(
+            chat, "📥 Файл %.0f МБ, а Telegram отдаёт ботам файлы до %d МБ.\n"
+                  "Залейте его из слайсера — запланировать можно из «📂 Файлы»."
+                  % (size / 1_000_000.0, MAX_DOCUMENT_BYTES // 1_000_000))
+        return
+
+    progress = bot.api.send_message(chat, "📥 Принимаю <i>%s</i>…" % escape(name))
+    progress_mid = (progress.get("result") or {}).get("message_id")
+    try:
+        data = bot.api.download_document(document.get("file_id"), MAX_DOCUMENT_BYTES)
+    except TelegramError as e:
+        _finish_upload(bot, chat, progress_mid,
+                       "⚠️ Файл из Telegram не скачался: %s" % escape(str(e)))
+        return
+    ok, result, replaced = bot.upload_file(name, data)
+    if not ok:
+        _finish_upload(bot, chat, progress_mid,
+                       "⚠️ На принтер не загрузилось: %s" % escape(str(result)))
+        return
+    details = bot.file_details(result)
+    details.setdefault("size", len(data))
+    print_ref = bot.prepare_file_choices([result])[0]
+    schedule_ref = bot.confirmations.issue("schedule-path", result)
+    _finish_upload(bot, chat, progress_mid, ui.file_card_text(result, details, replaced),
+                   ui.kb_file_card(print_ref, schedule_ref))
+
+
+def _finish_upload(bot, chat, progress_mid, text, keyboard=None):
+    if progress_mid:
+        bot.api.delete_message(chat, progress_mid)
+    bot.refresh_main(force_new=True, text=text, keyboard=keyboard or ui.kb_back())
+
+
+def show_plan(bot, chat, mid=None, is_photo=False, force_new=False):
+    now, tz = bot.clock(), bot.schedule_tz()
+    jobs = schedule.ordered(bot.scheduled_jobs())
+    rows = [(job, schedule.format_when(job["at"], now, tz),
+             schedule.format_left(job["at"], now)) for job in jobs]
+    _show_readonly(bot, chat, mid, is_photo, force_new,
+                   ui.plan_text(rows), ui.kb_plan(jobs))
+
+
+def _schedule_callback(bot, chat, mid, query, data, is_photo):
+    """Buttons under sched:, schedcancel: and schedrun:."""
+    if not bot.schedule_available():
+        bot.api.answer_callback(query["id"], "Отложенный старт недоступен в этих настройках.")
+        return
+
+    if data.startswith("schedcancel:"):
+        job = bot.cancel_scheduled(data.split(":", 1)[1])
+        bot.api.answer_callback(query["id"],
+                                "Задание отменено." if job else "Такого задания уже нет.")
+        show_plan(bot, chat, mid, is_photo)
+        return
+
+    if data.startswith("schedrun:"):
+        # Bound to the job id, not to a five-minute token: this button sits
+        # under a message that may be read hours later.
+        job = schedule.find(bot.scheduled_jobs(), data.split(":", 1)[1])
+        if not job:
+            bot.api.answer_callback(query["id"], "Такого задания уже нет.")
+            return
+        token = bot.confirmations.issue("schedule-run", job["id"])
+        bot.api.answer_callback(query["id"])
+        bot.api.send_message(chat, ui.schedule_run_confirm_text(job),
+                             keyboard=ui.kb_confirm("schedrun:%s" % token, "печатать"),
+                             photo=bot.grab())
+        return
+
+    kind, _, ref = data[len("sched:"):].partition(":")
+    if kind == "new":
+        path = bot.confirmations.consume("schedule-path", ref)
+        if not path:
+            bot.api.answer_callback(query["id"], "Кнопка устарела. Откройте файл заново.")
+            return
+        options = schedule.quick_options(bot.clock(), bot.schedule_tz())
+        refs = [bot.confirmations.issue("schedule-when", (path, option_kind, value))
+                for _label, option_kind, value in options]
+        custom = bot.confirmations.issue("schedule-custom", path)
+        bot.api.answer_callback(query["id"])
+        bot.api.edit_message(chat, mid, ui.schedule_pick_text(path),
+                             keyboard=ui.kb_schedule_pick(
+                                 [option[0] for option in options], refs, custom),
+                             is_photo=is_photo)
+        return
+
+    if kind == "when":
+        choice = bot.confirmations.consume("schedule-when", ref)
+        if not choice:
+            bot.api.answer_callback(query["id"], "Кнопка устарела. Откройте файл заново.")
+            return
+        path, option_kind, value = choice
+        at = schedule.resolve_option(option_kind, value, bot.clock())
+        text, keyboard = _schedule_confirmation(bot, path, at)
+        bot.api.answer_callback(query["id"])
+        bot.api.edit_message(chat, mid, text, keyboard=keyboard, is_photo=is_photo)
+        return
+
+    if kind == "custom":
+        path = bot.confirmations.consume("schedule-custom", ref)
+        if not path:
+            bot.api.answer_callback(query["id"], "Кнопка устарела. Откройте файл заново.")
+            return
+        with bot.lock:
+            bot.schedule_draft = {"path": path, "until": bot.clock() + DRAFT_TTL_SEC,
+                                  "mid": mid, "is_photo": is_photo}
+        bot.api.answer_callback(query["id"])
+        bot.api.edit_message(chat, mid, ui.schedule_custom_text(path, schedule.HINT),
+                             keyboard=ui.kb_cancel(), is_photo=is_photo)
+        return
+
+    bot.api.answer_callback(query["id"])
+
+
+def _schedule_confirmation(bot, path, at):
+    """The last screen before a job is created: exact time and what gets checked."""
+    now = bot.clock()
+    error = schedule.check_at(at, now)
+    if error:
+        return ui.schedule_custom_text(path, schedule.HINT, error), ui.kb_back()
+    token = bot.confirmations.issue("schedule-confirm", (path, at))
+    reminder = int(float(bot.cfg.get("schedule_reminder_min", 10) or 0))
+    text = ui.schedule_confirm_text(
+        path, schedule.format_when(at, now, bot.schedule_tz()),
+        schedule.format_left(at, now), reminder)
+    return text, ui.kb_confirm("sched:%s" % token, "стол пустой, запланировать")
+
+
+def _maybe_schedule_text(bot, chat, text):
+    """A typed start time for the file being scheduled. True if it was taken."""
+    with bot.lock:
+        draft = bot.schedule_draft
+    if not draft:
+        return False
+    if text.startswith("/") or bot.clock() > draft["until"]:
+        with bot.lock:
+            bot.schedule_draft = None
+        return False
+    at, error = schedule.parse_when(text, bot.clock(), bot.schedule_tz())
+    if error:
+        # Stay in the same message; the owner is clearly mid-way through this.
+        bot.api.edit_message(chat, draft["mid"],
+                             ui.schedule_custom_text(draft["path"], schedule.HINT, error),
+                             keyboard=ui.kb_cancel(), is_photo=draft.get("is_photo"))
+        return True
+    with bot.lock:
+        bot.schedule_draft = None
+    bot.api.delete_message(chat, draft["mid"])
+    body, keyboard = _schedule_confirmation(bot, draft["path"], at)
+    bot.refresh_main(force_new=True, text=body, keyboard=keyboard)
+    return True

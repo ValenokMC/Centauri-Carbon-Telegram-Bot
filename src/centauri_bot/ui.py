@@ -332,7 +332,7 @@ def render(status, online, printer_name, header="", detailed=False,
 # ------------------------------------------------------------------ keyboards
 
 def kb_main(status, allow_control=True, detailed=False, maintenance=(False, False),
-            allowed=None):
+            allowed=None, scheduled=0):
     """The keyboard under the status message.
 
     Every button edits this same message and sends nothing new: otherwise new
@@ -403,6 +403,9 @@ def kb_main(status, allow_control=True, detailed=False, maintenance=(False, Fals
         cosmos.append({"text": "🧩 Макросы", "callback_data": "macros"})
     if cosmos:
         rows.append(cosmos)
+    if scheduled:
+        rows.append([{"text": "⏰ Запланировано: %d" % scheduled,
+                      "callback_data": "plan"}])
 
     show_maint, due = maintenance
     if show_maint:
@@ -746,12 +749,18 @@ HELP_TEXT_HEADER = (
     "/status — состояние со снимком и кнопками\n"
     "/snap — только кадр с камеры\n"
     "/files — файлы на принтере\n"
+    "/plan — запланированные печати\n"
     "/diag — диагностика COSMOS\n"
     "/mesh — карта высот стола\n"
     "/history — история печатей\n"
     "/macros — макросы COSMOS\n"
     "/help — эта справка\n\n"
     "<b>Кнопки под статусом</b>\n"
+)
+
+HELP_SCHEDULE_NOTE = (
+    "\n\n📥 Пришлите файл <code>.gcode</code> — залью его на принтер и предложу "
+    "запустить сейчас или в назначенное время."
 )
 
 HELP_TEXT_FOOTER = (
@@ -763,7 +772,7 @@ HELP_TEXT_FOOTER = (
 )
 
 
-def help_screen(allow_control=True, allowed=None):
+def help_screen(allow_control=True, allowed=None, can_schedule=False):
     """Text and keyboard for /help — the permanent home of the support button."""
     if allowed is None:
         allowed = (backend.SDCP_CONTROL_ACTIONS | backend.READ_ACTIONS
@@ -795,4 +804,161 @@ def help_screen(allow_control=True, allowed=None):
     if backend.FANS in allowed:
         names.append("вентиляторы")
     buttons = " · ".join(names) + "\n"
-    return HELP_TEXT_HEADER + buttons + HELP_TEXT_FOOTER, support.help_keyboard()
+    note = HELP_SCHEDULE_NOTE if can_schedule else ""
+    return (HELP_TEXT_HEADER + buttons + HELP_TEXT_FOOTER + note,
+            support.help_keyboard())
+
+
+# ------------------------------------------------------------ scheduled starts
+
+def _file_label(path):
+    return html.escape(str(path or "").rsplit("/", 1)[-1])
+
+
+def kb_cancel():
+    return [[{"text": "↩️ Отмена", "callback_data": "refresh"}]]
+
+
+def file_card_text(path, details=None, replaced=False):
+    """A file that just arrived from Telegram, as it now sits on the printer."""
+    details = details or {}
+    lines = ["📥 <b>Файл на принтере</b>", "<i>%s</i>" % _file_label(path)]
+    facts = []
+    if details.get("size"):
+        facts.append("%.1f МБ" % (float(details["size"]) / 1_000_000))
+    if details.get("estimated_time"):
+        facts.append("≈ %s" % hhmm(details["estimated_time"]))
+    filament = details.get("filament_name") or details.get("filament_type")
+    if filament:
+        facts.append(html.escape(str(filament)))
+    if details.get("filament_weight_total"):
+        facts.append("%.0f г" % float(details["filament_weight_total"]))
+    if facts:
+        lines.append(" · ".join(facts))
+    if replaced:
+        lines.append("Файл с таким именем уже был на принтере — заменён.")
+    lines += ["", "Запустить сейчас или в назначенное время?"]
+    return "\n".join(lines)
+
+
+def kb_file_card(print_ref=None, schedule_ref=None):
+    rows = []
+    if print_ref:
+        rows.append([{"text": "🖨 Печать сейчас", "callback_data": "ask:print:" + print_ref}])
+    if schedule_ref:
+        rows.append([{"text": "⏰ Запланировать", "callback_data": "sched:new:" + schedule_ref}])
+    rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
+    return rows
+
+
+def kb_print_confirm(confirm_token, schedule_ref=None):
+    """The print confirmation, plus the way to put the same file off for later."""
+    rows = kb_confirm("print:%s" % confirm_token, "печатать")
+    if schedule_ref:
+        rows.append([{"text": "⏰ Запланировать на потом",
+                      "callback_data": "sched:new:" + schedule_ref}])
+    return rows
+
+
+def schedule_pick_text(path):
+    return ("⏰ <b>Когда запустить?</b>\n<i>%s</i>\n\n"
+            "Выберите вариант или напишите своё время." % _file_label(path))
+
+
+def kb_schedule_pick(labels, refs, custom_ref):
+    rows, row = [], []
+    for label, ref in zip(labels, refs):
+        row.append({"text": label, "callback_data": "sched:when:" + ref})
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([{"text": "✏️ Написать своё время",
+                  "callback_data": "sched:custom:" + custom_ref}])
+    rows.append([{"text": "↩️ Отмена", "callback_data": "refresh"}])
+    return rows
+
+
+def schedule_custom_text(path, hint, error=""):
+    lines = ["⏰ <b>Своё время</b>", "<i>%s</i>" % _file_label(path), ""]
+    if error:
+        lines += ["⚠️ %s." % html.escape(error[:1].upper() + error[1:]), ""]
+    lines.append(hint)
+    return "\n".join(lines)
+
+
+def schedule_confirm_text(path, when, left, reminder_min=10):
+    reminder = ("За %d мин напомню. " % reminder_min) if reminder_min else ""
+    return ("⏰ <b>Запланировать печать?</b>\n<i>%s</i>\n\n"
+            "Старт: <b>%s</b> (%s)\n\n"
+            "%sВ назначенное время запущу, только если принтер свободен, файл на "
+            "месте, датчик видит пруток и после этой минуты на принтере ничего "
+            "не печаталось. Иначе не запущу, а спрошу.\n\n"
+            "⚠️ Стол должен оставаться пустым до старта."
+            % (_file_label(path), html.escape(when), html.escape(left), reminder))
+
+
+def schedule_added_note(path, when):
+    return "⏰ Запланировано: <i>%s</i> — %s.\n\n" % (_file_label(path), html.escape(when))
+
+
+def plan_text(rows):
+    """``rows`` are (job, when, left), already formatted and in start order."""
+    if not rows:
+        return ("<b>⏰ Запланированные печати</b>\n\nНичего не запланировано.\n\n"
+                "Пришлите файл .gcode или выберите файл в «📂 Файлы».")
+    lines = ["<b>⏰ Запланированные печати</b>"]
+    for job, when, left in rows:
+        waiting = " · ⚠️ ждёт решения" if job.get("asked") else ""
+        lines.append("• <b>%s</b> (%s)\n  <i>%s</i>%s" % (
+            html.escape(when), html.escape(left), _file_label(job["path"]), waiting))
+    return "\n".join(lines)
+
+
+def kb_plan(jobs):
+    rows = []
+    for job in jobs:
+        name = str(job["path"]).rsplit("/", 1)[-1]
+        if job.get("asked"):
+            rows.append([{"text": "🖨 Запустить %s" % name[:28],
+                          "callback_data": "schedrun:" + job["id"]}])
+        rows.append([{"text": "🗑 Отменить %s" % name[:28],
+                      "callback_data": "schedcancel:" + job["id"]}])
+    rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
+    return rows
+
+
+def schedule_reminder_text(job, when, left):
+    return ("⏰ <b>Скоро старт по расписанию</b>\n<i>%s</i>\n%s (%s)\n\n"
+            "Проверьте по снимку, что стол пустой. Если что-то не так — отмените."
+            % (_file_label(job["path"]), html.escape(when), html.escape(left)))
+
+
+def kb_schedule_job(job_id):
+    return [[{"text": "🗑 Отменить задание", "callback_data": "schedcancel:" + job_id}],
+            [{"text": "🔄 Статус", "callback_data": "refresh"}]]
+
+
+def schedule_ask_text(job, reasons, when):
+    lines = ["⏰ <b>По расписанию не запустил</b>",
+             "<i>%s</i> — старт был %s" % (_file_label(job["path"]), html.escape(when)),
+             "", "Почему:"]
+    lines += ["• %s" % html.escape(reason) for reason in reasons]
+    lines += ["", "Проверьте принтер и решите сами."]
+    return "\n".join(lines)
+
+
+def kb_schedule_ask(job_id):
+    return [[{"text": "🖨 Запустить сейчас", "callback_data": "schedrun:" + job_id}],
+            [{"text": "🗑 Отменить задание", "callback_data": "schedcancel:" + job_id}],
+            [{"text": "🔄 Статус", "callback_data": "refresh"}]]
+
+
+def schedule_started_text(job):
+    return "⏰ <b>Запустил печать по расписанию</b>\n<i>%s</i>\n" % _file_label(job["path"])
+
+
+def schedule_run_confirm_text(job):
+    return ("🖨 <b>Запустить сейчас?</b>\n<i>%s</i>\n\n"
+            "Убедись по снимку, что стол пуст." % _file_label(job["path"]))

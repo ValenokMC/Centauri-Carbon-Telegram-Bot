@@ -4,6 +4,7 @@
   printer_loop   - polls Moonraker or holds SDCP, turns statuses into events
   keepalive_loop - stops the stock SDCP connection dropping when silent
   refresh_loop   - keeps the status message current while a print runs
+  schedule_loop  - reminds about and starts planned prints (COSMOS only)
   telemetry_loop - optional anonymous heartbeat, at most once per 30 days
   telegram_loop  - long-polls for updates (runs on the main thread)
 
@@ -19,6 +20,7 @@ from . import backend
 from . import config as config_mod
 from . import moonraker
 from . import printer_state as ps
+from . import schedule
 from . import sdcp
 from . import storage
 from . import support
@@ -76,6 +78,9 @@ class Bot(object):
         self.macro_watch = None
         self.prompt_shown = None   # подпись показанной подсказки принтера
         self.prompt_tick = 0
+        # A "type your own time" prompt waiting for the owner's answer.
+        self.schedule_draft = None
+        self.schedule_lock = threading.Lock()
 
         self.lifecycle = ps.PrinterLifecycle(cfg.get("progress_every_pct") or 0)
         self.maintenance = ps.MaintenanceCounter()
@@ -106,10 +111,11 @@ class Bot(object):
     def keyboard(self, detailed=False):
         status, _ = self._snapshot()
         show, _, due = self.maintenance_view()
+        scheduled = len(storage.load_schedule()) if self.schedule_available() else 0
         return ui.kb_main(
             status, allow_control=self.cfg.get("allow_control", True),
             allowed=self.allowed_actions(), detailed=detailed,
-            maintenance=(show, due))
+            maintenance=(show, due), scheduled=scheduled)
 
     def allowed_actions(self):
         return backend.allowed_actions(self.cfg)
@@ -205,6 +211,135 @@ class Bot(object):
 
     def consume_object_confirmation(self, token):
         return self.confirmations.consume("exclude-object", token)
+
+    # ---------------------------------------------------- scheduled starts
+
+    def schedule_available(self):
+        """Uploads and delayed starts need COSMOS and an allowed remote start."""
+        return (self.backend_name == backend.MOONRAKER
+                and self.moonraker is not None
+                and self.action_allowed(backend.START))
+
+    def schedule_tz(self):
+        return schedule.tzinfo_from(self.cfg.get("schedule_utc_offset", ""))
+
+    def scheduled_jobs(self):
+        return storage.load_schedule()
+
+    def add_scheduled(self, path, at):
+        with self.schedule_lock:
+            jobs = storage.load_schedule()
+            job, error = schedule.make_job(jobs, path, at, self.clock())
+            if job:
+                storage.save_schedule(jobs + [job])
+            return job, error
+
+    def cancel_scheduled(self, job_id):
+        with self.schedule_lock:
+            jobs = storage.load_schedule()
+            job = schedule.find(jobs, job_id)
+            if job:
+                storage.save_schedule(schedule.without(jobs, job_id))
+            return job
+
+    def _update_job(self, job_id, **fields):
+        with self.schedule_lock:
+            jobs = storage.load_schedule()
+            for job in jobs:
+                if job["id"] == job_id:
+                    job.update(fields)
+            storage.save_schedule(jobs)
+
+    def upload_file(self, name, data):
+        """(ok, path or reason, replaced) for a G-code received in Telegram."""
+        if not self.schedule_available():
+            return False, "загрузка файлов недоступна в этих настройках", False
+        try:
+            existing = {record["path"] for record in self.moonraker.list_file_records()}
+        except moonraker.MoonrakerError:
+            existing = set()
+        try:
+            path = self.moonraker.upload(name, data)
+        except moonraker.MoonrakerError as e:
+            return False, str(e), False
+        self.refresh_files()
+        return True, path, path in existing
+
+    def file_details(self, path):
+        with self.lock:
+            details = dict((self.file_info or {}).get(path) or {})
+        try:
+            details.update(self.moonraker.file_metadata(path))
+        except moonraker.MoonrakerError as e:
+            log.debug("file metadata unavailable: %s", e)
+        return details
+
+    def schedule_live(self, job):
+        """What can be checked right now about starting ``job``.
+
+        Each probe stands alone: one that fails reads as "unknown", and
+        schedule.decide treats unknown as a reason to ask, not to start.
+        """
+        status, online = self._snapshot()
+        live = {"online": bool(online and status),
+                "code": ((status or {}).get("PrintInfo") or {}).get("Status"),
+                "file_exists": None, "filament": None, "printed_since": None}
+        try:
+            live["file_exists"] = job["path"] in self.moonraker.list_files()
+        except Exception as e:
+            log.info("schedule: file list unavailable - %s", e)
+        try:
+            live["filament"] = self.moonraker.filament_detected()
+        except Exception as e:
+            log.info("schedule: filament sensor unavailable - %s", e)
+        try:
+            recent = self.moonraker.history(limit=5)
+            live["printed_since"] = any(
+                float(item.get("start_time") or 0) > job["created"] for item in recent)
+        except Exception as e:
+            log.info("schedule: history unavailable - %s", e)
+        return live
+
+    def check_schedule(self):
+        """One pass over planned starts: reminders, then jobs that are due."""
+        if not self.schedule_available():
+            return
+        now, tz = self.clock(), self.schedule_tz()
+        lead = max(0.0, float(self.cfg.get("schedule_reminder_min", 10) or 0)) * 60
+        grace = max(1.0, float(self.cfg.get("schedule_late_grace_min", 15) or 15)) * 60
+        for job in schedule.ordered(storage.load_schedule()):
+            if schedule.reminder_due(job, now, lead):
+                text = ui.schedule_reminder_text(
+                    job, schedule.format_when(job["at"], now, tz),
+                    schedule.format_left(job["at"], now))
+                if self._schedule_notice(text, ui.kb_schedule_job(job["id"])):
+                    self._update_job(job["id"], reminded=True)
+            elif schedule.is_due(job, now):
+                self._run_due_job(job, now, grace, tz)
+
+    def _run_due_job(self, job, now, grace, tz):
+        reasons = schedule.decide(job, now, self.schedule_live(job), grace)
+        if not reasons:
+            ok, info = self.perform(backend.START, job["path"])
+            if ok:
+                self.cancel_scheduled(job["id"])
+                log.info("schedule: started %s", job["path"])
+                self._schedule_notice(self.render(ui.schedule_started_text(job)), None)
+                return
+            reasons = ["запуск не прошёл: %s" % info]
+        text = ui.schedule_ask_text(job, reasons, schedule.format_when(job["at"], now, tz))
+        # Marked only once the owner has really been told. While Telegram is
+        # unreachable the job is simply looked at again on the next pass.
+        if self._schedule_notice(text, ui.kb_schedule_ask(job["id"])):
+            self._update_job(job["id"], asked=int(now))
+
+    def _schedule_notice(self, text, keyboard):
+        try:
+            return self.refresh_main(force_new=True, text=text,
+                                     keyboard=keyboard) is not None
+        except Exception as e:
+            log.warning("schedule notice did not go out: %r", e)
+            return False
 
     # ------------------------------------------------------------- camera
 
@@ -862,6 +997,17 @@ class Bot(object):
             except Exception as e:
                 log.debug("keepalive did not go out: %r", e)
 
+    def schedule_loop(self):
+        """Look at planned starts every few seconds. COSMOS only."""
+        if self.backend_name != backend.MOONRAKER:
+            return
+        while not self.stopping.is_set():
+            try:
+                self.check_schedule()
+            except Exception as e:
+                log.warning("schedule check failed: %r", e)
+            self.stopping.wait(15)
+
     def refresh_loop(self):
         """Refresh the message while a print runs. Idle needs no touching."""
         while not self.stopping.is_set():
@@ -883,6 +1029,7 @@ class Bot(object):
             {"command": "status", "description": "состояние принтера"},
             {"command": "snap", "description": "кадр с камеры"},
             {"command": "files", "description": "файлы на принтере"},
+            {"command": "plan", "description": "запланированные печати"},
             {"command": "diag", "description": "диагностика COSMOS"},
             {"command": "mesh", "description": "карта высот стола"},
             {"command": "history", "description": "история печатей"},
@@ -907,7 +1054,8 @@ class Bot(object):
 
     def run(self):
         log.info("bot started, printer %s", self.host)
-        targets = [self.printer_loop, self.keepalive_loop, self.refresh_loop]
+        targets = [self.printer_loop, self.keepalive_loop, self.refresh_loop,
+                   self.schedule_loop]
         if self.cfg.get("anonymous_statistics", False):
             targets.append(lambda: telemetry.loop(self.stopping, self.cfg))
         for target in targets:

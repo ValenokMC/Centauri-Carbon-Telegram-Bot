@@ -44,6 +44,10 @@ def seen_codes_path():
     return os.path.join(data_dir(), "status-codes.txt")
 
 
+def schedule_path():
+    return os.path.join(data_dir(), "schedule.json")
+
+
 def logs_dir():
     d = os.path.join(data_dir(), "logs")
     os.makedirs(d, exist_ok=True)
