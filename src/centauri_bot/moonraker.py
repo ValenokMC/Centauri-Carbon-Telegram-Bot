@@ -9,6 +9,7 @@ small, auditable surface.  Commands are exposed here, but the policy in
 import json
 import logging
 import re
+import secrets
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -21,6 +22,12 @@ QUERY_OBJECTS = (
     "fan", "fan_generic aux_fan", "fan_generic case_fan", "led case",
     "display_status", "gcode_move", "exclude_object",
 )
+
+# A file comes from Telegram (20 MB at most), but the client should not trust
+# its caller for that. Uploads over a VPN tunnel to a small board are slow, so
+# they get their own, much longer, timeout.
+MAX_UPLOAD_BYTES = 64_000_000
+UPLOAD_TIMEOUT_SEC = 180
 
 
 # Что разрешено запускать по кнопке из подсказки принтера: имя макроса
@@ -229,9 +236,9 @@ class Client(object):
             headers["X-Api-Key"] = self.api_key
         return headers
 
-    def _open(self, request, max_bytes):
+    def _open(self, request, max_bytes, timeout=None):
         try:
-            with self.opener(request, timeout=self.timeout) as response:
+            with self.opener(request, timeout=timeout or self.timeout) as response:
                 raw = response.read(max_bytes + 1)
         except urllib.error.HTTPError as exc:
             raise MoonrakerError("HTTP %s" % exc.code)
@@ -250,7 +257,9 @@ class Client(object):
             headers["Content-Type"] = "application/x-www-form-urlencoded"
         request = urllib.request.Request(self._url(path), data=data,
                                          headers=headers, method=method)
-        raw = self._open(request, 8_000_000)
+        return self._decode(self._open(request, 8_000_000))
+
+    def _decode(self, raw):
         try:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
@@ -366,6 +375,85 @@ class Client(object):
             raise MoonrakerError("некорректный путь к G-code")
         encoded = urllib.parse.quote(filename, safe="/")
         self._json("/server/files/gcodes/" + encoded, method="DELETE")
+
+    def upload(self, filename, data):
+        """Put one G-code file into the gcodes root and return its path there.
+
+        Moonraker replaces a file of the same name, exactly as a slicer upload
+        does. The multipart body is built by hand to stay dependency-free.
+        """
+        name = normalized_gcode_path(filename)
+        if not name or "/" in name:
+            raise MoonrakerError("некорректное имя G-code")
+        data = bytes(data or b"")
+        if not data:
+            raise MoonrakerError("пустой файл")
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise MoonrakerError("файл слишком большой")
+        boundary = "centauri-bot-" + secrets.token_hex(12)
+        head = ("--%s\r\n"
+                "Content-Disposition: form-data; name=\"root\"\r\n\r\n"
+                "gcodes\r\n"
+                "--%s\r\n"
+                "Content-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\n"
+                "Content-Type: application/octet-stream\r\n\r\n"
+                % (boundary, boundary, name.replace("\"", "'")))
+        body = (head.encode("utf-8") + data
+                + ("\r\n--%s--\r\n" % boundary).encode("ascii"))
+        headers = self._headers()
+        headers["Content-Type"] = "multipart/form-data; boundary=" + boundary
+        request = urllib.request.Request(self._url("/server/files/upload"),
+                                         data=body, headers=headers, method="POST")
+        result = self._decode(self._open(
+            request, 1_000_000, timeout=max(self.timeout, UPLOAD_TIMEOUT_SEC)))
+        item = result.get("item") if isinstance(result, dict) else None
+        return normalized_gcode_path((item or {}).get("path")) or name
+
+    def file_metadata(self, filename):
+        """The slicer's own summary of a file: time, filament, layer height.
+
+        Moonraker parses a fresh upload in the background, so right after an
+        upload this can still be empty. Callers show whatever there is.
+        """
+        filename = normalized_gcode_path(filename)
+        if not filename:
+            raise MoonrakerError("некорректный путь к G-code")
+        meta = self._json("/server/files/metadata?" + urllib.parse.urlencode(
+            {"filename": filename})) or {}
+        details = {}
+        for key, cast in (("estimated_time", int), ("size", int)):
+            if _number(meta.get(key)) > 0:
+                details[key] = cast(_number(meta.get(key)))
+        for key in ("filament_weight_total", "layer_height"):
+            if _number(meta.get(key)) > 0:
+                details[key] = round(_number(meta.get(key)), 2)
+        for key in ("filament_name", "filament_type"):
+            text = str(meta.get(key) or "").strip()
+            if text:
+                details[key] = text[:80]
+        return details
+
+    def filament_detected(self):
+        """True or False from the enabled filament sensors; None without any."""
+        listed = self._json("/printer/objects/list") or {}
+        objects = listed.get("objects", []) if isinstance(listed, dict) else []
+        names = [str(item) for item in objects
+                 if str(item).startswith(("filament_switch_sensor ",
+                                          "filament_motion_sensor "))]
+        if not names:
+            return None
+        result = self._json("/printer/objects/query?" + "&".join(
+            urllib.parse.quote(name) for name in names)) or {}
+        status = result.get("status") or {}
+        seen = None
+        for name in names:
+            block = status.get(name) or {}
+            if not block.get("enabled", True) or "filament_detected" not in block:
+                continue
+            if not block.get("filament_detected"):
+                return False
+            seen = True
+        return seen
 
     def diagnostics(self):
         """Read only, compact COSMOS health data suitable for Telegram."""

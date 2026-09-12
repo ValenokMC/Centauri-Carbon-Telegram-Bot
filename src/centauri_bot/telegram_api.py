@@ -11,12 +11,15 @@ import logging
 import ssl
 import threading
 import time
+import urllib.parse
 import uuid
 
 
 log = logging.getLogger(__name__)
 
 API_HOST = "api.telegram.org"
+# The Bot API refuses to hand out anything larger.
+MAX_DOWNLOAD_BYTES = 20_000_000
 
 
 class TelegramError(Exception):
@@ -178,3 +181,48 @@ class TelegramAPI:
 
     def set_my_commands(self, commands):
         return self.call("setMyCommands", {"commands": commands})
+
+    # -- files -----------------------------------------------------------
+
+    def get_file(self, file_id):
+        """Where Telegram keeps a document the owner sent. Raises TelegramError."""
+        answer = self.call("getFile", {"file_id": file_id})
+        if not answer.get("ok"):
+            raise TelegramError(answer.get("description") or "Telegram не отдал файл")
+        return answer.get("result") or {}
+
+    def download_file(self, file_path, max_bytes=MAX_DOWNLOAD_BYTES):
+        """Fetch a file by the path getFile returned.
+
+        Uses a connection of its own: the thread-local one may be in the middle
+        of a long poll. The token is in the request path only, and a failure
+        says what went wrong, never where.
+        """
+        file_path = str(file_path or "")
+        if not file_path or ".." in file_path.split("/"):
+            raise TelegramError("некорректный путь файла")
+        path = "/file/bot%s/%s" % (self._token,
+                                   urllib.parse.quote(file_path, safe="/"))
+        conn = http.client.HTTPSConnection(
+            API_HOST, timeout=self._timeout, context=ssl.create_default_context())
+        try:
+            conn.request("GET", path)
+            response = conn.getresponse()
+            if response.status != 200:
+                raise TelegramError("файл не скачался: HTTP %d" % response.status)
+            blob = response.read(max_bytes + 1)
+        except TelegramError:
+            raise
+        except Exception as e:
+            raise TelegramError("файл не скачался: %s" % type(e).__name__)
+        finally:
+            conn.close()
+        if len(blob) > max_bytes:
+            raise TelegramError("файл больше %d МБ" % (max_bytes // 1_000_000))
+        return blob
+
+    def download_document(self, file_id, max_bytes=MAX_DOWNLOAD_BYTES):
+        info = self.get_file(file_id)
+        if int(info.get("file_size") or 0) > max_bytes:
+            raise TelegramError("файл больше %d МБ" % (max_bytes // 1_000_000))
+        return self.download_file(info.get("file_path"), max_bytes)
