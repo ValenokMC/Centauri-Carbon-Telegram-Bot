@@ -14,6 +14,7 @@ import html
 
 from . import backend
 from . import printer_state as ps
+from . import schedule
 from . import support
 
 
@@ -228,7 +229,7 @@ def stall_header(status, code):
 # ------------------------------------------------------------------ status text
 
 def render(status, online, printer_name, header="", detailed=False,
-           maintenance_line=""):
+           maintenance_line="", now=None, tz=None):
     """The single status message.
 
     The block order is deliberately inverted. On a phone the keyboard takes up
@@ -236,6 +237,9 @@ def render(status, online, printer_name, header="", detailed=False,
     - state, progress, time left - sit last, right against the buttons. The
     rest drifts up out of the way. Blocks are separated by a blank line:
     in detailed mode seven solid lines are unreadable.
+
+    ``now`` (epoch seconds) and ``tz`` turn the time left into a finish time
+    on the clock; without ``now`` that line is left out.
     """
     if not status:
         lines = []
@@ -334,6 +338,10 @@ def render(status, online, printer_name, header="", detailed=False,
             % (print_info.get("CurrentLayer", "?"),
                print_info.get("TotalLayer", "?"), hhmm(left)),
         ])
+        # Only while it prints: on a pause the finish moves with every minute,
+        # and a clock time that is already wrong is worse than none.
+        if now is not None and online and code == ps.STATUS_PRINTING and left > 0:
+            blocks[-1].append("🏁 готово ≈ %s" % schedule.format_when(now + left, now, tz))
     elif online:
         blocks.append(["🟢 свободен — можно ставить печать"])
     else:

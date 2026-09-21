@@ -53,6 +53,7 @@ class Bot(object):
                 camera_url=cfg.get("moonraker_camera_url", ""),
                 allow_external_camera=cfg.get(
                     "moonraker_allow_external_camera", False),
+                estimate_remaining=True,
             )
 
         self.lock = threading.RLock()
@@ -107,7 +108,8 @@ class Bot(object):
         show, line, _ = self.maintenance_view()
         return ui.render(status, online, self.cfg.get("printer_name", "Centauri Carbon"),
                          header=header, detailed=detailed,
-                         maintenance_line=line if show else "")
+                         maintenance_line=line if show else "",
+                         now=self.clock(), tz=self.schedule_tz())
 
     def keyboard(self, detailed=False):
         status, _ = self._snapshot()

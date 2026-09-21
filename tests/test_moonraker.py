@@ -333,3 +333,36 @@ def test_exclude_state_carries_outlines_of_known_objects_only():
     shapes = moonraker.exclude_shapes(raw, state["Objects"])
     assert shapes == {"ДЕТАЛЬ": {"polygon": [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)],
                                  "center": (5.0, 5.0)}}
+
+
+def test_remaining_time_comes_from_the_file_profile_once_it_is_loaded(monkeypatch):
+    lines = b"M73 P0 R100\n" + b"G1 X1\n" * 50 + b"M73 P50 R50\n" + b"G1 X1\n" * 50 + b"M73 P100 R0\n"
+    fake = FakeOpener([lines])
+    client = moonraker.Client("http://printer.local", opener=fake,
+                              estimate_remaining=True)
+    started = []
+    monkeypatch.setattr(moonraker.threading, "Thread",
+                        lambda target, args, daemon: type("T", (), {
+                            "start": lambda self: started.append(args)})())
+    objects = printing_objects()
+    objects["virtual_sdcard"]["file_position"] = lines.index(b"M73 P50")
+
+    first = moonraker.normalize_status(objects)
+    client._refine_remaining(objects, first)
+    assert started == [("parts/cube.gcode",)]
+    assert first["PrintInfo"]["TotalTicks"] == 2400      # old estimate until loaded
+
+    client._load_profile("parts/cube.gcode")
+    request, _ = fake.requests[0]
+    assert request.full_url == "http://printer.local/server/files/gcodes/parts/cube.gcode"
+    objects["print_stats"]["print_duration"] = 3600
+    status = moonraker.normalize_status(objects)
+    client._refine_remaining(objects, status)
+    # Half the slicer's 100 minutes is ahead; 60 real minutes bought 50 slicer
+    # minutes, and the pace is taken from the whole job until a window forms.
+    assert status["PrintInfo"]["RemainingMeasured"] is True
+    assert status["PrintInfo"]["TotalTicks"] == 3600 + 3600
+
+    idle = moonraker.normalize_status({"print_stats": {"state": "standby"}})
+    client._refine_remaining({}, idle)
+    assert client._eta_job == ("", None)

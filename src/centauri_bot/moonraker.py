@@ -10,9 +10,12 @@ import json
 import logging
 import re
 import secrets
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from . import eta
 
 
 log = logging.getLogger(__name__)
@@ -28,6 +31,9 @@ QUERY_OBJECTS = (
 # they get their own, much longer, timeout.
 MAX_UPLOAD_BYTES = 64_000_000
 UPLOAD_TIMEOUT_SEC = 180
+# The remaining-time profile streams the job's G-code line by line; only a few
+# thousand numbers are kept, so the cap is about time on the wire, not memory.
+MAX_PROFILE_BYTES = 300_000_000
 
 
 # Что разрешено запускать по кнопке из подсказки принтера: имя макроса
@@ -252,7 +258,8 @@ class Client(object):
     """The small Moonraker API surface required by this bot."""
 
     def __init__(self, base_url, api_key="", timeout=5, opener=None,
-                 camera_url="", allow_external_camera=False):
+                 camera_url="", allow_external_camera=False,
+                 estimate_remaining=False):
         base_url = str(base_url or "").strip().rstrip("/")
         if not valid_base_url(base_url):
             raise ValueError("invalid Moonraker URL")
@@ -263,6 +270,10 @@ class Client(object):
         self.camera_url = str(camera_url or "").strip()
         self.allow_external_camera = bool(allow_external_camera)
         self._eta_cache = ("", 0)
+        # Reading the whole G-code of every job is off unless the bot asks:
+        # the setup wizard and one-shot commands only want a status.
+        self.estimate_remaining = bool(estimate_remaining)
+        self._eta_job = ("", None)    # (filename, eta.Estimator or None)
 
     def _url(self, path):
         return urllib.parse.urljoin(self.base_url + "/", path.lstrip("/"))
@@ -345,8 +356,75 @@ class Client(object):
         if not objects:
             raise MoonrakerError("пустой статус Klipper")
         stats = objects.get("print_stats") or {}
-        return normalize_status(
+        status = normalize_status(
             objects, self.estimated_time(stats.get("filename")))
+        if self.estimate_remaining:
+            self._refine_remaining(objects, status)
+        return status
+
+    def _refine_remaining(self, objects, status):
+        """Replace "slicer total minus elapsed" with the file-profile estimate.
+
+        The profile is built from the job's G-code in a thread of its own - a
+        tens-of-megabytes download over the tunnel must not stall the status
+        poll. Until it is ready, or if the file has no M73 marks, the old
+        estimate stays.
+        """
+        info = status["PrintInfo"]
+        filename = info.get("Filename") or ""
+        if info.get("Status") not in (13, 6) or not filename:
+            # Forget the job: a new upload under the same name is a new file.
+            self._eta_job = ("", None)
+            return
+        job, estimator = self._eta_job
+        if job != filename:
+            self._eta_job = (filename, None)
+            threading.Thread(target=self._load_profile, args=(filename,),
+                             daemon=True).start()
+            return
+        if estimator is None:
+            return
+        card = objects.get("virtual_sdcard") or {}
+        raw = (objects.get("exclude_object") or {}).get("excluded_objects") or []
+        left = estimator.update(
+            info["CurrentTicks"], int(_number(card.get("file_position"))),
+            info.get("PrintSpeedPct") or 100, [eta.object_key(n) for n in raw])
+        info["TotalTicks"] = info["CurrentTicks"] + left
+        info["RemainingMeasured"] = True
+
+    def _load_profile(self, filename):
+        try:
+            profile = eta.parse(self._gcode_lines(filename))
+        except (MoonrakerError, OSError, ValueError) as e:
+            log.info("remaining time stays the slicer's: %s", e)
+            return
+        if profile is None:
+            log.info("remaining time stays the slicer's: no M73 marks in the file")
+            return
+        if self._eta_job[0] == filename:
+            self._eta_job = (filename, eta.Estimator(profile))
+            log.info("remaining time: file profile ready, %d pieces, %.0f min",
+                     len(profile.pieces), profile.total / 60)
+
+    def _gcode_lines(self, filename):
+        path = normalized_gcode_path(filename)
+        if not path:
+            raise MoonrakerError("некорректное имя файла")
+        request = urllib.request.Request(
+            self._url("/server/files/gcodes/" + urllib.parse.quote(path)),
+            headers=self._headers())
+        read = 0
+        try:
+            with self.opener(request, timeout=UPLOAD_TIMEOUT_SEC) as response:
+                for line in response:
+                    read += len(line)
+                    if read > MAX_PROFILE_BYTES:
+                        raise MoonrakerError("файл слишком большой для разбора")
+                    yield line
+        except urllib.error.HTTPError as exc:
+            raise MoonrakerError("HTTP %s" % exc.code)
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise MoonrakerOffline("нет связи: %s" % getattr(exc, "reason", exc))
 
     def list_files(self):
         return [item["path"] for item in self.list_file_records()]

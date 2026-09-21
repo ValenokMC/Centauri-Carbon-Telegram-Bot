@@ -770,3 +770,17 @@ def test_exclude_object_accepts_cyrillic_names_from_orca(online_bot):
     confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
     handlers.handle_callback(online_bot, callback(confirm))
     assert excluded == [names[2]]
+
+
+def test_status_shows_when_the_print_will_be_done():
+    import datetime
+    now = datetime.datetime(2026, 9, 21, 22, 30).timestamp()
+    printing = status(13, "demo.gcode", progress=50)
+    printing["PrintInfo"].update(CurrentTicks=3600, TotalTicks=3600 + 3 * 3600)
+    text = ui.render(printing, True, "Demo", now=now)
+    assert "⏳ ещё 3 ч" in text
+    assert "🏁 готово ≈ завтра в 01:30" in text
+
+    paused = status(6, "demo.gcode", progress=50)
+    paused["PrintInfo"].update(CurrentTicks=3600, TotalTicks=7200)
+    assert "🏁" not in ui.render(paused, True, "Demo", now=now)
