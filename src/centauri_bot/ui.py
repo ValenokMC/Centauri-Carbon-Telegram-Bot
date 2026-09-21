@@ -132,6 +132,19 @@ def object_label(name):
     return label.replace("_", " ") or "без имени"
 
 
+def object_labels(names, width=None):
+    """{name: "3 · label"}, numbered by position among all the job's objects.
+
+    The same numbers are drawn on the object map, and they keep two copies
+    of one model apart: those differ only in the ``_ID_`` part that
+    object_label cuts off. Excluded objects keep their number, so the
+    picture and the buttons stay in step as models are removed.
+    """
+    return {name: "%d · %s" % (number, object_label(name)[:width] if width
+                               else object_label(name))
+            for number, name in enumerate(names, 1)}
+
+
 def active_objects(status):
     state = (status or {}).get("ExcludeObject") or {}
     excluded = set(state.get("ExcludedObjects") or [])
@@ -494,20 +507,27 @@ def objects_text(state):
     active = [name for name in names if name not in excluded]
     lines = ["<b>🧩 Объекты текущей печати</b>",
              "Осталось: %d из %d" % (len(active), len(names))]
+    labels = object_labels(names)
     for name in active:
         prefix = "▶️" if name == current else "•"
         suffix = " · сейчас печатается" if name == current else ""
-        lines.append("%s %s%s" % (
-            prefix, html.escape(object_label(name)), suffix))
+        lines.append("%s %s%s" % (prefix, html.escape(labels[name]), suffix))
+    if excluded:
+        lines.append("Уже убраны: %s" % ", ".join(
+            html.escape(labels[name]) for name in names if name in excluded))
+    if state.get("Shapes"):
+        lines.append("\nНомера на кнопках — те же, что на схеме стола. "
+                     "Синяя рамка — модель, которая печатается сейчас.")
     lines.append("\nВыбранная модель больше печататься не будет; уже напечатанная часть останется на столе.")
     return "\n".join(lines)
 
 
-def kb_objects(names, refs, current=""):
+def kb_objects(names, refs, current="", all_names=None):
     rows = []
+    labels = object_labels(all_names or names, 35)
     for name, ref in zip(names, refs):
         prefix = "▶️ " if name == current else ""
-        rows.append([{"text": "❌ %s%s" % (prefix, object_label(name)[:35]),
+        rows.append([{"text": "❌ %s%s" % (prefix, labels[name]),
                       "callback_data": "ask:exclude:" + ref}])
     rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
     return rows

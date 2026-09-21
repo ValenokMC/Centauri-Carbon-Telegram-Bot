@@ -311,3 +311,25 @@ def test_slicer_estimate_is_asked_once_per_file():
 
     метаданные = [r for r, _ in fake.requests if "/server/files/metadata" in r.full_url]
     assert len(метаданные) == 1
+
+
+def test_object_names_allow_cyrillic_but_nothing_klipper_would_parse():
+    ok = "01_КОРЗИНА_—_ЛЕВАЯ_ПОЛОВИНА_—_4_ШТ.STEP_ID_0_COPY_0"
+    assert moonraker.normalized_object_name(ok) == ok
+    for bad in ("cube CANCEL_PRINT", "cube\nM112", "cube;x", "cube#x",
+                "cube*1", 'cube"', "cube'", "cube\\", "A=B", "_hidden",
+                "cube​", "cube M112", ""):
+        assert moonraker.normalized_object_name(bad) == "", bad
+
+
+def test_exclude_state_carries_outlines_of_known_objects_only():
+    raw = {"exclude_object": {"objects": [
+        {"name": "ДЕТАЛЬ", "center": [5, 5],
+         "polygon": [[0, 0], [10, 0], [10, 10], "junk"]},
+        {"name": "bad name", "polygon": [[0, 0], [1, 0], [1, 1]]},
+        {"name": "FLAT", "polygon": [[0, 0], [1, 1]]},
+    ]}}
+    state = moonraker.normalize_exclude_state(raw)
+    shapes = moonraker.exclude_shapes(raw, state["Objects"])
+    assert shapes == {"ДЕТАЛЬ": {"polygon": [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)],
+                                 "center": (5.0, 5.0)}}

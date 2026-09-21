@@ -14,6 +14,7 @@ from html import escape
 from . import backend
 from . import heightmap
 from . import moonraker
+from . import objectmap
 from . import printer_state as ps
 from . import schedule
 from . import storage
@@ -38,6 +39,8 @@ CONTROL_OFF = "Управление выключено в настройках.\
 # that really slept would take minutes.
 SETTLE_SEC = 1.2
 SETTLE_AFTER_ACTION_SEC = 1.5
+
+CAPTION_LIMIT = 1024
 
 
 def _is_owner(bot, chat, sender=None):
@@ -160,6 +163,7 @@ def show_objects(bot, chat, mid=None, is_photo=False, force_new=False):
     names = list(state.get("Objects") or [])
     excluded = set(state.get("ExcludedObjects") or [])
     active = [name for name in names if name not in excluded]
+    photo = None
     if state.get("PrintState") not in ("printing", "paused"):
         text = "🧩 Сейчас нет активной печати с отдельными объектами."
         rows = ui.kb_back()
@@ -168,12 +172,24 @@ def show_objects(bot, chat, mid=None, is_photo=False, force_new=False):
                 "объектов или остался только один.")
         rows = ui.kb_back()
     else:
-        values = [{"name": name, "filename": state.get("Filename") or ""}
-                  for name in active]
+        labels = ui.object_labels(names)
+        values = [{"name": name, "filename": state.get("Filename") or "",
+                   "label": labels[name]} for name in active]
         refs = bot.prepare_object_choices(values)
+        try:
+            photo = objectmap.render(names, state.get("Shapes") or {},
+                                     excluded, state.get("CurrentObject") or "")
+        except (KeyError, TypeError, ValueError) as e:
+            log.info("object map not drawn: %s", e)
+            state = dict(state, Shapes={})
         text = ui.objects_text(state)
-        rows = ui.kb_objects(active, refs, state.get("CurrentObject") or "")
-    _show_readonly(bot, chat, mid, is_photo, force_new, text, rows)
+        if photo and len(text) > CAPTION_LIMIT:
+            # A caption holds 1024 characters; the buttons carry the names anyway.
+            text = ("<b>🧩 Объекты текущей печати</b>\nОсталось: %d из %d\n\n"
+                    "Номера на кнопках — те же, что на схеме стола."
+                    % (len(active), len(names)))
+        rows = ui.kb_objects(active, refs, state.get("CurrentObject") or "", names)
+    _show_readonly(bot, chat, mid, is_photo, force_new, text, rows, photo=photo)
 
 
 def handle_callback(bot, query):
@@ -509,7 +525,7 @@ def _ask_confirmation(bot, chat, mid, query, what, is_photo):
             "❌ <b>Убрать модель из текущей печати?</b>\n%s\n\n"
             "Klipper пропустит все оставшиеся движения этой модели. "
             "Уже напечатанная часть останется на столе; вернуть её в это задание нельзя."
-            % escape(ui.object_label(value["name"])),
+            % escape(value.get("label") or ui.object_label(value["name"])),
             keyboard=ui.kb_confirm("exclude:%s" % token, "убрать модель"),
             is_photo=is_photo)
         return
@@ -655,7 +671,7 @@ def _do_action(bot, chat, mid, query, what):
         else:
             ok, info = bot.perform(backend.EXCLUDE_OBJECT, value)
             note = ("🧩 Модель <b>%s</b> убрана из текущей печати.\n\n"
-                    % escape(ui.object_label(value["name"]))) if ok \
+                    % escape(value.get("label") or ui.object_label(value["name"]))) if ok \
                 else "⚠️ Убрать модель не вышло (%s).\n\n" % escape(info)
     elif what.startswith("prompt:"):
         # Подтверждённая кнопка подсказки, помеченной принтером как опасная.
@@ -686,8 +702,12 @@ def _do_action(bot, chat, mid, query, what):
     time.sleep(SETTLE_AFTER_ACTION_SEC)
     # Answering the same callback twice is refused by Telegram with "query is
     # too old or invalid", which used to fill the log.
-    bot.api.edit_message(chat, mid, bot.render(note), keyboard=bot.keyboard(),
-                         photo=bot.grab(max_age=5))
+    # Print, schedule and delete confirmations are separate messages. Editing
+    # the pressed one in place left the status in a message the refresh loop
+    # does not track: it stayed frozen while the loop kept editing the old one.
+    bot.edit_main_from_callback(mid, bot.render(note), keyboard=bot.keyboard(),
+                                photo=bot.grab(max_age=5),
+                                is_photo="photo" in query.get("message", {}))
 
 
 # ------------------------------------------------------------------ messages

@@ -722,3 +722,51 @@ def test_diagnostics_card_survives_a_backend_without_memory_data():
 def test_progress_bar_turns_yellow_when_stalled():
     assert "🟩" in ui.bar(50, code=13)
     assert "🟨" in ui.bar(50, code=6)
+
+
+def test_action_on_a_separate_confirmation_lands_in_the_tracked_message(online_bot):
+    """Print/schedule/delete confirmations are new messages. The result must
+    go to the one tracked status, or the refresh loop keeps editing a message
+    the owner no longer looks at, and the visible one freezes."""
+    storage.set_message_id(77)
+    handlers.handle_callback(online_bot, callback("ask:stop"))
+    confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert online_bot.api.edited[-1][1] == 77
+    assert (OWNER, 42) in online_bot.api.deleted
+    assert storage.message_id() == 77
+
+
+def test_exclude_object_accepts_cyrillic_names_from_orca(online_bot):
+    online_bot.cfg.update({"backend": "moonraker",
+                           "moonraker_allow_job_control": True})
+    online_bot.backend_name = backend.MOONRAKER
+    names = ["01_КОРЗИНА_—_ЛЕВАЯ.STEP_ID_0_COPY_0",
+             "05_СТОЙКА_—_2_ШТ.STEP_ID_1_COPY_0",
+             "05_СТОЙКА_—_2_ШТ.STEP_ID_2_COPY_0"]
+    square = [(10, 10), (40, 10), (40, 40), (10, 40)]
+    live = {"Objects": names, "ExcludedObjects": [], "CurrentObject": names[0],
+            "PrintState": "printing", "Filename": "Demo_Print.gcode",
+            "Shapes": {name: {"polygon": [(x + 50 * i, y) for x, y in square]}
+                       for i, name in enumerate(names)}}
+    excluded = []
+    online_bot.moonraker = type("Moonraker", (), {
+        "exclude_object_state": lambda self: dict(live),
+        "exclude_object": lambda self, name: excluded.append(name),
+    })()
+    online_bot.status = status(13, "Demo_Print.gcode", ExcludeObject={
+        "Objects": names, "ExcludedObjects": [], "CurrentObject": names[0]})
+    assert any(b["callback_data"] == "objects"
+               for row in online_bot.keyboard() for b in row)
+
+    handlers.handle_callback(online_bot, callback("objects"))
+    buttons = [b for row in online_bot.api.edited[-1][3] for b in row
+               if b["callback_data"].startswith("ask:exclude:")]
+    # Two copies of one model: only the number tells them apart.
+    assert [b["text"] for b in buttons[1:]] == [
+        "❌ 2 · 05 СТОЙКА — 2 ШТ", "❌ 3 · 05 СТОЙКА — 2 ШТ"]
+    handlers.handle_callback(online_bot, callback(buttons[2]["callback_data"]))
+    assert "3 · 05 СТОЙКА" in online_bot.api.edited[-1][2]
+    confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert excluded == [names[2]]

@@ -83,7 +83,11 @@ def valid_gcode_path(value):
 
 
 MACRO_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
-OBJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:+-]{0,127}$")
+# Orca names objects after the model file, so Cyrillic and dashes like "—" are
+# ordinary here. What must stay out is whatever Klipper's G-code parser treats
+# specially: whitespace ends the NAME value, ; # * start a comment or checksum,
+# and quotes or a backslash change shlex's splitting of the arguments.
+OBJECT_RE = re.compile(r"""^[^\W_][^\s;#*"'\\=]{0,127}$""")
 
 
 def normalized_macro_name(value):
@@ -94,7 +98,7 @@ def normalized_macro_name(value):
 def normalized_object_name(value):
     """Return a Klipper object name safe to place in a fixed G-code command."""
     name = str(value or "").strip()
-    return name if OBJECT_RE.match(name) else ""
+    return name if OBJECT_RE.match(name) and name.isprintable() else ""
 
 
 def normalize_exclude_state(objects):
@@ -117,6 +121,39 @@ def normalize_exclude_state(objects):
         "ExcludedObjects": excluded,
         "CurrentObject": current if current in names else "",
     }
+
+
+def _mm_point(value):
+    try:
+        x, y = float(value[0]), float(value[1])
+    except (TypeError, ValueError, IndexError, KeyError):
+        return None
+    return (x, y) if abs(x) < 2000 and abs(y) < 2000 else None
+
+
+def exclude_shapes(objects, names):
+    """Outlines of the named objects in bed millimetres, for the object map.
+
+    Only for the objects screen: the polygons are large and never change
+    during a print, so the periodic status leaves them out.
+    """
+    raw = (objects or {}).get("exclude_object") or {}
+    shapes = {}
+    for item in raw.get("objects") or []:
+        if not isinstance(item, dict):
+            continue
+        name = normalized_object_name(item.get("name"))
+        if not name or name not in names or name in shapes:
+            continue
+        polygon = [p for p in (_mm_point(v) for v in (item.get("polygon") or [])[:2000]) if p]
+        if len(polygon) < 3:
+            continue
+        shape = {"polygon": polygon}
+        centre = _mm_point(item.get("center") or ())
+        if centre:
+            shape["center"] = centre
+        shapes[name] = shape
+    return shapes
 
 
 def normalize_status(objects, estimated_time=0):
@@ -348,6 +385,7 @@ class Client(object):
         if not objects:
             raise MoonrakerError("пустой статус объектов Klipper")
         state = normalize_exclude_state(objects)
+        state["Shapes"] = exclude_shapes(objects, state["Objects"])
         stats = objects.get("print_stats") or {}
         state.update({
             "PrintState": str(stats.get("state") or "").lower(),
