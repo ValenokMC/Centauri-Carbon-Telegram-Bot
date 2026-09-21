@@ -10,6 +10,9 @@ import re
 import tempfile
 
 from . import paths
+from . import backend as backend_mod
+from . import moonraker
+from . import schedule
 
 
 # Values a fresh install starts from. Only the four identity fields are blank;
@@ -17,8 +20,31 @@ from . import paths
 DEFAULTS = {
     "telegram_token": "",
     "chat_id": "",
+    "owner_user_id": "",
     "printer_ip": "",
     "printer_name": "Centauri Carbon",
+    # ``sdcp`` is the stock V1.4.49 protocol.  COSMOS uses Moonraker.  Keeping
+    # SDCP as the default makes existing installations upgrade without a
+    # surprise protocol switch.
+    "backend": "sdcp",
+    "moonraker_url": "",
+    "moonraker_api_key": "",
+    "moonraker_poll_sec": 2,
+    "moonraker_timeout_sec": 5,
+    "moonraker_camera_url": "",
+    "moonraker_allow_external_camera": False,
+    # A newly selected Moonraker backend is monitoring-only until each class of
+    # remote action is explicitly enabled.  No macro/arbitrary-G-code setting
+    # exists on purpose.
+    "moonraker_allow_job_control": False,
+    "moonraker_allow_remote_start": False,
+    # File deletion is a separate opt-in.  It always still needs a one-use
+    # confirmation tied to the exact file selected in Telegram.
+    "moonraker_allow_file_delete": False,
+    "moonraker_allow_hardware_controls": False,
+    # Macro bodies are installation-specific.  The bot only offers names from
+    # this explicit list and every execution requires a fresh confirmation.
+    "moonraker_macro_whitelist": [],
     "send_photo": True,
     "progress_every_pct": 0,        # 0 = no interim reports, 25 = every 25%
     "allow_control": True,          # False keeps the bot read-only
@@ -28,6 +54,8 @@ DEFAULTS = {
     "keepalive_sec": 20,            # the printer drops a silent connection
     "offline_grace_sec": 60,        # stay quiet until a dropout really lasts
     "status_refresh_sec": 120,      # how often to refresh the message while printing
+    "notify_cooldown": True,
+    "cooldown_temp_c": 50,
     # Rail lubrication reminder. Elegoo's wiki documents the procedure but
     # publishes no hour figure, only "every 1-2 months". So either threshold
     # fires, whichever comes first; the hours are an estimate for that interval.
@@ -37,6 +65,12 @@ DEFAULTS = {
     "light_off_at_night": True,
     "night_from": 22,
     "night_to": 8,
+    # Delayed print starts (COSMOS with remote start allowed). A blank offset
+    # means the clock of the machine running the bot; a server is usually in
+    # UTC, so put the owner's zone here as "+03:00".
+    "schedule_utc_offset": "",
+    "schedule_reminder_min": 10,
+    "schedule_late_grace_min": 15,
     "log_level": "INFO",
 }
 
@@ -123,8 +157,27 @@ def validate(cfg):
                         "(expected the token BotFather gave you)")
     if not valid_chat_id(cfg.get("chat_id")):
         problems.append("chat_id is missing or not a number")
+    owner_user = str(cfg.get("owner_user_id") or "").strip()
+    if owner_user and not owner_user.isdigit():
+        problems.append("owner_user_id must be a positive Telegram user id")
     if not valid_host(cfg.get("printer_ip")):
         problems.append("printer_ip is not a valid IP address or hostname")
+    try:
+        schedule.parse_offset(cfg.get("schedule_utc_offset", ""))
+    except ValueError:
+        problems.append("schedule_utc_offset must be blank or look like +03:00")
+    # "auto" разрешено: конкретный бэкенд определится при запуске, опросом
+    # принтера. Проверять его тут нечем — сети на этом этапе трогать нельзя.
+    if str(cfg.get("backend", "")).strip().lower() == "auto":
+        return problems
+    selected = backend_mod.name(cfg)
+    if not selected:
+        problems.append("backend must be 'sdcp' or 'moonraker'")
+    if selected == backend_mod.MOONRAKER:
+        url = cfg.get("moonraker_url") or (
+            "http://%s" % str(cfg.get("printer_ip") or "").strip())
+        if not moonraker.valid_base_url(url):
+            problems.append("moonraker_url is not a valid HTTP or HTTPS URL")
     return problems
 
 
@@ -168,8 +221,11 @@ def summary(cfg):
         "Owner chat id  : %s" % (cfg.get("chat_id") or "(not set)"),
         "Printer address: %s" % (cfg.get("printer_ip") or "(not set)"),
         "Printer name   : %s" % cfg.get("printer_name"),
-        "Mode           : %s" % ("monitoring and control" if cfg.get("allow_control")
-                                 else "monitoring only"),
+        "Backend        : %s" % (backend_mod.name(cfg) or "(invalid)"),
+        "Mode           : %s" % (
+            "monitoring and permitted controls"
+            if backend_mod.allowed_actions(cfg) - backend_mod.READ_ACTIONS
+            else "monitoring only"),
         "Camera photos  : %s" % ("on" if cfg.get("send_photo") else "off"),
         "Anonymous stats: %s" % ("on" if cfg.get("anonymous_statistics") else "off"),
     ]

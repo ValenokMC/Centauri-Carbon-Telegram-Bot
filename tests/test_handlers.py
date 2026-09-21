@@ -2,7 +2,7 @@
 """Access control, dangerous-command confirmation, and keyboard layout."""
 import pytest
 
-from centauri_bot import handlers, sdcp, storage, ui
+from centauri_bot import backend, handlers, sdcp, storage, ui
 
 from conftest import status
 
@@ -56,6 +56,13 @@ def test_stranger_pressing_a_button_is_refused_and_nothing_is_edited(bot):
     assert bot.api.answers == [("cb-1", "Не для тебя.")]
     assert bot.api.edited == []
     assert bot.api.sent == []
+
+
+def test_callback_sender_cannot_hide_behind_owner_chat(bot):
+    forged = callback("do:stop")
+    forged["from"]["id"] = STRANGER
+    handlers.handle_callback(bot, forged)
+    assert bot.api.answers == [("cb-1", "Не для тебя.")]
 
 
 def test_stranger_cannot_stop_a_print(online_bot):
@@ -183,6 +190,147 @@ def test_back_recreates_one_message_when_both_edits_fail(bot):
     assert "Demo Centauri" in bot.api.sent[0][1]
 
 
+def test_cosmos_diagnostics_button_is_read_only_and_renders_health(bot):
+    bot.cfg["backend"] = "moonraker"
+    bot.backend_name = backend.MOONRAKER
+    bot.moonraker = type("Moonraker", (), {"diagnostics": lambda self: {
+        "moonraker_version": "v0.9", "klipper_version": "v0.13",
+        "klippy_state": "ready", "klippy_message": "", "warnings": 0,
+        "failed_components": 0, "object_count": 111,
+    }})()
+
+    handlers.handle_callback(bot, callback("diag"))
+
+    assert "Диагностика COSMOS" in bot.api.edited[-1][2]
+    assert "ready" in bot.api.edited[-1][2]
+
+
+def test_mesh_and_macro_execution_have_separate_safe_paths(online_bot):
+    online_bot.cfg.update({"backend": "moonraker", "moonraker_macro_whitelist": ["LOAD_FILAMENT"]})
+    online_bot.backend_name = backend.MOONRAKER
+    called = []
+    online_bot.moonraker = type("Moonraker", (), {
+        "bed_mesh": lambda self: {"profile": "default", "points": [[-0.1, 0.0], [0.1, 0.2]]},
+        "list_macros": lambda self: ["LOAD_FILAMENT", "UNLOAD_FILAMENT"],
+        "run_macro": lambda self, name: called.append(name),
+    })()
+
+    handlers.handle_callback(online_bot, callback("mesh"))
+    assert "Карта высот" in online_bot.api.edited[-1][2]
+
+    handlers.handle_callback(online_bot, callback("macros"))
+    macro_text = online_bot.api.edited[-1][2]
+    assert "Загрузить пластик" in macro_text
+    assert "подача продолжится после подтверждения" in macro_text
+    macro_button = [button for row in online_bot.api.edited[-1][3] for button in row
+                    if button["callback_data"].startswith("ask:macro:")][0]
+    assert macro_button["text"] == "%s Загрузить пластик" % ui.macro_icon("LOAD_FILAMENT")
+    handlers.handle_callback(online_bot, callback(macro_button["callback_data"]))
+    confirmation_text = online_bot.api.edited[-1][2]
+    assert "Запустить «Загрузить пластик»?" in confirmation_text
+    assert "Системное имя: <code>LOAD_FILAMENT</code>" in confirmation_text
+    confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
+    assert called == []
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert called == ["LOAD_FILAMENT"]
+    assert "Действие «Загрузить пластик» запущено" in online_bot.api.edited[-1][2]
+
+
+def test_every_owner_approved_cosmos_macro_has_a_russian_action_name():
+    expected = {
+        "CHECK_CALIBRATION": "Проверить калибровки",
+        "CLEAN_NOZZLE": "Очистить сопло",
+        "LOAD_FILAMENT": "Загрузить пластик",
+        "UNLOAD_FILAMENT": "Выгрузить пластик",
+        "MOVE_TO_TRAY": "Переместить голову к заднему лотку",
+    }
+    keyboard = ui.kb_macros(list(expected), ["ref-%d" % i for i in range(len(expected))])
+
+    # Значок показывает группу действия; подпись обязана остаться русской.
+    assert [row[0]["text"] for row in keyboard[:-1]] == [
+        "%s %s" % (ui.macro_icon(name), expected[name]) for name in expected]
+    assert all(ui.macro_description(name) != "назначение не описано в боте"
+               for name in expected)
+
+
+def test_cosmos_hardware_control_requires_confirmation(online_bot):
+    online_bot.cfg.update({"backend": "moonraker", "moonraker_allow_hardware_controls": True})
+    online_bot.backend_name = backend.MOONRAKER
+    calls = []
+    online_bot.moonraker = type("Moonraker", (), {
+        "set_light": lambda self, value: calls.append(value),
+    })()
+    online_bot.status = status(0, LightStatus={"SecondLight": 0})
+
+    handlers.handle_callback(online_bot, callback("light"))
+    confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
+    assert calls == []
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert calls == [True]
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert calls == [True]
+
+
+def test_exclude_object_lists_live_models_confirms_and_rechecks_job(online_bot):
+    online_bot.cfg.update({"backend": "moonraker",
+                           "moonraker_allow_job_control": True})
+    online_bot.backend_name = backend.MOONRAKER
+    names = ["CUBE.DRC_ID_0_COPY_0", "PLUG.DRC_ID_1_COPY_0"]
+    live = {"Objects": names, "ExcludedObjects": [],
+            "CurrentObject": names[0], "PrintState": "printing",
+            "Filename": "Demo_Print.gcode"}
+    excluded = []
+    online_bot.moonraker = type("Moonraker", (), {
+        "exclude_object_state": lambda self: dict(live),
+        "exclude_object": lambda self, name: excluded.append(name),
+    })()
+    online_bot.status = status(
+        13, "Demo_Print.gcode", progress=50,
+        ExcludeObject={"Objects": names, "ExcludedObjects": [],
+                       "CurrentObject": names[0]})
+
+    handlers.handle_callback(online_bot, callback("objects"))
+    text, keyboard = online_bot.api.edited[-1][2:]
+    assert "Объекты текущей печати" in text
+    ask = [button for row in keyboard for button in row
+           if button["callback_data"].startswith("ask:exclude:")][1]
+
+    handlers.handle_callback(online_bot, callback(ask["callback_data"]))
+    confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
+    assert excluded == []
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert excluded == [names[1]]
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert excluded == [names[1]]
+
+
+def test_exclude_object_confirmation_refuses_a_changed_print(online_bot):
+    online_bot.cfg.update({"backend": "moonraker",
+                           "moonraker_allow_job_control": True})
+    online_bot.backend_name = backend.MOONRAKER
+    names = ["FIRST", "SECOND"]
+    live = {"Objects": names, "ExcludedObjects": [], "CurrentObject": "FIRST",
+            "PrintState": "printing", "Filename": "Demo_Print.gcode"}
+    excluded = []
+    online_bot.moonraker = type("Moonraker", (), {
+        "exclude_object_state": lambda self: dict(live),
+        "exclude_object": lambda self, name: excluded.append(name),
+    })()
+    online_bot.status = status(
+        13, "Demo_Print.gcode", ExcludeObject={"Objects": names,
+        "ExcludedObjects": [], "CurrentObject": "FIRST"})
+
+    handlers.handle_callback(online_bot, callback("objects"))
+    ask = [button for row in online_bot.api.edited[-1][3] for button in row
+           if button["callback_data"].startswith("ask:exclude:")][0]
+    handlers.handle_callback(online_bot, callback(ask["callback_data"]))
+    confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
+    live["Filename"] = "another.gcode"
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert excluded == []
+    assert "задание печати сменилось" in online_bot.api.answers[-1][1]
+
+
 def test_connection_loss_and_recovery_replace_the_one_main_panel(bot):
     """Network notices must never sit above a separate stale status panel."""
     storage.set_message_id(77)
@@ -239,8 +387,123 @@ def test_confirmed_stop_sends_the_stop_command(online_bot):
     sent_commands = []
     online_bot.run_command = lambda cmd, *a, **k: (
         sent_commands.append(cmd), (True, "Ack=0"))[1]
-    handlers.handle_callback(online_bot, callback("do:stop"))
+    handlers.handle_callback(online_bot, callback("ask:stop"))
+    confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
+    handlers.handle_callback(online_bot, callback(confirm))
     assert sdcp.CMD_STOP in sent_commands
+
+
+def test_print_confirmation_stays_bound_to_original_file(online_bot):
+    online_bot.status = status(0)
+    online_bot.files = ["/local/original.gcode"]
+    sent = []
+    online_bot.run_command = lambda cmd, data=None, **kwargs: (
+        sent.append((cmd, data)), (True, "Ack=0"))[1]
+
+    handlers.show_files(online_bot, OWNER, force_new=True)
+    file_keyboard = online_bot.api.sent[-1][2]
+    ask_data = file_keyboard[0][0]["callback_data"]
+    handlers.handle_callback(online_bot, callback(ask_data))
+
+    confirm_keyboard = online_bot.api.sent[-1][2]
+    do_data = confirm_keyboard[0][0]["callback_data"]
+    online_bot.files = ["/local/replaced.gcode"]
+    handlers.handle_callback(online_bot, callback(do_data))
+
+    starts = [(cmd, data) for cmd, data in sent if cmd == sdcp.CMD_START]
+    assert starts == [(sdcp.CMD_START,
+                       {"Filename": "/local/original.gcode", "StartLayer": 0})]
+
+    # Replaying the same old Telegram callback is harmless.
+    handlers.handle_callback(online_bot, callback(do_data))
+    starts = [(cmd, data) for cmd, data in sent if cmd == sdcp.CMD_START]
+    assert len(starts) == 1
+
+
+def test_delete_requires_a_fresh_one_use_confirmation_and_never_targets_current_print(online_bot):
+    online_bot.cfg.update({"backend": "moonraker", "moonraker_allow_file_delete": True})
+    online_bot.backend_name = backend.MOONRAKER
+    online_bot.moonraker = type("Moonraker", (), {"delete": lambda self, path: deleted.append(path)})()
+    online_bot.status = status(0)
+    online_bot.files = ["old.gcode"]
+    online_bot.refresh_files = lambda: (True, "Moonraker")
+    deleted = []
+
+    handlers.show_files(online_bot, OWNER, force_new=True)
+    delete_button = [button for row in online_bot.api.sent[-1][2] for button in row
+                     if button["callback_data"].startswith("ask:delete:")][0]
+    handlers.handle_callback(online_bot, callback(delete_button["callback_data"]))
+    confirm = online_bot.api.sent[-1][2][0][0]["callback_data"]
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert deleted == ["old.gcode"]
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert deleted == ["old.gcode"]
+
+    online_bot.files = ["current.gcode"]
+    online_bot.status = status(13, "current.gcode", progress=5)
+    handlers.show_files(online_bot, OWNER, force_new=True)
+    delete_button = [button for row in online_bot.api.sent[-1][2] for button in row
+                     if button["callback_data"].startswith("ask:delete:")][0]
+    handlers.handle_callback(online_bot, callback(delete_button["callback_data"]))
+    assert "текущей печати" in online_bot.api.answers[-1][1]
+    assert deleted == ["old.gcode"]
+
+
+def _delete_all_bot(online_bot, files, deleted):
+    online_bot.cfg.update({"backend": "moonraker", "moonraker_allow_file_delete": True})
+    online_bot.backend_name = backend.MOONRAKER
+    online_bot.moonraker = type("Moonraker", (), {"delete": lambda self, path: deleted.append(path)})()
+    online_bot.files = list(files)
+    online_bot.refresh_files = lambda: (True, "Moonraker")
+
+
+def _delete_all_button(online_bot):
+    handlers.show_files(online_bot, OWNER, force_new=True)
+    found = [button for row in online_bot.api.sent[-1][2] for button in row
+             if button["callback_data"].startswith("ask:delall:")]
+    return found[0] if found else None
+
+
+def test_delete_all_removes_the_listed_files_once_after_confirmation(online_bot):
+    deleted = []
+    _delete_all_bot(online_bot, ["a.gcode", "b.gcode", "c.gcode"], deleted)
+    online_bot.status = status(0)
+
+    button = _delete_all_button(online_bot)
+    assert "(3)" in button["text"]
+    handlers.handle_callback(online_bot, callback(button["callback_data"]))
+    assert deleted == []
+    assert "Удалить все файлы" in online_bot.api.sent[-1][1]
+
+    # A file uploaded while the question is open is not part of what was confirmed.
+    online_bot.files.append("new.gcode")
+    confirm = online_bot.api.sent[-1][2][0][0]["callback_data"]
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert deleted == ["a.gcode", "b.gcode", "c.gcode"]
+
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert deleted == ["a.gcode", "b.gcode", "c.gcode"]
+
+
+def test_delete_all_keeps_the_file_being_printed(online_bot):
+    deleted = []
+    _delete_all_bot(online_bot, ["current.gcode", "old.gcode"], deleted)
+    online_bot.status = status(13, "current.gcode", progress=5)
+
+    handlers.handle_callback(online_bot, callback(_delete_all_button(online_bot)["callback_data"]))
+    assert "текущей печати останется" in online_bot.api.sent[-1][1]
+    handlers.handle_callback(online_bot, callback(online_bot.api.sent[-1][2][0][0]["callback_data"]))
+    assert deleted == ["old.gcode"]
+
+
+def test_delete_all_is_absent_without_delete_permission_or_with_one_file(online_bot):
+    deleted = []
+    _delete_all_bot(online_bot, ["only.gcode"], deleted)
+    assert _delete_all_button(online_bot) is None
+
+    online_bot.files = ["a.gcode", "b.gcode"]
+    online_bot.cfg["moonraker_allow_file_delete"] = False
+    assert _delete_all_button(online_bot) is None
 
 
 def test_pause_asks_for_confirmation(online_bot):
@@ -249,14 +512,19 @@ def test_pause_asks_for_confirmation(online_bot):
     assert "паузу" in text
 
 
-def test_resume_needs_no_confirmation(online_bot):
-    """Resuming is not destructive, and an extra tap on a paused print at 3am
-    helps nobody."""
+def test_resume_asks_for_one_use_confirmation(online_bot):
+    online_bot.status = status(6, "Demo_Print.gcode", progress=50)
     sent_commands = []
     online_bot.run_command = lambda cmd, *a, **k: (
         sent_commands.append(cmd), (True, "Ack=0"))[1]
-    handlers.handle_callback(online_bot, callback("do:resume"))
+    handlers.handle_callback(online_bot, callback("ask:resume"))
+    assert sent_commands == []
+    confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
+    handlers.handle_callback(online_bot, callback(confirm))
     assert sdcp.CMD_RESUME in sent_commands
+    sent_commands.clear()
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert sent_commands == []
 
 
 def test_control_commands_are_refused_in_monitoring_only_mode(online_bot):
@@ -267,6 +535,22 @@ def test_control_commands_are_refused_in_monitoring_only_mode(online_bot):
     handlers.handle_callback(online_bot, callback("do:stop"))
     assert sent_commands == []
     assert "выключено" in online_bot.api.answers[-1][1]
+
+
+def test_confirmed_job_action_fails_closed_after_disconnect(online_bot):
+    handlers.handle_callback(online_bot, callback("ask:pause"))
+    confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
+    online_bot.online = False
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert "не в сети" in online_bot.api.answers[-1][1]
+
+
+def test_job_action_refuses_wrong_live_state(online_bot):
+    handlers.handle_callback(online_bot, callback("ask:pause"))
+    confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
+    online_bot.status = status(0)
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert "не выполняется" in online_bot.api.answers[-1][1]
 
 
 # ------------------------------------------------------------- keyboards
@@ -284,6 +568,21 @@ def test_printing_shows_pause_and_stop():
     assert any("Пауза" in l for l in labels)
     assert any("Стоп" in l for l in labels)
     assert not any("Продолжить" in l for l in labels)
+
+
+def test_exclude_button_only_appears_for_multiple_active_objects():
+    allowed = {backend.PAUSE, backend.CANCEL, backend.EXCLUDE_OBJECT}
+    multiple = status(13, "demo.gcode", ExcludeObject={
+        "Objects": ["ONE", "TWO"], "ExcludedObjects": [],
+        "CurrentObject": "ONE"})
+    labels = [b["text"] for row in ui.kb_main(multiple, allowed=allowed)
+              for b in row]
+    assert any("Убрать объект" in label for label in labels)
+
+    multiple["ExcludeObject"]["ExcludedObjects"] = ["TWO"]
+    labels = [b["text"] for row in ui.kb_main(multiple, allowed=allowed)
+              for b in row]
+    assert not any("Убрать объект" in label for label in labels)
 
 
 def test_paused_shows_resume_not_pause():
@@ -358,11 +657,130 @@ def test_render_detailed_adds_fans_and_chamber():
     assert "камера" in detailed
 
 
+def test_cancelled_job_with_stale_moonraker_metadata_has_no_print_controls():
+    stopped = status(8, "cancelled.gcode", progress=0,
+                     CurrentLayer=40, TotalLayer=150)
+    keyboard = ui.kb_main(stopped, allowed={backend.PAUSE, backend.RESUME,
+                                             backend.CANCEL})
+    callbacks = [button.get("callback_data") for row in keyboard for button in row]
+    assert "ask:pause" not in callbacks
+    assert "ask:resume" not in callbacks
+    assert "ask:stop" not in callbacks
+    shown = ui.render(stopped, True, "Demo")
+    assert "cancelled.gcode" not in shown
+    assert "слой 40" not in shown
+
+
 def test_unknown_status_code_is_described_not_hidden():
-    text = ui.render(status(77, "demo.gcode", progress=50), True, "Demo")
-    assert "77" in text
+    # 77 used to stand in for "unknown" here. It is now a named state - the
+    # Moonraker backend's "Klipper is not ready" - so an arbitrary code takes
+    # its place and the intent of this test is unchanged.
+    text = ui.render(status(42, "demo.gcode", progress=50), True, "Demo")
+    assert "42" in text
+
+
+def test_klipper_shutdown_shows_the_reason_not_a_bare_code():
+    payload = status(77, "demo.gcode", progress=50, Moonraker={
+        "KlippyState": "shutdown",
+        "Message": "MCU 'hotend' shutdown: Timer too close\n"
+                   "This often indicates the host computer is overloaded.",
+    })
+    text = ui.render(payload, True, "Demo")
+    assert "Timer too close" in text
+    assert "код 77" not in text
+    # Klipper appends four lines of generic host-load advice to every shutdown.
+    # Only the first line names the fault, so the rest must not reach the chat.
+    assert "overloaded" not in text
+
+
+def test_stall_header_prefers_the_reason_and_falls_back_to_the_code():
+    with_reason = ui.stall_header(
+        {"Moonraker": {"Message": "MCU 'mcu' shutdown: Timer too close"}}, 77)
+    assert "Timer too close" in with_reason
+    assert "77" not in with_reason
+
+    without_reason = ui.stall_header({}, 77)
+    assert "77" in without_reason
+
+
+def test_diagnostics_card_reports_board_memory():
+    text = ui.diagnostics_text({"memory_total": 117232, "memory_available": 29300})
+    assert "28.6" in text and "114" in text
+    assert "zram" not in text
+
+
+def test_diagnostics_card_warns_when_memory_looks_like_a_missing_zram():
+    # 15 MB free is what this board shows when COSMOS's zram swap never started.
+    text = ui.diagnostics_text({"memory_total": 117232, "memory_available": 15104})
+    assert "zram" in text and "/proc/swaps" in text
+
+
+def test_diagnostics_card_survives_a_backend_without_memory_data():
+    assert "нет данных" in ui.diagnostics_text({})
 
 
 def test_progress_bar_turns_yellow_when_stalled():
     assert "🟩" in ui.bar(50, code=13)
     assert "🟨" in ui.bar(50, code=6)
+
+
+def test_action_on_a_separate_confirmation_lands_in_the_tracked_message(online_bot):
+    """Print/schedule/delete confirmations are new messages. The result must
+    go to the one tracked status, or the refresh loop keeps editing a message
+    the owner no longer looks at, and the visible one freezes."""
+    storage.set_message_id(77)
+    handlers.handle_callback(online_bot, callback("ask:stop"))
+    confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert online_bot.api.edited[-1][1] == 77
+    assert (OWNER, 42) in online_bot.api.deleted
+    assert storage.message_id() == 77
+
+
+def test_exclude_object_accepts_cyrillic_names_from_orca(online_bot):
+    online_bot.cfg.update({"backend": "moonraker",
+                           "moonraker_allow_job_control": True})
+    online_bot.backend_name = backend.MOONRAKER
+    names = ["01_КОРЗИНА_—_ЛЕВАЯ.STEP_ID_0_COPY_0",
+             "05_СТОЙКА_—_2_ШТ.STEP_ID_1_COPY_0",
+             "05_СТОЙКА_—_2_ШТ.STEP_ID_2_COPY_0"]
+    square = [(10, 10), (40, 10), (40, 40), (10, 40)]
+    live = {"Objects": names, "ExcludedObjects": [], "CurrentObject": names[0],
+            "PrintState": "printing", "Filename": "Demo_Print.gcode",
+            "Shapes": {name: {"polygon": [(x + 50 * i, y) for x, y in square]}
+                       for i, name in enumerate(names)}}
+    excluded = []
+    online_bot.moonraker = type("Moonraker", (), {
+        "exclude_object_state": lambda self: dict(live),
+        "exclude_object": lambda self, name: excluded.append(name),
+    })()
+    online_bot.status = status(13, "Demo_Print.gcode", ExcludeObject={
+        "Objects": names, "ExcludedObjects": [], "CurrentObject": names[0]})
+    assert any(b["callback_data"] == "objects"
+               for row in online_bot.keyboard() for b in row)
+
+    handlers.handle_callback(online_bot, callback("objects"))
+    buttons = [b for row in online_bot.api.edited[-1][3] for b in row
+               if b["callback_data"].startswith("ask:exclude:")]
+    # Two copies of one model: only the number tells them apart.
+    assert [b["text"] for b in buttons[1:]] == [
+        "❌ 2 · 05 СТОЙКА — 2 ШТ", "❌ 3 · 05 СТОЙКА — 2 ШТ"]
+    handlers.handle_callback(online_bot, callback(buttons[2]["callback_data"]))
+    assert "3 · 05 СТОЙКА" in online_bot.api.edited[-1][2]
+    confirm = online_bot.api.edited[-1][3][0][0]["callback_data"]
+    handlers.handle_callback(online_bot, callback(confirm))
+    assert excluded == [names[2]]
+
+
+def test_status_shows_when_the_print_will_be_done():
+    import datetime
+    now = datetime.datetime(2026, 9, 21, 22, 30).timestamp()
+    printing = status(13, "demo.gcode", progress=50)
+    printing["PrintInfo"].update(CurrentTicks=3600, TotalTicks=3600 + 3 * 3600)
+    text = ui.render(printing, True, "Demo", now=now)
+    assert "⏳ ещё 3 ч" in text
+    assert "🏁 готово ≈ завтра в 01:30" in text
+
+    paused = status(6, "demo.gcode", progress=50)
+    paused["PrintInfo"].update(CurrentTicks=3600, TotalTicks=7200)
+    assert "🏁" not in ui.render(paused, True, "Demo", now=now)

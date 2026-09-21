@@ -26,14 +26,44 @@ stopped. It is plain JSON.
 |---|---|
 | `telegram_token` | From BotFather. Format `digits:letters`. Never share it. |
 | `chat_id` | The one chat the bot obeys. A number, sometimes negative. |
+| `owner_user_id` | The Telegram user allowed to press buttons in that chat. The wizard fills it for private chats. |
 | `printer_ip` | IP address or hostname on your LAN. |
 | `printer_name` | The label in messages. Cosmetic. |
+
+## Printer backend
+
+The setup wizard asks the printer which firmware it runs before offering the
+choice, so most people never touch these keys by hand. `backend: "auto"` repeats
+that probe on every start: Moonraker is asked first on ports 80 and 7125, and the
+stock SDCP port 3030 is only consulted when Moonraker stays silent. Nothing is
+guessed - if neither answers, the bot exits with an explanation rather than
+running against the wrong protocol.
+
+Prefer a fixed `"sdcp"` or `"moonraker"` once the printer is known: it removes
+two network probes from every start and makes the mode obvious in the config.
+
+| Key | Default | What it does |
+|---|---|---|
+| `backend` | `"sdcp"` | `"sdcp"` for stock Elegoo V1.4.x, `"moonraker"` for OpenCentauri/COSMOS, or `"auto"` to ask the printer at startup. |
+| `moonraker_url` | `""` | Full Moonraker base URL. If blank in Moonraker mode, `http://<printer_ip>` is used. |
+| `moonraker_api_key` | `""` | Optional API key, sent only in the `X-Api-Key` header. Treat this file as secret. |
+| `moonraker_poll_sec` | `2` | Status polling interval. Moonraker documents one to two seconds for polling clients. |
+| `moonraker_timeout_sec` | `5` | Per-request timeout. |
+| `moonraker_camera_url` | `""` | Optional snapshot URL. Blank asks Moonraker for its enabled webcam. |
+| `moonraker_allow_external_camera` | `false` | Allows a camera URL on a host different from Moonraker. Keep false unless the camera is deliberately separate. |
+| `moonraker_allow_job_control` | `false` | Enables pause, resume, cancel and confirmed exclusion of one model from a multi-object print. Separate from the global `allow_control` switch. |
+| `moonraker_allow_remote_start` | `false` | Enables starting a selected G-code file after a one-use confirmation. Separate because it starts a hot machine. |
+
+Moonraker mode does not expose arbitrary G-code, macros, restarts, firmware
+restarts, emergency stop, heater targets, fans, light or speed controls. Those
+operations either have installation-specific names or a larger consequence
+than this first backend can safely infer.
 
 ## Behaviour
 
 | Key | Default | What it does |
 |---|---|---|
-| `allow_control` | `true` | `false` makes the bot read-only: no pause, no stop, no light, no heating. The control buttons disappear, and a command arriving anyway is refused. |
+| `allow_control` | `true` | Global control switch. `false` makes either backend read-only. Moonraker still requires the two narrower opt-ins above. |
 | `send_photo` | `true` | `false` turns off camera frames everywhere. Useful if the camera is disabled, or you would rather not have photos in a chat. |
 | `progress_every_pct` | `0` | `0` is off. `25` sends a progress report at each quarter. Off by default because most people find it noise. |
 | `anonymous_statistics` | `false` | Explicit opt-in. If `true`, sends only a random installation id, project code and version at most once per 30 days. `false` disables no bot feature. Re-run `Setup.cmd` to change it; see [PRIVACY.md](../PRIVACY.md). |
@@ -53,6 +83,33 @@ stopped. It is plain JSON.
 | `light_off_at_night` | `true` | Turn the chamber light off after a print, but only at night. During the day a lit chamber bothers nobody; at night it shines into the room until morning. |
 | `night_from` | `22` | Hour night starts, local time. |
 | `night_to` | `8` | Hour night ends. The window may cross midnight. |
+
+## Delayed starts
+
+Needs `backend: "moonraker"` and `moonraker_allow_remote_start: true`. Send a
+`.gcode` file into the chat and the bot uploads it to the printer, then offers
+to start it now or at a set time. A file already on the printer can be planned
+from its print confirmation. Telegram hands bots files of up to 20 MB: upload
+anything larger from the slicer and plan it from the file list. `/plan` lists
+the planned starts and cancels them.
+
+| Key | Default | What it does |
+|---|---|---|
+| `schedule_utc_offset` | `""` | The owner's time zone, as `+03:00`. Blank uses the clock of the machine running the bot — right at home, wrong on a server that runs in UTC. |
+| `schedule_reminder_min` | `10` | A heads-up with a camera frame this many minutes before a start. `0` turns it off. |
+| `schedule_late_grace_min` | `15` | If the bot was down and only gets to a job later than this, it asks instead of starting. |
+
+At the start time the print starts on its own only if the printer is connected
+and idle, the file is still there, an enabled filament sensor (if there is one)
+sees filament, and Moonraker's history shows no print since the job was planned.
+Anything else — including a check that could not be made — produces a message
+with the reasons and **Start now** / **Cancel** buttons instead. The bed is the
+one thing no sensor sees, which is why any print in between counts as a reason:
+it may have left a part on the plate.
+
+Planned jobs are kept in `schedule.json` in the data folder and survive a
+restart. Every job still needs its own confirmation in the chat, and there are
+at most ten at a time.
 
 ## Maintenance reminder
 

@@ -9,7 +9,12 @@ shipping an honest single-language one.
 Pure functions only. Everything is passed in, nothing is read from a socket or
 a global, which is what lets tests assert on exact button layouts.
 """
+import datetime
+import html
+
+from . import backend
 from . import printer_state as ps
+from . import schedule
 from . import support
 
 
@@ -22,7 +27,80 @@ SPEEDS = [50, 75, 100, 125, 150]
 
 FAN_KEYS = ("ModelFan", "BoxFan", "AuxiliaryFan")
 FAN_LEVELS = (0, 25, 50, 75, 100)
-FAN_HUMAN = {"ModelFan": "обдув", "BoxFan": "корпус", "AuxiliaryFan": "доп"}
+FAN_HUMAN = {"ModelFan": "обдув детали", "BoxFan": "вытяжка",
+             "AuxiliaryFan": "приток"}
+
+MACRO_UI = {
+    "CALIBRATE_BED_60": (
+        "Стол на 60 °C · PLA",
+        "прогреет стол до 60 °C, запаркуется, очистит сопло, выдержит минуту, "
+        "найдёт ноль тензодатчиком и снимет сетку 9x9. Около десяти минут. "
+        "Результат живёт только в памяти — сохранить отдельной кнопкой",
+    ),
+    "CALIBRATE_BED_70": (
+        "Стол на 70 °C · PETG",
+        "прогреет стол до 70 °C, запаркуется, очистит сопло, выдержит минуту, "
+        "найдёт ноль тензодатчиком и снимет сетку 9x9. Около десяти минут. "
+        "Результат живёт только в памяти — сохранить отдельной кнопкой",
+    ),
+    "CALIBRATE_BED_90": (
+        "Стол на 90 °C · ABS, ASA",
+        "прогреет стол до 90 °C, запаркуется, очистит сопло, выдержит минуту, "
+        "найдёт ноль тензодатчиком и снимет сетку 9x9. Около десяти минут. "
+        "Результат живёт только в памяти — сохранить отдельной кнопкой",
+    ),
+    "CALIBRATE_BED_100": (
+        "Стол на 100 °C · PA",
+        "прогреет стол до 100 °C, запаркуется, очистит сопло, выдержит минуту, "
+        "найдёт ноль тензодатчиком и снимет сетку 9x9. Около десяти минут. "
+        "Результат живёт только в памяти — сохранить отдельной кнопкой",
+    ),
+    "SAVE_CALIBRATION": (
+        "Сохранить калибровку",
+        "запишет результат калибровки в printer.cfg и ПЕРЕЗАПУСТИТ Klipper. "
+        "Без этого новая сетка пропадёт при первом же перезапуске",
+    ),
+    "CHECK_CALIBRATION": (
+        "Проверить калибровки",
+        "покажет на экране принтера, какие обязательные калибровки COSMOS выполнены",
+    ),
+    "LOAD_FILAMENT": (
+        "Загрузить пластик",
+        "нагреет сопло, переместит голову к заднему лотку и попросит вставить пластик; "
+        "подача продолжится после подтверждения на экране принтера",
+    ),
+    "UNLOAD_FILAMENT": (
+        "Выгрузить пластик",
+        "выполнит базирование X/Y, отрежет пруток и отведёт его назад для извлечения",
+    ),
+    "CLEAN_NOZZLE": (
+        "Очистить сопло",
+        "нагреет сопло, выполнит базирование X/Y и автоматически очистит сопло о заднюю щётку",
+    ),
+    "MOVE_TO_TRAY": (
+        "Переместить голову к заднему лотку",
+        "выполнит базирование X/Y и переместит печатающую голову к заднему лотку; "
+        "нагрев и подачу пластика не включает",
+    ),
+}
+
+# Порядок кнопок и описаний берётся отсюда: Moonraker отдаёт макросы
+# в своём порядке, поэтому раскладываем их сами.
+MACRO_ORDER = tuple(MACRO_UI)
+
+# Значок показывает группу: калибровка, пластик, обслуживание.
+MACRO_ICON = {
+    "CALIBRATE_BED_60": "📐", "CALIBRATE_BED_70": "📐",
+    "CALIBRATE_BED_90": "📐", "CALIBRATE_BED_100": "📐",
+    "SAVE_CALIBRATION": "📐", "CHECK_CALIBRATION": "📐",
+    "LOAD_FILAMENT": "🧵", "UNLOAD_FILAMENT": "🧵",
+    "CLEAN_NOZZLE": "🧽", "MOVE_TO_TRAY": "🧽",
+}
+
+# Эти три прячутся за одной кнопкой: температура выбирается на втором экране.
+BED_CALIB_MACROS = ("CALIBRATE_BED_60", "CALIBRATE_BED_70",
+                    "CALIBRATE_BED_90", "CALIBRATE_BED_100")
+BED_CALIB_BUTTON = "📐 Калибровать стол"
 
 
 # ------------------------------------------------------------------ helpers
@@ -45,6 +123,34 @@ def plural(n, one, few, many):
     if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
         return few
     return many
+
+
+def object_label(name):
+    """Turn an Orca/Klipper identifier into a compact Telegram label."""
+    label = str(name or "")
+    for marker in (".DRC_ID_", ".STL_ID_", ".STEP_ID_"):
+        label = label.split(marker, 1)[0]
+    return label.replace("_", " ") or "без имени"
+
+
+def object_labels(names, width=None):
+    """{name: "3 · label"}, numbered by position among all the job's objects.
+
+    The same numbers are drawn on the object map, and they keep two copies
+    of one model apart: those differ only in the ``_ID_`` part that
+    object_label cuts off. Excluded objects keep their number, so the
+    picture and the buttons stay in step as models are removed.
+    """
+    return {name: "%d · %s" % (number, object_label(name)[:width] if width
+                               else object_label(name))
+            for number, name in enumerate(names, 1)}
+
+
+def active_objects(status):
+    state = (status or {}).get("ExcludeObject") or {}
+    excluded = set(state.get("ExcludedObjects") or [])
+    return [name for name in (state.get("Objects") or [])
+            if name not in excluded]
 
 
 def bar(pct, code=None, width=10):
@@ -90,10 +196,40 @@ def cancelled_text(snapshot, reached):
                snapshot.get("CurrentLayer", "?"), snapshot.get("TotalLayer", "?")))
 
 
+def klipper_reason(status):
+    """The one line of Klipper's shutdown message that says what happened.
+
+    Klipper appends four lines of generic advice about host load to every
+    shutdown message. Only the first line names the actual fault, and only it
+    fits a phone screen, so the rest is deliberately dropped.
+    """
+    message = ((status or {}).get("Moonraker") or {}).get("Message") or ""
+    for line in str(message).splitlines():
+        line = line.strip()
+        if line:
+            return line[:160]
+    return ""
+
+
+def stall_header(status, code):
+    """Header for an unexpected stop.
+
+    A bare number ("код 77") tells the owner nothing while a print is dying.
+    Prefer Klipper's own reason and keep the number only as the fallback for
+    codes that arrived without one.
+    """
+    reason = klipper_reason(status)
+    if reason:
+        return ("⚠️ <b>Печать прервалась — нужен ты</b>\n"
+                "🛑 <i>%s</i>\n" % html.escape(reason))
+    return ("⚠️ <b>Печать прервалась — нужен ты</b>\n"
+            "Неожиданная остановка, код %s.\n" % code)
+
+
 # ------------------------------------------------------------------ status text
 
 def render(status, online, printer_name, header="", detailed=False,
-           maintenance_line=""):
+           maintenance_line="", now=None, tz=None):
     """The single status message.
 
     The block order is deliberately inverted. On a phone the keyboard takes up
@@ -101,6 +237,9 @@ def render(status, online, printer_name, header="", detailed=False,
     - state, progress, time left - sit last, right against the buttons. The
     rest drifts up out of the way. Blocks are separated by a blank line:
     in detailed mode seven solid lines are unreadable.
+
+    ``now`` (epoch seconds) and ``tz`` turn the time left into a finish time
+    on the clock; without ``now`` that line is left out.
     """
     if not status:
         lines = []
@@ -124,7 +263,12 @@ def render(status, online, printer_name, header="", detailed=False,
     if not online:
         name, icon = "связь потеряна", "🔌"
 
-    filename = print_info.get("Filename") or ""
+    # Moonraker keeps the filename, layer count and elapsed time in
+    # ``print_stats`` after a cancelled job.  They describe the *last* job,
+    # not an active one.  Never show that stale job as resumable or give it
+    # live progress controls.
+    job_done = code in ps.STATUS_DONE
+    filename = "" if job_done else (print_info.get("Filename") or "")
     blocks = []
 
     # -- header: what is happening, and to what --------------------------
@@ -138,6 +282,12 @@ def render(status, online, printer_name, header="", detailed=False,
     if filename and online:
         summary += " · %s%%" % print_info.get("Progress", 0)
     top.append(summary)
+    # The code alone is not actionable. Klipper says why it stopped, so that
+    # line goes directly under the summary where it will be read first.
+    if code == ps.STATUS_KLIPPY_ERROR:
+        reason = klipper_reason(status)
+        if reason:
+            top.append("🛑 <i>%s</i>" % html.escape(reason))
     if filename:
         top.append("📄 <i>%s</i>" % filename)
     # The camera is deliberately not shown here: a third emoji pushed the line
@@ -156,9 +306,9 @@ def render(status, online, printer_name, header="", detailed=False,
         env = ["🏠 камера %.0f°" % (status.get("TempOfBox") or 0)]
         fans = status.get("CurrentFanSpeed") or {}
         if fans:
-            env.append("🌀 обдув %s%% · корпус %s%% · доп %s%%" % (
-                fans.get("ModelFan", 0), fans.get("BoxFan", 0),
-                fans.get("AuxiliaryFan", 0)))
+            env.append("🌀 обдув детали %s%% · приток %s%% · вытяжка %s%%" % (
+                fans.get("ModelFan", 0), fans.get("AuxiliaryFan", 0),
+                fans.get("BoxFan", 0)))
         light = (status.get("LightStatus") or {}).get("SecondLight")
         if light is not None:
             env.append("💡 свет горит" if light == 1 else "🌙 свет выключен")
@@ -188,6 +338,10 @@ def render(status, online, printer_name, header="", detailed=False,
             % (print_info.get("CurrentLayer", "?"),
                print_info.get("TotalLayer", "?"), hhmm(left)),
         ])
+        # Only while it prints: on a pause the finish moves with every minute,
+        # and a clock time that is already wrong is worse than none.
+        if now is not None and online and code == ps.STATUS_PRINTING and left > 0:
+            blocks[-1].append("🏁 готово ≈ %s" % schedule.format_when(now + left, now, tz))
     elif online:
         blocks.append(["🟢 свободен — можно ставить печать"])
     else:
@@ -198,7 +352,8 @@ def render(status, online, printer_name, header="", detailed=False,
 
 # ------------------------------------------------------------------ keyboards
 
-def kb_main(status, allow_control=True, detailed=False, maintenance=(False, False)):
+def kb_main(status, allow_control=True, detailed=False, maintenance=(False, False),
+            allowed=None, scheduled=0):
     """The keyboard under the status message.
 
     Every button edits this same message and sends nothing new: otherwise new
@@ -212,30 +367,66 @@ def kb_main(status, allow_control=True, detailed=False, maintenance=(False, Fals
     """
     status = status or {}
     print_info = status.get("PrintInfo") or {}
-    printing = print_info.get("Status") == ps.STATUS_PRINTING
-    busy = bool(print_info.get("Filename")) and (print_info.get("Progress", 0) or 0) < 100
+    code = print_info.get("Status")
+    printing = code == ps.STATUS_PRINTING
+    paused = code in ps.STATUS_PAUSED
+    # A cancelled/completed Moonraker job can retain its old filename and
+    # layer number indefinitely.  Controls must follow the live state, never
+    # that stale metadata.
+    busy = (bool(print_info.get("Filename")) and code not in ps.STATUS_DONE
+            and code not in (None, 0, 77))
+    if allowed is None:
+        allowed = (backend.SDCP_CONTROL_ACTIONS | backend.READ_ACTIONS
+                   if allow_control else backend.READ_ACTIONS)
+    else:
+        allowed = frozenset(allowed)
 
     rows = [[{"text": "🔄 Обновить", "callback_data": "refresh"},
              {"text": "🔼 Кратко" if detailed else "ℹ️ Подробнее",
               "callback_data": "brief" if detailed else "details"}]]
+    ctl = []
     if allow_control:
-        ctl = []
-        if printing:
+        if printing and backend.PAUSE in allowed:
             ctl.append({"text": "⏸ Пауза", "callback_data": "ask:pause"})
-        elif busy:
-            ctl.append({"text": "▶️ Продолжить", "callback_data": "do:resume"})
-        if busy:
+        elif paused and backend.RESUME in allowed:
+            ctl.append({"text": "▶️ Продолжить", "callback_data": "ask:resume"})
+        if busy and backend.CANCEL in allowed:
             ctl.append({"text": "⏹ Стоп", "callback_data": "ask:stop"})
         if ctl:
             rows.append(ctl)
+        if ((printing or paused) and backend.EXCLUDE_OBJECT in allowed
+                and len(active_objects(status)) > 1):
+            rows.append([{"text": "✂️ Убрать объект",
+                          "callback_data": "objects"}])
+        settings = []
         lit = ((status.get("LightStatus") or {}).get("SecondLight") == 1)
-        rows.append([
-            {"text": "💡 Свет выкл" if lit else "💡 Свет вкл", "callback_data": "light"},
-            {"text": "⚡ Скорость", "callback_data": "menu:speed"},
-            {"text": "🌡 Нагрев", "callback_data": "menu:temp"},
-        ])
-    rows.append([{"text": "📂 Файлы", "callback_data": "files"},
-                 {"text": "🌀 Вентиляторы", "callback_data": "menu:fans"}])
+        if backend.LIGHT in allowed:
+            settings.append({"text": "💡 Свет выкл" if lit else "💡 Свет вкл",
+                             "callback_data": "light"})
+        if backend.SPEED in allowed:
+            settings.append({"text": "⚡ Скорость", "callback_data": "menu:speed"})
+        if backend.TEMPERATURE in allowed:
+            settings.append({"text": "🌡 Нагрев", "callback_data": "menu:temp"})
+        if settings:
+            rows.append(settings)
+    files_row = [{"text": "📂 Файлы", "callback_data": "files"}]
+    if backend.DIAGNOSTICS in allowed:
+        files_row.append({"text": "🩺 Диагностика", "callback_data": "diag"})
+    if backend.FANS in allowed:
+        files_row.append({"text": "🌀 Вентиляторы", "callback_data": "menu:fans"})
+    rows.append(files_row)
+    cosmos = []
+    if backend.HEIGHT_MAP in allowed:
+        cosmos.append({"text": "🗺 Карта стола", "callback_data": "mesh"})
+    if backend.HISTORY in allowed:
+        cosmos.append({"text": "🧾 История", "callback_data": "history"})
+    if backend.MACROS in allowed:
+        cosmos.append({"text": "🧩 Макросы", "callback_data": "macros"})
+    if cosmos:
+        rows.append(cosmos)
+    if scheduled:
+        rows.append([{"text": "⏰ Запланировано: %d" % scheduled,
+                      "callback_data": "plan"}])
 
     show_maint, due = maintenance
     if show_maint:
@@ -275,8 +466,9 @@ def kb_fans(current, draft=None):
     rows = []
     # Five steps plus a label do not fit on one row - the buttons get clipped.
     # So the label with the chosen value gets its own line, with the steps under it.
-    for key, label in (("ModelFan", "🌀 обдув"), ("BoxFan", "🏠 корпус"),
-                       ("AuxiliaryFan", "💨 доп")):
+    for key, label in (("ModelFan", "🌀 обдув детали"),
+                       ("AuxiliaryFan", "💨 приток в корпус"),
+                       ("BoxFan", "🏠 вытяжка наружу")):
         val = draft.get(key, current.get(key, 0))
         shown = "выкл" if val == 0 else "%d%%" % val
         changed_mark = " ✎" if key in draft and draft[key] != current.get(key, 0) else ""
@@ -293,22 +485,294 @@ def kb_fans(current, draft=None):
     return rows
 
 
-def kb_files(files, allow_control=True, limit=8):
+def kb_files(files, allow_control=True, limit=8, can_start=None, refs=None,
+             can_delete=False, delete_refs=None, delete_all_ref=None):
     rows = []
-    if allow_control:
+    can_start = allow_control if can_start is None else bool(can_start)
+    if can_start:
         for i, path in enumerate(files[:limit]):
             base = path.rsplit("/", 1)[-1]
-            rows.append([{"text": "🖨 %s" % base[:38], "callback_data": "ask:print:%d" % i}])
+            ref = refs[i] if refs and i < len(refs) else str(i)
+            rows.append([{"text": "🖨 %s" % base[:38],
+                          "callback_data": "ask:print:%s" % ref}])
+    if can_delete:
+        for i, path in enumerate(files[:limit]):
+            base = path.rsplit("/", 1)[-1]
+            ref = delete_refs[i] if delete_refs and i < len(delete_refs) else str(i)
+            rows.append([{"text": "🗑 Удалить %s" % base[:29],
+                          "callback_data": "ask:delete:%s" % ref}])
+        if delete_all_ref and len(files) > 1:
+            rows.append([{"text": "🗑 Удалить все файлы (%d)" % len(files),
+                          "callback_data": "ask:delall:%s" % delete_all_ref}])
     rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
     return rows
 
 
-def files_text(files, limit=8):
+def objects_text(state):
+    names = list(state.get("Objects") or [])
+    excluded = set(state.get("ExcludedObjects") or [])
+    current = state.get("CurrentObject") or ""
+    active = [name for name in names if name not in excluded]
+    lines = ["<b>✂️ Объекты текущей печати</b>",
+             "Осталось: %d из %d" % (len(active), len(names))]
+    labels = object_labels(names)
+    for name in active:
+        prefix = "▶️" if name == current else "•"
+        suffix = " · сейчас печатается" if name == current else ""
+        lines.append("%s %s%s" % (prefix, html.escape(labels[name]), suffix))
+    if excluded:
+        lines.append("Уже убраны: %s" % ", ".join(
+            html.escape(labels[name]) for name in names if name in excluded))
+    if state.get("Shapes"):
+        lines.append("\nНомера на кнопках — те же, что на схеме стола. "
+                     "Синяя рамка — модель, которая печатается сейчас.")
+    lines.append("\nВыбранная модель больше печататься не будет; уже напечатанная часть останется на столе.")
+    return "\n".join(lines)
+
+
+def kb_objects(names, refs, current="", all_names=None):
+    rows = []
+    labels = object_labels(all_names or names, 35)
+    for name, ref in zip(names, refs):
+        prefix = "▶️ " if name == current else ""
+        rows.append([{"text": "❌ %s%s" % (prefix, labels[name]),
+                      "callback_data": "ask:exclude:" + ref}])
+    rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
+    return rows
+
+
+def files_text(files, limit=8, info=None):
     lines = ["<b>Файлы на принтере</b> — последние %d из %d"
              % (min(limit, len(files)), len(files))]
+    info = info or {}
     for path in files[:limit]:
-        lines.append("• %s" % path.rsplit("/", 1)[-1])
+        record = info.get(path) or {}
+        extra = []
+        if record.get("size"):
+            extra.append("%.1f МБ" % (float(record["size"]) / 1_000_000))
+        if record.get("modified"):
+            extra.append(datetime.datetime.fromtimestamp(record["modified"]).strftime("%d.%m %H:%M"))
+        suffix = " · " + " · ".join(extra) if extra else ""
+        lines.append("• %s%s" % (html.escape(path.rsplit("/", 1)[-1]), suffix))
     return "\n".join(lines)
+
+
+# Measured on this printer: with COSMOS's zram swap running, free memory held
+# above 26 MB through a whole print; with zram silently not started it sat at
+# 14-15 MB and prints died with "Timer too close". 20 MB separates the two
+# states cleanly, which is what makes free memory usable as a zram alarm.
+LOW_MEMORY_KB = 20 * 1024
+
+
+def memory_line(data):
+    """Free memory on the printer board, and a warning when it runs short.
+
+    Moonraker exposes no swap figure, so this is an indirect check: too little
+    free memory is what a missing zram swap looks like from the outside.
+    """
+    total = int(data.get("memory_total") or 0)
+    available = int(data.get("memory_available") or 0)
+    if not total or not available:
+        return "Память платы: <i>нет данных</i>"
+    line = "Память платы: <b>%.1f МБ</b> свободно из %.0f МБ" % (
+        available / 1024.0, total / 1024.0)
+    if available < LOW_MEMORY_KB:
+        line += ("\n⚠️ Мало свободной памяти — так выглядит непущенный zram. "
+                 "На принтере проверь <code>cat /proc/swaps</code>: там должен "
+                 "быть <code>/dev/zram0</code>.")
+    return line
+
+
+def diagnostics_text(data):
+    """Compact HTML-safe COSMOS health card, never exposing configuration."""
+    message = html.escape(str(data.get("klippy_message") or ""))[:240]
+    lines = ["<b>🩺 Диагностика COSMOS</b>",
+             "Moonraker: <code>%s</code>" % html.escape(str(data.get("moonraker_version") or "—")),
+             "Klipper: <code>%s</code>" % html.escape(str(data.get("klipper_version") or "—")),
+             "Состояние: <b>%s</b>" % html.escape(str(data.get("klippy_state") or "—")),
+             "Объектов Klipper: %s" % int(data.get("object_count") or 0),
+             memory_line(data),
+             "Предупреждений: %s · сбойных компонентов: %s" % (
+                 int(data.get("warnings") or 0), int(data.get("failed_components") or 0))]
+    if message:
+        lines.append("<i>%s</i>" % message)
+    return "\n".join(lines)
+
+
+def kb_back():
+    return [[{"text": "↩️ Назад к статусу", "callback_data": "refresh"}]]
+
+
+def height_map_text(mesh):
+    points = mesh.get("points") or []
+    values = [float(value) for row in points for value in row]
+    low, high = min(values), max(values)
+    return ("<b>🗺 Карта высот стола</b>\n"
+            "Профиль: <code>%s</code> · %d×%d точек\n"
+            "Минимум: %.3f мм · максимум: %.3f мм\n"
+            "Разброс: %.3f мм\n\n"
+            "Синий — ниже, красный — выше.\n"
+            "Низ картинки — передний край стола, у дверцы; верх — дальняя стенка.\n\n"
+            "Профиль %s.\n"
+            "Это сохранённая сетка: команда не запускает измерение."
+            % (html.escape(str(mesh.get("profile") or "—")), len(points),
+               len(points[0]) if points else 0, low, high, high - low,
+               "загружен в память принтера" if mesh.get("loaded")
+               else "лежит сохранённым, в память не загружен"))
+
+
+def history_text(jobs):
+    if not jobs:
+        return "<b>🧾 История печатей</b>\n\nMoonraker пока не сохранил завершённых заданий."
+    lines = ["<b>🧾 История печатей</b> — последние %d" % len(jobs)]
+    for job in jobs:
+        filename = html.escape(str(job.get("filename") or "без имени").rsplit("/", 1)[-1])
+        status = html.escape(str(job.get("status") or "—"))
+        seconds = int(float(job.get("total_duration") or job.get("print_duration") or 0))
+        lines.append("• <i>%s</i> · %s · %s" % (filename, status, hhmm(seconds) if seconds else "длительность —"))
+    return "\n".join(lines)
+
+
+def macros_text(names, enabled):
+    enabled = set(enabled or [])
+    if not names:
+        return "<b>🧩 Макросы COSMOS</b>\n\nMoonraker не сообщил доступных пользовательских макросов."
+    lines = ["<b>🧩 Действия COSMOS</b>"]
+    if enabled:
+        lines.append("Что можно запустить из бота (каждое действие потребует подтверждения):")
+        bed_shown = False
+        for name in macro_order(n for n in names if n in enabled):
+            if name in BED_CALIB_MACROS:
+                if bed_shown:
+                    continue
+                bed_shown = True
+                lines.append("• <b>Калибровать стол</b> — снимет сетку стола; "
+                             "температуру выберете на следующем шаге.")
+                continue
+            lines.append("• <b>%s</b> — %s." % (
+                html.escape(macro_label(name)), html.escape(macro_description(name))))
+    else:
+        lines.append("Запуск действий выключен: список разрешённых макросов пока пуст. "
+                     "Служебные макросы COSMOS скрыты.")
+    return "\n".join(lines)
+
+
+def macro_order(names):
+    """Sort macros as MACRO_UI lists them; unknown ones keep printer order, at the end."""
+    rank = {name: i for i, name in enumerate(MACRO_ORDER)}
+    return sorted(names, key=lambda name: rank.get(name, len(rank)))
+
+
+def macro_icon(name):
+    return MACRO_ICON.get(name, "▶️")
+
+
+def macro_label(name):
+    return MACRO_UI.get(name, ("Макрос %s" % name, ""))[0]
+
+
+def macro_description(name):
+    return MACRO_UI.get(name, ("", "назначение не описано в боте"))[1]
+
+
+def kb_macros(names, refs):
+    """Bed calibration folds into one button - the temperature is picked next."""
+    rows, bed_shown = [], False
+    for name, ref in zip(names, refs):
+        if name in BED_CALIB_MACROS:
+            if bed_shown:
+                continue
+            bed_shown = True
+            rows.append([{"text": BED_CALIB_BUTTON, "callback_data": "bedcalib"}])
+            continue
+        rows.append([{"text": "%s %s" % (macro_icon(name), macro_label(name)),
+                      "callback_data": "ask:macro:" + ref}])
+    rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
+    return rows
+
+
+def prompt_text(prompt):
+    """The dialog the printer is showing on its own screen, as a message."""
+    lines = ["<b>🖐 %s</b>" % html.escape(str(prompt.get("title") or "Принтер спрашивает"))]
+    for line in prompt.get("text") or []:
+        lines.append(html.escape(str(line)))
+    lines.append("")
+    lines.append("Это окно сейчас открыто на экране принтера. "
+                 "Кнопки ниже нажимают ровно то же самое.")
+    return "\n".join(lines)
+
+
+# Styles COSMOS puts on a prompt button when the choice is not a small one.
+RISKY_PROMPT_STYLES = ("warning", "error")
+
+
+def prompt_is_risky(style):
+    return str(style or "").lower() in RISKY_PROMPT_STYLES
+
+
+def kb_prompt(buttons, refs):
+    """Buttons the printer itself offered.
+
+    A button the firmware marked as a warning gets a confirmation screen
+    instead of firing on the tap. COSMOS marks "Calibrate All" that way, and it
+    sits one tap away from "Close" on the calibration prompt - a full
+    calibration started by a misplaced thumb would be an expensive surprise.
+    """
+    rows = []
+    for (label, _gcode, style), ref in zip(buttons, refs):
+        risky = prompt_is_risky(style)
+        rows.append([{"text": "%s %s" % ("⚠️" if risky else "🖐", label),
+                      "callback_data": ("askprompt:" if risky else "prompt:") + ref}])
+    rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
+    return rows
+
+
+def prompt_confirm_text(label, gcode):
+    return ("<b>⚠️ %s</b>\n\n"
+            "Принтер пометил эту кнопку как опасную.\n\n"
+            "Будет отправлено: <code>%s</code>\n\n"
+            "Если сейчас идёт печать — она пострадает."
+            % (html.escape(label), html.escape(gcode)))
+
+
+def kb_after_calibration(ref):
+    """Shown when a bed calibration ends: the mesh is still only in memory."""
+    return [[{"text": "💾 Сохранить калибровку", "callback_data": "ask:macro:" + ref}],
+            [{"text": "🗺 Показать карту стола", "callback_data": "mesh"}],
+            [{"text": "↩️ Назад к статусу", "callback_data": "refresh"}]]
+
+
+def macro_done_text(name, seconds, needs_save):
+    lines = ["<b>✅ «%s» — готово</b>" % html.escape(macro_label(name)),
+             "Заняло %s." % hhmm(seconds)]
+    if needs_save:
+        lines += ["",
+                  "Сетка снята, но живёт <b>только в памяти принтера</b>. "
+                  "Без сохранения она пропадёт при первом же перезапуске.",
+                  "",
+                  "Сохранение записывает её в printer.cfg и перезапускает прошивку — "
+                  "около полуминуты."]
+    return "\n".join(lines)
+
+
+def kb_bed_temps(names, refs):
+    """Temperature picker for the bed mesh."""
+    rows = [[{"text": "📐 " + macro_label(name),
+              "callback_data": "ask:macro:" + ref}]
+            for name, ref in zip(names, refs)]
+    rows.append([{"text": "↩️ Назад к действиям", "callback_data": "macros"}])
+    return rows
+
+
+def bed_calibration_text():
+    return (
+        "<b>📐 Калибровка стола</b>\n\n"
+        "Сетку снимают на той температуре, на которой будете печатать: "
+        "горячая плита выгибается иначе, чем холодная.\n\n"
+        "Займёт около десяти минут. Результат ляжет только в память принтера — "
+        "чтобы он пережил перезапуск, сразу после калибровки нажмите "
+        "«Сохранить калибровку».\n\n"
+        "Выберите температуру стола:")
 
 
 HELP_TEXT_HEADER = (
@@ -316,8 +780,18 @@ HELP_TEXT_HEADER = (
     "/status — состояние со снимком и кнопками\n"
     "/snap — только кадр с камеры\n"
     "/files — файлы на принтере\n"
+    "/plan — запланированные печати\n"
+    "/diag — диагностика COSMOS\n"
+    "/mesh — карта высот стола\n"
+    "/history — история печатей\n"
+    "/macros — макросы COSMOS\n"
     "/help — эта справка\n\n"
     "<b>Кнопки под статусом</b>\n"
+)
+
+HELP_SCHEDULE_NOTE = (
+    "\n\n📥 Пришлите файл <code>.gcode</code> — залью его на принтер и предложу "
+    "запустить сейчас или в назначенное время."
 )
 
 HELP_TEXT_FOOTER = (
@@ -329,9 +803,193 @@ HELP_TEXT_FOOTER = (
 )
 
 
-def help_screen(allow_control=True):
+def help_screen(allow_control=True, allowed=None, can_schedule=False):
     """Text and keyboard for /help — the permanent home of the support button."""
-    buttons = ("обновить · подробнее · пауза/продолжить · стоп · свет · "
-               "скорость · нагрев · файлы\n" if allow_control else
-               "обновить · подробнее · файлы\n")
-    return HELP_TEXT_HEADER + buttons + HELP_TEXT_FOOTER, support.help_keyboard()
+    if allowed is None:
+        allowed = (backend.SDCP_CONTROL_ACTIONS | backend.READ_ACTIONS
+                   if allow_control else backend.READ_ACTIONS)
+    names = ["обновить", "подробнее"]
+    if backend.PAUSE in allowed or backend.RESUME in allowed:
+        names.append("пауза/продолжить")
+    if backend.CANCEL in allowed:
+        names.append("стоп")
+    if backend.EXCLUDE_OBJECT in allowed:
+        names.append("убрать объект")
+    if backend.LIGHT in allowed:
+        names.append("свет")
+    if backend.SPEED in allowed:
+        names.append("скорость")
+    if backend.TEMPERATURE in allowed:
+        names.append("нагрев")
+    names.append("файлы")
+    if backend.DIAGNOSTICS in allowed:
+        names.append("диагностика COSMOS")
+    if backend.HEIGHT_MAP in allowed:
+        names.append("карта стола")
+    if backend.HISTORY in allowed:
+        names.append("история")
+    if backend.MACROS in allowed:
+        names.append("макросы")
+    if backend.DELETE in allowed:
+        names.append("удаление файлов")
+    if backend.FANS in allowed:
+        names.append("вентиляторы")
+    buttons = " · ".join(names) + "\n"
+    note = HELP_SCHEDULE_NOTE if can_schedule else ""
+    return (HELP_TEXT_HEADER + buttons + HELP_TEXT_FOOTER + note,
+            support.help_keyboard())
+
+
+# ------------------------------------------------------------ scheduled starts
+
+def _file_label(path):
+    return html.escape(str(path or "").rsplit("/", 1)[-1])
+
+
+def kb_cancel():
+    return [[{"text": "↩️ Отмена", "callback_data": "refresh"}]]
+
+
+def file_card_text(path, details=None, replaced=False):
+    """A file that just arrived from Telegram, as it now sits on the printer."""
+    details = details or {}
+    lines = ["📥 <b>Файл на принтере</b>", "<i>%s</i>" % _file_label(path)]
+    facts = []
+    if details.get("size"):
+        facts.append("%.1f МБ" % (float(details["size"]) / 1_000_000))
+    if details.get("estimated_time"):
+        facts.append("≈ %s" % hhmm(details["estimated_time"]))
+    filament = details.get("filament_name") or details.get("filament_type")
+    if filament:
+        facts.append(html.escape(str(filament)))
+    if details.get("filament_weight_total"):
+        facts.append("%.0f г" % float(details["filament_weight_total"]))
+    if facts:
+        lines.append(" · ".join(facts))
+    if replaced:
+        lines.append("Файл с таким именем уже был на принтере — заменён.")
+    lines += ["", "Запустить сейчас или в назначенное время?"]
+    return "\n".join(lines)
+
+
+def kb_file_card(print_ref=None, schedule_ref=None):
+    rows = []
+    if print_ref:
+        rows.append([{"text": "🖨 Печать сейчас", "callback_data": "ask:print:" + print_ref}])
+    if schedule_ref:
+        rows.append([{"text": "⏰ Запланировать", "callback_data": "sched:new:" + schedule_ref}])
+    rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
+    return rows
+
+
+def kb_print_confirm(confirm_token, schedule_ref=None):
+    """The print confirmation, plus the way to put the same file off for later."""
+    rows = kb_confirm("print:%s" % confirm_token, "печатать")
+    if schedule_ref:
+        rows.append([{"text": "⏰ Запланировать на потом",
+                      "callback_data": "sched:new:" + schedule_ref}])
+    return rows
+
+
+def schedule_pick_text(path):
+    return ("⏰ <b>Когда запустить?</b>\n<i>%s</i>\n\n"
+            "Выберите вариант или напишите своё время." % _file_label(path))
+
+
+def kb_schedule_pick(labels, refs, custom_ref):
+    rows, row = [], []
+    for label, ref in zip(labels, refs):
+        row.append({"text": label, "callback_data": "sched:when:" + ref})
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([{"text": "✏️ Написать своё время",
+                  "callback_data": "sched:custom:" + custom_ref}])
+    rows.append([{"text": "↩️ Отмена", "callback_data": "refresh"}])
+    return rows
+
+
+def schedule_custom_text(path, hint, error=""):
+    lines = ["⏰ <b>Своё время</b>", "<i>%s</i>" % _file_label(path), ""]
+    if error:
+        lines += ["⚠️ %s." % html.escape(error[:1].upper() + error[1:]), ""]
+    lines.append(hint)
+    return "\n".join(lines)
+
+
+def schedule_confirm_text(path, when, left, reminder_min=10):
+    reminder = ("За %d мин напомню. " % reminder_min) if reminder_min else ""
+    return ("⏰ <b>Запланировать печать?</b>\n<i>%s</i>\n\n"
+            "Старт: <b>%s</b> (%s)\n\n"
+            "%sВ назначенное время запущу, только если принтер свободен, файл на "
+            "месте, датчик видит пруток и после этой минуты на принтере ничего "
+            "не печаталось. Иначе не запущу, а спрошу.\n\n"
+            "⚠️ Стол должен оставаться пустым до старта."
+            % (_file_label(path), html.escape(when), html.escape(left), reminder))
+
+
+def schedule_added_note(path, when):
+    return "⏰ Запланировано: <i>%s</i> — %s.\n\n" % (_file_label(path), html.escape(when))
+
+
+def plan_text(rows):
+    """``rows`` are (job, when, left), already formatted and in start order."""
+    if not rows:
+        return ("<b>⏰ Запланированные печати</b>\n\nНичего не запланировано.\n\n"
+                "Пришлите файл .gcode или выберите файл в «📂 Файлы».")
+    lines = ["<b>⏰ Запланированные печати</b>"]
+    for job, when, left in rows:
+        waiting = " · ⚠️ ждёт решения" if job.get("asked") else ""
+        lines.append("• <b>%s</b> (%s)\n  <i>%s</i>%s" % (
+            html.escape(when), html.escape(left), _file_label(job["path"]), waiting))
+    return "\n".join(lines)
+
+
+def kb_plan(jobs):
+    rows = []
+    for job in jobs:
+        name = str(job["path"]).rsplit("/", 1)[-1]
+        if job.get("asked"):
+            rows.append([{"text": "🖨 Запустить %s" % name[:28],
+                          "callback_data": "schedrun:" + job["id"]}])
+        rows.append([{"text": "🗑 Отменить %s" % name[:28],
+                      "callback_data": "schedcancel:" + job["id"]}])
+    rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
+    return rows
+
+
+def schedule_reminder_text(job, when, left):
+    return ("⏰ <b>Скоро старт по расписанию</b>\n<i>%s</i>\n%s (%s)\n\n"
+            "Проверьте по снимку, что стол пустой. Если что-то не так — отмените."
+            % (_file_label(job["path"]), html.escape(when), html.escape(left)))
+
+
+def kb_schedule_job(job_id):
+    return [[{"text": "🗑 Отменить задание", "callback_data": "schedcancel:" + job_id}],
+            [{"text": "🔄 Статус", "callback_data": "refresh"}]]
+
+
+def schedule_ask_text(job, reasons, when):
+    lines = ["⏰ <b>По расписанию не запустил</b>",
+             "<i>%s</i> — старт был %s" % (_file_label(job["path"]), html.escape(when)),
+             "", "Почему:"]
+    lines += ["• %s" % html.escape(reason) for reason in reasons]
+    lines += ["", "Проверьте принтер и решите сами."]
+    return "\n".join(lines)
+
+
+def kb_schedule_ask(job_id):
+    return [[{"text": "🖨 Запустить сейчас", "callback_data": "schedrun:" + job_id}],
+            [{"text": "🗑 Отменить задание", "callback_data": "schedcancel:" + job_id}],
+            [{"text": "🔄 Статус", "callback_data": "refresh"}]]
+
+
+def schedule_started_text(job):
+    return "⏰ <b>Запустил печать по расписанию</b>\n<i>%s</i>\n" % _file_label(job["path"])
+
+
+def schedule_run_confirm_text(job):
+    return ("🖨 <b>Запустить сейчас?</b>\n<i>%s</i>\n\n"
+            "Убедись по снимку, что стол пуст." % _file_label(job["path"]))

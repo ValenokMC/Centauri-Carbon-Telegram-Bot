@@ -7,6 +7,83 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Delayed print start on COSMOS. A `.gcode` sent into the chat is uploaded to
+  the printer and offered for printing now or at a set time: quick choices
+  ("in 2 h", "tomorrow 07:00") or a typed time in the owner's zone. A reminder
+  with a camera frame goes out before the start, and `/plan` lists and cancels
+  planned starts. At the start time the print begins on its own only when the
+  printer is idle, the file is still there, the filament sensor sees filament
+  and no print has run since the job was planned; any doubt, including a check
+  that could not be made, turns into a question with the reasons. Jobs survive
+  a restart. New settings: `schedule_utc_offset`, `schedule_reminder_min`,
+  `schedule_late_grace_min`.
+- "Delete all files" on the COSMOS file screen, behind the existing
+  `moonraker_allow_file_delete` opt-in. The confirmation is one-use and bound to
+  the list as it was shown, so a file uploaded meanwhile is kept; the file being
+  printed is always kept, and planned starts that would lose their file are
+  counted in the question.
+
+- Firmware auto-detection. The setup wizard now asks the printer which firmware
+  it runs instead of making the user pick, and `backend: "auto"` repeats that
+  probe on every start. Moonraker answering `/printer/info` is positive proof of
+  OpenCentauri/COSMOS; the stock SDCP port is only consulted when it stays
+  silent, and an unanswered printer is reported rather than guessed at.
+
+- OpenCentauri/COSMOS support through a dependency-free Moonraker polling
+  backend for status, files, webcam snapshots and explicitly enabled job
+  controls.
+- Backend capability policy: Moonraker starts read-only, with separate opt-ins
+  for pause/resume/cancel and remote file start.
+- A confirmed "exclude object" control for multi-object COSMOS prints. The bot
+  binds the confirmation to the exact object and print file, then rechecks both
+  against Moonraker immediately before sending the fixed Klipper command.
+
+- A finish time next to the time left on COSMOS ("done ≈ tomorrow at 01:26").
+  The time left now comes from the job's own G-code: the slicer's per-minute
+  `M73` marks and the `EXCLUDE_OBJECT` markers give the slicer time still ahead
+  and which model it belongs to. Removing a model takes its share off at once; a
+  speed change rescales the estimate immediately, and the pace the printer
+  actually keeps (measured over the last 15 minutes) takes over within minutes.
+  The file is read once per job, streamed and never stored; files without `M73`
+  keep the previous estimate. The finish time is hidden while paused.
+- The object-removal screen on COSMOS shows a picture of the bed with every
+  model outlined and numbered; the buttons carry the same numbers, so two
+  copies of one model can be told apart. The model being printed is outlined in
+  blue, removed ones are hatched red. Drawn without third-party libraries.
+
+### Fixed
+
+- Object removal was never offered for models whose names are not in Latin
+  letters. Orca names objects after the model file, so a Cyrillic file name
+  hid the button. Any alphabet is now accepted; whitespace and the characters
+  Klipper treats specially (`; # * = " ' \`) are still refused.
+- After confirming a print, a scheduled start or a deletion, the status landed
+  in the confirmation message, which the refresh loop does not track: it froze
+  while the loop kept editing the older one. The result now goes into the one
+  tracked status message and the confirmation is removed.
+
+### Changed
+
+- Object removal has its own ✂️ icon instead of sharing 🧩 with macros.
+- The "printer cooled down" notice repeats the frame taken when the print
+  ended, with the bed still up, instead of a fresh frame of the lowered bed.
+  "Refresh" still shows the live camera.
+- The five owner-approved COSMOS macros now use clear Russian action names in
+  Telegram. The macro screen and confirmation explain what each action does;
+  the original Klipper name remains visible only as a technical identifier.
+
+### Security
+
+- File-start confirmations are one-use, expire after five minutes and bind to
+  the exact path instead of a mutable list index.
+- New private-chat configurations verify both the destination chat and callback
+  sender. Existing group-chat configurations remain compatible until an owner
+  user id is configured.
+- Moonraker API keys are sent only in a request header and are omitted from
+  configuration summaries and URLs.
+
 ## [1.1.2] — 2026-08-23
 
 ### Fixed

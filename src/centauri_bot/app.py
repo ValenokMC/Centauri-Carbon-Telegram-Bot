@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """The running bot: four threads and the shared state between them.
 
-  printer_loop   - holds the SDCP websocket, turns statuses into events
-  keepalive_loop - stops the printer dropping a silent connection
+  printer_loop   - polls Moonraker or holds SDCP, turns statuses into events
+  keepalive_loop - stops the stock SDCP connection dropping when silent
   refresh_loop   - keeps the status message current while a print runs
+  schedule_loop  - reminds about and starts planned prints (COSMOS only)
   telemetry_loop - optional anonymous heartbeat, at most once per 30 days
   telegram_loop  - long-polls for updates (runs on the main thread)
 
@@ -15,8 +16,11 @@ import logging
 import threading
 import time
 
+from . import backend
 from . import config as config_mod
+from . import moonraker
 from . import printer_state as ps
+from . import schedule
 from . import sdcp
 from . import storage
 from . import support
@@ -35,7 +39,22 @@ class Bot(object):
         self.api = api or TelegramAPI(cfg["telegram_token"])
         self.clock = clock
         self.owner = str(cfg["chat_id"])
+        self.owner_user = str(cfg.get("owner_user_id") or "")
         self.host = cfg["printer_ip"]
+        self.backend_name = backend.name(cfg)
+        self.confirmations = backend.ConfirmationStore(clock=clock)
+        self.moonraker = None
+        if self.backend_name == backend.MOONRAKER:
+            base_url = cfg.get("moonraker_url") or ("http://%s" % self.host)
+            self.moonraker = moonraker.Client(
+                base_url,
+                api_key=cfg.get("moonraker_api_key", ""),
+                timeout=cfg.get("moonraker_timeout_sec", 5),
+                camera_url=cfg.get("moonraker_camera_url", ""),
+                allow_external_camera=cfg.get(
+                    "moonraker_allow_external_camera", False),
+                estimate_remaining=True,
+            )
 
         self.lock = threading.RLock()
         self.main_lock = threading.Lock()
@@ -45,6 +64,9 @@ class Bot(object):
         self.ws = None
         self.pending = {}          # RequestID -> Ack payload
         self.files = []
+        self.file_info = {}
+        self.cooldown_pending = False
+        self.cooldown_photo = None
         self.fan_draft = None
         self.offline_since = None
         self.loss_reported = False
@@ -52,6 +74,15 @@ class Bot(object):
         self.frame_time = 0.0
         self.print_frame = None
         self.print_frame_time = 0.0
+        # Макрос, запущенный из бота: (имя, когда, видели ли его в работе).
+        # Нужен, чтобы доложить об окончании — HTTP-вызов возвращается сразу,
+        # а сама калибровка идёт ещё десять минут.
+        self.macro_watch = None
+        self.prompt_shown = None   # подпись показанной подсказки принтера
+        self.prompt_tick = 0
+        # A "type your own time" prompt waiting for the owner's answer.
+        self.schedule_draft = None
+        self.schedule_lock = threading.Lock()
 
         self.lifecycle = ps.PrinterLifecycle(cfg.get("progress_every_pct") or 0)
         self.maintenance = ps.MaintenanceCounter()
@@ -77,13 +108,241 @@ class Bot(object):
         show, line, _ = self.maintenance_view()
         return ui.render(status, online, self.cfg.get("printer_name", "Centauri Carbon"),
                          header=header, detailed=detailed,
-                         maintenance_line=line if show else "")
+                         maintenance_line=line if show else "",
+                         now=self.clock(), tz=self.schedule_tz())
 
     def keyboard(self, detailed=False):
         status, _ = self._snapshot()
         show, _, due = self.maintenance_view()
-        return ui.kb_main(status, allow_control=self.cfg.get("allow_control", True),
-                          detailed=detailed, maintenance=(show, due))
+        scheduled = len(storage.load_schedule()) if self.schedule_available() else 0
+        return ui.kb_main(
+            status, allow_control=self.cfg.get("allow_control", True),
+            allowed=self.allowed_actions(), detailed=detailed,
+            maintenance=(show, due), scheduled=scheduled)
+
+    def allowed_actions(self):
+        return backend.allowed_actions(self.cfg)
+
+    def action_allowed(self, action):
+        return backend.is_allowed(self.cfg, action)
+
+    def prepare_file_choices(self, files, kind="file-choice"):
+        """Return short callback tokens bound to these exact file paths."""
+        return [self.confirmations.issue(kind, path) for path in files]
+
+    def resolve_file_choice(self, token, kind="file-choice"):
+        """Resolve and consume a file-list choice.
+
+        Numeric values are accepted only for keyboards made by releases before
+        path-bound tokens existed.  New keyboards never emit an index.
+        """
+        if str(token).isdigit():
+            index = int(token)
+            with self.lock:
+                files = list(self.files or [])
+            return files[index] if 0 <= index < len(files) else None
+        return self.confirmations.consume(kind, token)
+
+    def issue_print_confirmation(self, path):
+        return self.confirmations.issue("print", path)
+
+    def consume_print_confirmation(self, token):
+        if str(token).isdigit():
+            # Compatibility with an already delivered legacy confirmation.
+            index = int(token)
+            with self.lock:
+                files = list(self.files or [])
+            return files[index] if 0 <= index < len(files) else None
+        return self.confirmations.consume("print", token)
+
+    def issue_delete_confirmation(self, path):
+        return self.confirmations.issue("delete", path)
+
+    def consume_delete_confirmation(self, token):
+        return self.confirmations.consume("delete", token)
+
+    def issue_action_confirmation(self, action):
+        """Bind a one-use confirmation to one exact control action."""
+        return self.confirmations.issue("job-action", action)
+
+    def consume_action_confirmation(self, action, token):
+        confirmed = self.confirmations.consume("job-action", token)
+        return confirmed == action
+
+    def issue_control_confirmation(self, action, value):
+        return self.confirmations.issue("hardware-control", (action, value))
+
+    def consume_control_confirmation(self, action, token):
+        item = self.confirmations.consume("hardware-control", token)
+        return item[1] if item and item[0] == action else None
+
+    def macro_allowed(self, name):
+        allowed = {moonraker.normalized_macro_name(item)
+                   for item in (self.cfg.get("moonraker_macro_whitelist") or [])}
+        return bool(self.action_allowed(backend.RUN_MACRO)
+                    and moonraker.normalized_macro_name(name) in allowed)
+
+    def prepare_macro_choices(self, names):
+        return [self.confirmations.issue("macro-choice", name) for name in names]
+
+    def resolve_macro_choice(self, token):
+        return self.confirmations.consume("macro-choice", token)
+
+    def issue_macro_confirmation(self, name):
+        return self.confirmations.issue("macro", name)
+
+    def consume_macro_confirmation(self, token):
+        return self.confirmations.consume("macro", token)
+
+    def prepare_prompt_choices(self, actions):
+        """Bind the printer's own prompt commands to short callback tokens."""
+        return [self.confirmations.issue("prompt-choice", g) for g in actions]
+
+    def resolve_prompt_choice(self, token):
+        return self.confirmations.consume("prompt-choice", token)
+
+    def prepare_object_choices(self, values):
+        """Bind buttons to an exact object and the current print filename."""
+        return [self.confirmations.issue("exclude-choice", value)
+                for value in values]
+
+    def resolve_object_choice(self, token):
+        return self.confirmations.consume("exclude-choice", token)
+
+    def issue_object_confirmation(self, value):
+        return self.confirmations.issue("exclude-object", value)
+
+    def consume_object_confirmation(self, token):
+        return self.confirmations.consume("exclude-object", token)
+
+    # ---------------------------------------------------- scheduled starts
+
+    def schedule_available(self):
+        """Uploads and delayed starts need COSMOS and an allowed remote start."""
+        return (self.backend_name == backend.MOONRAKER
+                and self.moonraker is not None
+                and self.action_allowed(backend.START))
+
+    def schedule_tz(self):
+        return schedule.tzinfo_from(self.cfg.get("schedule_utc_offset", ""))
+
+    def scheduled_jobs(self):
+        return storage.load_schedule()
+
+    def add_scheduled(self, path, at):
+        with self.schedule_lock:
+            jobs = storage.load_schedule()
+            job, error = schedule.make_job(jobs, path, at, self.clock())
+            if job:
+                storage.save_schedule(jobs + [job])
+            return job, error
+
+    def cancel_scheduled(self, job_id):
+        with self.schedule_lock:
+            jobs = storage.load_schedule()
+            job = schedule.find(jobs, job_id)
+            if job:
+                storage.save_schedule(schedule.without(jobs, job_id))
+            return job
+
+    def _update_job(self, job_id, **fields):
+        with self.schedule_lock:
+            jobs = storage.load_schedule()
+            for job in jobs:
+                if job["id"] == job_id:
+                    job.update(fields)
+            storage.save_schedule(jobs)
+
+    def upload_file(self, name, data):
+        """(ok, path or reason, replaced) for a G-code received in Telegram."""
+        if not self.schedule_available():
+            return False, "загрузка файлов недоступна в этих настройках", False
+        try:
+            existing = {record["path"] for record in self.moonraker.list_file_records()}
+        except moonraker.MoonrakerError:
+            existing = set()
+        try:
+            path = self.moonraker.upload(name, data)
+        except moonraker.MoonrakerError as e:
+            return False, str(e), False
+        self.refresh_files()
+        return True, path, path in existing
+
+    def file_details(self, path):
+        with self.lock:
+            details = dict((self.file_info or {}).get(path) or {})
+        try:
+            details.update(self.moonraker.file_metadata(path))
+        except moonraker.MoonrakerError as e:
+            log.debug("file metadata unavailable: %s", e)
+        return details
+
+    def schedule_live(self, job):
+        """What can be checked right now about starting ``job``.
+
+        Each probe stands alone: one that fails reads as "unknown", and
+        schedule.decide treats unknown as a reason to ask, not to start.
+        """
+        status, online = self._snapshot()
+        live = {"online": bool(online and status),
+                "code": ((status or {}).get("PrintInfo") or {}).get("Status"),
+                "file_exists": None, "filament": None, "printed_since": None}
+        try:
+            live["file_exists"] = job["path"] in self.moonraker.list_files()
+        except Exception as e:
+            log.info("schedule: file list unavailable - %s", e)
+        try:
+            live["filament"] = self.moonraker.filament_detected()
+        except Exception as e:
+            log.info("schedule: filament sensor unavailable - %s", e)
+        try:
+            recent = self.moonraker.history(limit=5)
+            live["printed_since"] = any(
+                float(item.get("start_time") or 0) > job["created"] for item in recent)
+        except Exception as e:
+            log.info("schedule: history unavailable - %s", e)
+        return live
+
+    def check_schedule(self):
+        """One pass over planned starts: reminders, then jobs that are due."""
+        if not self.schedule_available():
+            return
+        now, tz = self.clock(), self.schedule_tz()
+        lead = max(0.0, float(self.cfg.get("schedule_reminder_min", 10) or 0)) * 60
+        grace = max(1.0, float(self.cfg.get("schedule_late_grace_min", 15) or 15)) * 60
+        for job in schedule.ordered(storage.load_schedule()):
+            if schedule.reminder_due(job, now, lead):
+                text = ui.schedule_reminder_text(
+                    job, schedule.format_when(job["at"], now, tz),
+                    schedule.format_left(job["at"], now))
+                if self._schedule_notice(text, ui.kb_schedule_job(job["id"])):
+                    self._update_job(job["id"], reminded=True)
+            elif schedule.is_due(job, now):
+                self._run_due_job(job, now, grace, tz)
+
+    def _run_due_job(self, job, now, grace, tz):
+        reasons = schedule.decide(job, now, self.schedule_live(job), grace)
+        if not reasons:
+            ok, info = self.perform(backend.START, job["path"])
+            if ok:
+                self.cancel_scheduled(job["id"])
+                log.info("schedule: started %s", job["path"])
+                self._schedule_notice(self.render(ui.schedule_started_text(job)), None)
+                return
+            reasons = ["запуск не прошёл: %s" % info]
+        text = ui.schedule_ask_text(job, reasons, schedule.format_when(job["at"], now, tz))
+        # Marked only once the owner has really been told. While Telegram is
+        # unreachable the job is simply looked at again on the next pass.
+        if self._schedule_notice(text, ui.kb_schedule_ask(job["id"])):
+            self._update_job(job["id"], asked=int(now))
+
+    def _schedule_notice(self, text, keyboard):
+        try:
+            return self.refresh_main(force_new=True, text=text,
+                                     keyboard=keyboard) is not None
+        except Exception as e:
+            log.warning("schedule notice did not go out: %r", e)
+            return False
 
     # ------------------------------------------------------------- camera
 
@@ -95,7 +354,14 @@ class Bot(object):
                 cached, when = self.frame, self.frame_time
             if cached and self.clock() - when < max_age:
                 return cached
-        shot = sdcp.grab_frame(self.host)
+        if self.backend_name == backend.MOONRAKER:
+            try:
+                shot = self.moonraker.grab_frame()
+            except moonraker.MoonrakerError as e:
+                log.debug("Moonraker camera unavailable: %s", e)
+                shot = None
+        else:
+            shot = sdcp.grab_frame(self.host)
         if shot:
             with self.lock:
                 self.frame, self.frame_time = shot, self.clock()
@@ -222,6 +488,174 @@ class Bot(object):
             time.sleep(0.1)
         return False, "принтер не ответил"
 
+    def refresh_files(self):
+        """Refresh ``self.files`` through the selected backend."""
+        if not self.action_allowed(backend.FILES):
+            return False, "список файлов недоступен"
+        if self.backend_name == backend.MOONRAKER:
+            try:
+                records = self.moonraker.list_file_records()
+            except moonraker.MoonrakerError as e:
+                return False, str(e)
+            with self.lock:
+                self.files = [record["path"] for record in records]
+                self.file_info = {record["path"]: record for record in records}
+            return True, "Moonraker"
+        return self.run_command(sdcp.CMD_FILE_LIST, {"Url": "/local"}, wait=6)
+
+    def perform(self, action, value=None):
+        """Execute one named operation after a final permission check."""
+        if not self.action_allowed(action):
+            return False, "команда запрещена настройками"
+        if action == backend.RUN_MACRO and not self.macro_allowed(value):
+            return False, "макрос не разрешён настройками"
+
+        # Re-check live state at execution time.  A confirmation screen can be
+        # left open while the printer disconnects or changes state; the old
+        # button must then fail closed instead of sending a stale command.
+        if action not in backend.READ_ACTIONS:
+            if not self.online or not self.status:
+                return False, "принтер не в сети"
+            code = (self.status.get("PrintInfo") or {}).get("Status")
+            if code == 77:
+                return False, "принтер в состоянии ошибки"
+            if action == backend.PAUSE and code != ps.STATUS_PRINTING:
+                return False, "печать сейчас не выполняется"
+            if action == backend.RESUME and code not in ps.STATUS_PAUSED:
+                return False, "принтер сейчас не на паузе"
+            if action == backend.CANCEL and code in (None, 0, 8, 9):
+                return False, "активной печати нет"
+            if (action == backend.EXCLUDE_OBJECT
+                    and code != ps.STATUS_PRINTING and code not in ps.STATUS_PAUSED):
+                return False, "активной печати нет"
+            if action == backend.START and code not in (0, 8, 9):
+                return False, "принтер занят"
+
+        if self.backend_name == backend.MOONRAKER:
+            if action == backend.EXCLUDE_OBJECT:
+                payload = value if isinstance(value, dict) else {}
+                object_name = moonraker.normalized_object_name(payload.get("name"))
+                expected_file = str(payload.get("filename") or "")
+                if not object_name or not expected_file:
+                    return False, "подтверждение объекта некорректно"
+                try:
+                    live = self.moonraker.exclude_object_state()
+                except moonraker.MoonrakerError as e:
+                    return False, str(e)
+                if live.get("PrintState") not in ("printing", "paused"):
+                    return False, "активной печати уже нет"
+                if live.get("Filename") != expected_file:
+                    return False, "задание печати сменилось"
+                names = list(live.get("Objects") or [])
+                excluded = set(live.get("ExcludedObjects") or [])
+                active = [name for name in names if name not in excluded]
+                if object_name not in active:
+                    return False, "объект уже исключён или больше не существует"
+                if len(active) < 2:
+                    return False, "нельзя убрать единственный оставшийся объект"
+                value = object_name
+            methods = {
+                backend.PAUSE: lambda: self.moonraker.pause(),
+                backend.RESUME: lambda: self.moonraker.resume(),
+                backend.CANCEL: lambda: self.moonraker.cancel(),
+                backend.EXCLUDE_OBJECT: lambda: self.moonraker.exclude_object(value),
+                backend.START: lambda: self.moonraker.start(value),
+                backend.DELETE: lambda: self.moonraker.delete(value),
+                backend.RUN_MACRO: lambda: self.moonraker.run_macro(value),
+                backend.PROMPT: lambda: self.moonraker.run_prompt_action(value),
+                backend.LIGHT: lambda: self.moonraker.set_light(value),
+                backend.SPEED: lambda: self.moonraker.set_speed(value),
+                backend.TEMPERATURE: lambda: self.moonraker.set_temperatures(value[0], value[1]),
+                backend.FANS: lambda: self.moonraker.set_fans(value),
+            }
+            method = methods.get(action)
+            if method is None:
+                return False, "эта команда не поддерживается Moonraker-режимом"
+            try:
+                method()
+                if action == backend.RUN_MACRO:
+                    with self.lock:
+                        self.macro_watch = (value, self.clock(), False)
+                if action == backend.EXCLUDE_OBJECT:
+                    with self.lock:
+                        state = ((self.status or {}).get("ExcludeObject") or {})
+                        excluded = list(state.get("ExcludedObjects") or [])
+                        if value not in excluded:
+                            excluded.append(value)
+                        state["ExcludedObjects"] = excluded
+                return True, "Moonraker"
+            except moonraker.MoonrakerError as e:
+                return False, str(e)
+
+        if action == backend.PAUSE:
+            command = (sdcp.CMD_PAUSE, None)
+        elif action == backend.RESUME:
+            command = (sdcp.CMD_RESUME, None)
+        elif action == backend.CANCEL:
+            command = (sdcp.CMD_STOP, None)
+        elif action == backend.START:
+            command = (sdcp.CMD_START,
+                       {"Filename": value, "StartLayer": 0})
+        elif action == backend.LIGHT:
+            command = (sdcp.CMD_SET,
+                       {"LightStatus": {"SecondLight": int(bool(value))}})
+        elif action == backend.SPEED:
+            command = (sdcp.CMD_SET, {"PrintSpeedPct": int(value)})
+        elif action == backend.TEMPERATURE:
+            command = (sdcp.CMD_SET,
+                       {"TempTargetNozzle": int(value[0]),
+                        "TempTargetHotbed": int(value[1])})
+        elif action == backend.FANS:
+            command = (sdcp.CMD_SET, {"TargetFanSpeed": dict(value)})
+        else:
+            return False, "неизвестная команда"
+        return self.run_command(command[0], command[1])
+
+    def diagnostics(self):
+        """Return a safe read-only health summary for COSMOS."""
+        if not self.action_allowed(backend.DIAGNOSTICS):
+            return False, "диагностика недоступна"
+        if self.backend_name != backend.MOONRAKER:
+            return False, "диагностика COSMOS доступна только через Moonraker"
+        try:
+            return True, self.moonraker.diagnostics()
+        except moonraker.MoonrakerError as e:
+            return False, str(e)
+
+    def exclude_objects(self):
+        """Read a fresh object list instead of trusting the polling cache."""
+        if (not self.action_allowed(backend.EXCLUDE_OBJECT)
+                or self.backend_name != backend.MOONRAKER):
+            return False, "исключение объектов доступно только через Moonraker"
+        try:
+            return True, self.moonraker.exclude_object_state()
+        except moonraker.MoonrakerError as e:
+            return False, str(e)
+
+    def history(self):
+        if not self.action_allowed(backend.HISTORY) or self.backend_name != backend.MOONRAKER:
+            return False, "история доступна только через Moonraker"
+        try:
+            return True, self.moonraker.history()
+        except moonraker.MoonrakerError as e:
+            return False, str(e)
+
+    def bed_mesh(self):
+        if not self.action_allowed(backend.HEIGHT_MAP) or self.backend_name != backend.MOONRAKER:
+            return False, "карта доступна только через Moonraker"
+        try:
+            return True, self.moonraker.bed_mesh()
+        except moonraker.MoonrakerError as e:
+            return False, str(e)
+
+    def macros(self):
+        if not self.action_allowed(backend.MACROS) or self.backend_name != backend.MOONRAKER:
+            return False, "макросы доступны только через Moonraker"
+        try:
+            return True, self.moonraker.list_macros()
+        except moonraker.MoonrakerError as e:
+            return False, str(e)
+
     def light_off_if_night(self):
         """Turn the light off after a print, but only at night.
 
@@ -234,7 +668,9 @@ class Bot(object):
             lit = (((self.status or {}).get("LightStatus") or {}).get("SecondLight") == 1)
         if not lit:
             return ""
-        ok, info = self.run_command(sdcp.CMD_SET, {"LightStatus": {"SecondLight": 0}})
+        if not self.action_allowed(backend.LIGHT):
+            return ""
+        ok, info = self.perform(backend.LIGHT, False)
         return "\n🌙 Свет выключен — ночь." if ok else \
                "\n⚠️ Свет погасить не вышло (%s)." % info
 
@@ -279,8 +715,10 @@ class Bot(object):
         elif event.kind == ps.PAUSED:
             text = self.render("⏸ <b>Печать на паузе</b>\nПродолжить — кнопкой ниже.\n")
         elif event.kind == ps.STALLED:
-            text = self.render("⚠️ <b>Печать прервалась — нужен ты</b>\n"
-                               "Неожиданная остановка, код %s.\n" % event.code)
+            # The status object carries Klipper's own reason for the stop;
+            # ui.stall_header prefers it over the bare numeric code.
+            status, _ = self._snapshot()
+            text = self.render(ui.stall_header(status, event.code))
         elif event.kind == ps.PROGRESS:
             text = self.render("📊 <b>Идёт печать</b>\n")
         elif event.kind == ps.FINISHED:
@@ -309,6 +747,102 @@ class Bot(object):
         # silently swallow a whole month.
         if note_appended and mid is not None:
             self.confirm_support_note_shown()
+        if event.kind in (ps.FINISHED, ps.CANCELLED) and self.cfg.get("notify_cooldown", True):
+            with self.lock:
+                nozzle = float((self.status or {}).get("TempOfNozzle") or 0)
+            self.cooldown_pending = nozzle > float(self.cfg.get("cooldown_temp_c", 50))
+            # By the time the nozzle has cooled the bed has long dropped, and a
+            # fresh frame shows the part sunk out of view. The cooled notice
+            # repeats the finish frame; "Refresh" still shows the live camera.
+            self.cooldown_photo = photo if self.cooldown_pending else None
+
+    def _watch_macro(self):
+        """Report when a macro started from the bot has finished.
+
+        /printer/gcode/script answers only when the script ends, so the button
+        press cannot tell us anything about the ten minutes that follow. Klipper
+        keeps idle_timeout at "Printing" while gcode runs, so we watch that.
+        """
+        with self.lock:
+            watch = self.macro_watch
+        if not watch:
+            return
+        name, started, seen_busy = watch
+        try:
+            busy = self.moonraker.gcode_busy()
+        except Exception:
+            return
+        if busy:
+            with self.lock:
+                self.macro_watch = (name, started, True)
+            return
+        # Klipper flips to "Printing" a moment after the command lands; without
+        # this grace the watcher would call every macro finished instantly.
+        if not seen_busy and self.clock() - started < 20:
+            return
+        with self.lock:
+            self.macro_watch = None
+        self._report_macro_done(name, int(self.clock() - started))
+
+    def _report_macro_done(self, name, seconds):
+        needs_save = name in ui.BED_CALIB_MACROS
+        keyboard = None
+        if needs_save and self.macro_allowed("SAVE_CALIBRATION"):
+            keyboard = ui.kb_after_calibration(
+                self.prepare_macro_choices(["SAVE_CALIBRATION"])[0])
+        try:
+            self.refresh_main(force_new=True,
+                              text=ui.macro_done_text(name, seconds, needs_save),
+                              keyboard=keyboard)
+        except Exception as e:
+            log.warning("macro report did not go out: %r", e)
+
+    def _watch_prompt(self):
+        """Mirror the dialog from the printer screen into Telegram."""
+        if not self.action_allowed(backend.PROMPT):
+            return
+        with self.lock:
+            self.prompt_tick += 1
+            tick = self.prompt_tick
+        if tick % 3:            # раз в три опроса: подсказка не срочная
+            return
+        try:
+            prompt = self.moonraker.active_prompt()
+        except Exception:
+            return
+        signature = None if not prompt else (
+            prompt["title"], tuple(prompt["text"]),
+            tuple(gcode for _label, gcode, _style in prompt["buttons"]))
+        with self.lock:
+            same = signature == self.prompt_shown
+            self.prompt_shown = signature
+        if signature is None or same:
+            return
+        refs = self.prepare_prompt_choices(
+            [gcode for _label, gcode, _style in prompt["buttons"]])
+        try:
+            self.refresh_main(force_new=True, text=ui.prompt_text(prompt),
+                              keyboard=ui.kb_prompt(prompt["buttons"], refs))
+        except Exception as e:
+            log.warning("prompt did not go out: %r", e)
+
+    def _maybe_notify_cooldown(self, status):
+        if not self.cooldown_pending:
+            return
+        info = status.get("PrintInfo") or {}
+        threshold = float(self.cfg.get("cooldown_temp_c", 50))
+        nozzle = float(status.get("TempOfNozzle") or 0)
+        target = float(status.get("TempTargetNozzle") or 0)
+        if info.get("Status") == ps.STATUS_PRINTING or nozzle > threshold or target > 0:
+            return
+        self.cooldown_pending = False
+        shot, self.cooldown_photo = self.cooldown_photo, None
+        try:
+            self.refresh_main(force_new=True, text=self.render(
+                "❄️ <b>Принтер остыл</b>\nСопло %.0f°C — можно безопасно заняться деталью.\n" % nozzle),
+                photo=shot or False)
+        except Exception as e:
+            log.warning("cooldown notification did not go out: %r", e)
 
     def _take_print_frame(self):
         with self.lock:
@@ -338,14 +872,48 @@ class Bot(object):
     # -------------------------------------------------------------- loops
 
     def printer_loop(self):
-        while not self.stopping.is_set():
+        if self.backend_name == backend.MOONRAKER:
+            return self._moonraker_printer_loop()
+        return self._sdcp_printer_loop()
+
+    def _maybe_report_connection_loss(self):
+        with self.lock:
+            since, reported = self.offline_since, self.loss_reported
+        grace = int(self.cfg.get("offline_grace_sec", 60))
+        if since and not reported and self.clock() - since > grace:
             with self.lock:
-                since, reported = self.offline_since, self.loss_reported
-            grace = int(self.cfg.get("offline_grace_sec", 60))
-            if since and not reported and self.clock() - since > grace:
+                self.loss_reported = True
+            self.show_connection_lost(int(self.clock() - since))
+
+    def _moonraker_printer_loop(self):
+        interval = max(1, float(self.cfg.get("moonraker_poll_sec", 2)))
+        while not self.stopping.is_set():
+            self._maybe_report_connection_loss()
+            try:
+                status = self.moonraker.status()
                 with self.lock:
-                    self.loss_reported = True
-                self.show_connection_lost(int(self.clock() - since))
+                    was_online = self.online
+                    self.online = True
+                    self.offline_since = None
+                    had_reported, self.loss_reported = self.loss_reported, False
+                if not was_online:
+                    log.info("printer: Moonraker connected")
+                if had_reported:
+                    self.show_connection_restored()
+                self._handle_status(status)
+                self._watch_macro()
+                self._watch_prompt()
+            except Exception as e:
+                log.info("printer: Moonraker unavailable - %s", e)
+                with self.lock:
+                    self.online = False
+                    if self.offline_since is None:
+                        self.offline_since = self.clock()
+            self.stopping.wait(interval)
+
+    def _sdcp_printer_loop(self):
+        while not self.stopping.is_set():
+            self._maybe_report_connection_loss()
             ws = None
             try:
                 ws = sdcp.WS(self.host)
@@ -391,6 +959,9 @@ class Bot(object):
         if not isinstance(status, dict):
             return
         ws.mainboard = payload.get("MainboardID", "") or ws.mainboard
+        self._handle_status(status)
+
+    def _handle_status(self, status):
         print_info = status.get("PrintInfo") or {}
         code = print_info.get("Status")
         if code is None:
@@ -417,10 +988,13 @@ class Bot(object):
 
         for event in self.lifecycle.observe(status):
             self.announce(event)
+        self._maybe_notify_cooldown(status)
 
     def keepalive_loop(self):
         """The printer closes the websocket if the client stays silent.
         Asking for a status is harmless and moves traffic both ways."""
+        if self.backend_name != backend.SDCP:
+            return
         while not self.stopping.is_set():
             self.stopping.wait(max(5, int(self.cfg.get("keepalive_sec", 20))))
             with self.lock:
@@ -431,6 +1005,17 @@ class Bot(object):
                 ws.command(sdcp.CMD_STATUS)
             except Exception as e:
                 log.debug("keepalive did not go out: %r", e)
+
+    def schedule_loop(self):
+        """Look at planned starts every few seconds. COSMOS only."""
+        if self.backend_name != backend.MOONRAKER:
+            return
+        while not self.stopping.is_set():
+            try:
+                self.check_schedule()
+            except Exception as e:
+                log.warning("schedule check failed: %r", e)
+            self.stopping.wait(15)
 
     def refresh_loop(self):
         """Refresh the message while a print runs. Idle needs no touching."""
@@ -453,6 +1038,11 @@ class Bot(object):
             {"command": "status", "description": "состояние принтера"},
             {"command": "snap", "description": "кадр с камеры"},
             {"command": "files", "description": "файлы на принтере"},
+            {"command": "plan", "description": "запланированные печати"},
+            {"command": "diag", "description": "диагностика COSMOS"},
+            {"command": "mesh", "description": "карта высот стола"},
+            {"command": "history", "description": "история печатей"},
+            {"command": "macros", "description": "макросы COSMOS"},
             {"command": "help", "description": "справка"},
         ])
         while not self.stopping.is_set():
@@ -473,7 +1063,8 @@ class Bot(object):
 
     def run(self):
         log.info("bot started, printer %s", self.host)
-        targets = [self.printer_loop, self.keepalive_loop, self.refresh_loop]
+        targets = [self.printer_loop, self.keepalive_loop, self.refresh_loop,
+                   self.schedule_loop]
         if self.cfg.get("anonymous_statistics", False):
             targets.append(lambda: telemetry.loop(self.stopping, self.cfg))
         for target in targets:

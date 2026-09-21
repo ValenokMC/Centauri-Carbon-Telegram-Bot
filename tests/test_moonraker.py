@@ -1,0 +1,368 @@
+# -*- coding: utf-8 -*-
+"""Moonraker translation and HTTP client tests; no socket is opened."""
+import io
+import json
+import urllib.error
+import urllib.parse
+
+import pytest
+
+from centauri_bot import moonraker
+
+
+class Response(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
+class FakeOpener(object):
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.requests = []
+
+    def __call__(self, request, timeout):
+        self.requests.append((request, timeout))
+        value = self.replies.pop(0)
+        if isinstance(value, bytes):
+            return Response(value)
+        return Response(json.dumps(value).encode("utf-8"))
+
+
+def printing_objects():
+    return {
+        "webhooks": {"state": "ready"},
+        "print_stats": {
+            "state": "printing", "filename": "parts/cube.gcode",
+            "print_duration": 600, "info": {"current_layer": 12, "total_layer": 40},
+        },
+        "virtual_sdcard": {"progress": 0.25, "file_path": "parts/cube.gcode"},
+        "display_status": {"progress": 0.24},
+        "extruder": {"temperature": 211.2, "target": 215},
+        "heater_bed": {"temperature": 59.8, "target": 60},
+        "fan": {"speed": 0.5},
+        "gcode_move": {"gcode_position": [10, 20, 3.4, 1]},
+        "exclude_object": {
+            "objects": [
+                {"name": "CUBE.DRC_ID_0_COPY_0", "center": [140, 128]},
+                {"name": "PLUG.DRC_ID_1_COPY_0", "center": [112, 128]},
+            ],
+            "excluded_objects": [],
+            "current_object": "CUBE.DRC_ID_0_COPY_0",
+        },
+    }
+
+
+def test_normalize_printing_status_matches_existing_ui_shape():
+    status = moonraker.normalize_status(printing_objects())
+    info = status["PrintInfo"]
+    assert info["Status"] == 13
+    assert info["Filename"] == "parts/cube.gcode"
+    assert info["Progress"] == 25
+    assert info["CurrentLayer"] == 12
+    assert info["TotalTicks"] == 2400
+    assert status["TempOfNozzle"] == 211.2
+    assert status["CurrentFanSpeed"]["ModelFan"] == 50
+    assert status["CurrentCoord"]["Z"] == 3.4
+    assert status["ExcludeObject"] == {
+        "Objects": ["CUBE.DRC_ID_0_COPY_0", "PLUG.DRC_ID_1_COPY_0"],
+        "ExcludedObjects": [], "CurrentObject": "CUBE.DRC_ID_0_COPY_0",
+    }
+
+
+def test_normalize_cosmos_reads_fan_generic_enclosure_fans():
+    objects = printing_objects()
+    objects["fan_generic aux_fan"] = {"speed": 0.25}
+    objects["fan_generic case_fan"] = {"speed": 0.75}
+    fans = moonraker.normalize_status(objects)["CurrentFanSpeed"]
+    assert fans == {"ModelFan": 50, "BoxFan": 75, "AuxiliaryFan": 25}
+
+
+@pytest.mark.parametrize("state,code", [
+    ("standby", 0), ("paused", 6), ("complete", 9),
+    ("cancelled", 8), ("error", 77),
+])
+def test_normalize_print_states(state, code):
+    objects = printing_objects()
+    objects["print_stats"]["state"] = state
+    assert moonraker.normalize_status(objects)["PrintInfo"]["Status"] == code
+
+
+def test_client_queries_documented_objects_and_sends_api_key_as_header():
+    # Второй ответ — метаданные файла: статус спрашивает у них оценку слайсера.
+    fake = FakeOpener([{"result": {"status": printing_objects()}},
+                       {"result": {"estimated_time": 3600}}])
+    client = moonraker.Client("http://printer.local", api_key="top-secret",
+                              opener=fake)
+    status = client.status()
+
+    request, timeout = fake.requests[0]
+    assert status["PrintInfo"]["Progress"] == 25
+    assert request.get_header("X-api-key") == "top-secret"
+    assert "top-secret" not in request.full_url
+    assert "/printer/objects/query?webhooks&virtual_sdcard&print_stats" in request.full_url
+    assert "fan_generic%20aux_fan" in request.full_url
+    assert "fan_generic%20case_fan" in request.full_url
+    assert timeout == 5
+
+
+def test_file_list_filters_non_gcode_and_start_encodes_exact_path():
+    fake = FakeOpener([
+        {"result": [
+            {"path": "parts/A & B.gcode"}, {"path": "notes.txt"},
+            {"path": "parts/second.GCO"},
+        ]},
+        {"result": "ok"},
+    ])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    assert client.list_files() == ["parts/A & B.gcode", "parts/second.GCO"]
+    client.start("parts/A & B.gcode")
+
+    request, _ = fake.requests[1]
+    assert request.get_method() == "POST"
+    assert urllib.parse.parse_qs(request.data.decode()) == {
+        "filename": ["parts/A & B.gcode"]}
+
+
+def test_file_records_keep_safe_metadata_and_delete_url_encodes_the_filename():
+    fake = FakeOpener([
+        {"result": [
+            {"path": "new.gcode", "size": 2_500_000, "modified": 200},
+            {"path": "old.gcode", "size": 10, "modified": 100},
+            {"path": "../escape.gcode", "size": 99},
+        ]},
+        {"result": {"item": {"path": "folder/A & B.gcode"}}},
+    ])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    assert client.list_file_records() == [
+        {"path": "new.gcode", "size": 2_500_000, "modified": 200, "permissions": ""},
+        {"path": "old.gcode", "size": 10, "modified": 100, "permissions": ""},
+    ]
+    client.delete("folder/A & B.gcode")
+    request, _ = fake.requests[1]
+    assert request.get_method() == "DELETE"
+    assert request.full_url.endswith("/server/files/gcodes/folder/A%20%26%20B.gcode")
+
+
+@pytest.mark.parametrize("path", ["", "/tmp/no.gcode", "../no.gcode", "folder/../no.gcode",
+                                   "notes.txt", "bad\\..\\no.gcode"])
+def test_unsafe_gcode_paths_are_rejected_without_http(path):
+    fake = FakeOpener([])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    with pytest.raises(moonraker.MoonrakerError, match="некорректный"):
+        client.delete(path)
+    assert fake.requests == []
+
+
+def test_diagnostics_uses_only_documented_read_endpoints():
+    fake = FakeOpener([
+        {"result": {"moonraker_version": "v0.9", "klippy_state": "ready",
+                    "warnings": ["one"], "failed_components": []}},
+        {"result": {"software_version": "v0.13", "state": "ready"}},
+        {"result": {"objects": ["webhooks", "toolhead", "extruder"]}},
+        {"result": {"system_memory": {"total": 117232, "available": 29300}}},
+    ])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    assert client.diagnostics() == {
+        "moonraker_version": "v0.9", "klippy_state": "ready", "klippy_message": "",
+        "klipper_version": "v0.13", "warnings": 1, "failed_components": 0,
+        "object_count": 3, "memory_total": 117232, "memory_available": 29300,
+    }
+    assert [request.get_method() for request, _ in fake.requests] == ["GET"] * 4
+
+
+def test_diagnostics_still_answers_when_proc_stats_is_unavailable():
+    """An older Moonraker answers 404 here. The memory line is worth having,
+    but never at the price of the whole diagnostics card."""
+
+    class Failing(FakeOpener):
+        def __call__(self, request, timeout):
+            if request.full_url.endswith("/machine/proc_stats"):
+                raise urllib.error.HTTPError(request.full_url, 404, "no", None, None)
+            return FakeOpener.__call__(self, request, timeout)
+
+    fake = Failing([
+        {"result": {"moonraker_version": "v0.9", "klippy_state": "ready"}},
+        {"result": {"software_version": "v0.13", "state": "ready"}},
+        {"result": {"objects": ["webhooks"]}},
+    ])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    result = client.diagnostics()
+    assert result["klippy_state"] == "ready"
+    assert result["memory_total"] == 0 and result["memory_available"] == 0
+
+
+def test_macros_history_and_saved_mesh_use_read_endpoints_until_macro_is_confirmed():
+    fake = FakeOpener([
+        {"result": {"objects": ["gcode_macro LOAD_FILAMENT", "gcode_macro _INTERNAL", "toolhead"]}},
+        {"result": {"jobs": [{"filename": "cube.gcode", "status": "completed"}]}},
+        {"result": {"status": {"bed_mesh": {"profile_name": "default", "profiles": {
+            "default": {"points": [[-0.1, 0.0], [0.1, 0.2]]}}}}}},
+        {"result": "ok"},
+    ])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    assert client.list_macros() == ["LOAD_FILAMENT"]
+    assert client.history() == [{"filename": "cube.gcode", "status": "completed"}]
+    assert client.bed_mesh()["points"][1][1] == 0.2
+    client.run_macro("load_filament")
+    request, _ = fake.requests[-1]
+    assert request.get_method() == "POST"
+    assert urllib.parse.parse_qs(request.data.decode()) == {"script": ["LOAD_FILAMENT"]}
+
+
+def test_hardware_controls_only_emit_fixed_validated_cosmos_commands():
+    fake = FakeOpener([{"result": "ok"}] * 4)
+    client = moonraker.Client("http://printer.local", opener=fake)
+    client.set_light(True)
+    client.set_speed(125)
+    client.set_temperatures(245, 80)
+    client.set_fans({"ModelFan": 100, "AuxiliaryFan": 50, "BoxFan": 0})
+    scripts = [urllib.parse.parse_qs(request.data.decode())["script"][0]
+               for request, _ in fake.requests]
+    assert scripts == [
+        "SET_LED LED=case WHITE=1\nSYNC_CAMERA_LED", "M220 S125",
+        "SET_HEATER_TEMPERATURE HEATER=extruder TARGET=245\nSET_HEATER_TEMPERATURE HEATER=heater_bed TARGET=80",
+        "M106 P1 S255\nM106 P2 S128\nM106 P3 S0",
+    ]
+    with pytest.raises(moonraker.MoonrakerError, match="недопустимая"):
+        client.set_speed(101)
+
+
+def test_object_exclusion_rechecks_live_job_and_emits_one_fixed_command():
+    fake = FakeOpener([
+        {"result": {"status": printing_objects()}},
+        {"result": "ok"},
+    ])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    state = client.exclude_object_state()
+    assert state["Filename"] == "parts/cube.gcode"
+    assert state["PrintState"] == "printing"
+    client.exclude_object("PLUG.DRC_ID_1_COPY_0")
+    request, _ = fake.requests[-1]
+    assert urllib.parse.parse_qs(request.data.decode()) == {
+        "script": ["EXCLUDE_OBJECT NAME=PLUG.DRC_ID_1_COPY_0"]}
+
+    with pytest.raises(moonraker.MoonrakerError, match="некорректное"):
+        client.exclude_object("cube\nCANCEL_PRINT")
+    assert len(fake.requests) == 2
+
+
+def test_camera_refuses_unapproved_external_host_before_fetching_image():
+    fake = FakeOpener([{"result": {"webcams": [{
+        "enabled": True, "snapshot_url": "http://camera.example/snapshot.jpg",
+    }]}}])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    with pytest.raises(moonraker.MoonrakerError, match="запрещён"):
+        client.grab_frame()
+    assert len(fake.requests) == 1
+
+
+@pytest.mark.parametrize("value", [
+    "", "printer.local", "ftp://printer.local", "http://user:pass@printer.local",
+    "http://printer.local/?token=secret",
+])
+def test_invalid_base_urls_are_rejected(value):
+    assert not moonraker.valid_base_url(value)
+
+
+def test_remaining_time_comes_from_the_slicer_estimate():
+    """Позиция в файле занижает остаток: верхние слои идут медленнее нижних."""
+    fake = FakeOpener([{"result": {"status": printing_objects()}},
+                       {"result": {"estimated_time": 6949}}])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    info = client.status()["PrintInfo"]
+
+    assert info["TotalTicks"] == 6949
+    assert info["CurrentTicks"] == 600
+    # По файлу вышло бы 2400 всего, то есть остаток втрое короче настоящего.
+    assert "/server/files/metadata" in fake.requests[1][0].full_url
+
+
+def test_remaining_time_falls_back_to_file_position_without_metadata():
+    fake = FakeOpener([{"result": {"status": printing_objects()}},
+                       {"result": {}}])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    info = client.status()["PrintInfo"]
+
+    assert info["TotalTicks"] == 2400          # 600 с при прогрессе 0.25
+
+
+def test_slicer_estimate_is_dropped_once_the_print_runs_longer():
+    """Оценка, которую печать уже перерасходовала, показала бы ноль навсегда."""
+    objects = printing_objects()
+    objects["print_stats"]["print_duration"] = 9000
+    fake = FakeOpener([{"result": {"status": objects}},
+                       {"result": {"estimated_time": 6949}}])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    info = client.status()["PrintInfo"]
+
+    assert info["TotalTicks"] == 36000         # 9000 с при прогрессе 0.25
+
+
+def test_slicer_estimate_is_asked_once_per_file():
+    fake = FakeOpener([{"result": {"status": printing_objects()}},
+                       {"result": {"estimated_time": 6949}},
+                       {"result": {"status": printing_objects()}}])
+    client = moonraker.Client("http://printer.local", opener=fake)
+    client.status()
+    client.status()
+
+    метаданные = [r for r, _ in fake.requests if "/server/files/metadata" in r.full_url]
+    assert len(метаданные) == 1
+
+
+def test_object_names_allow_cyrillic_but_nothing_klipper_would_parse():
+    ok = "01_КОРЗИНА_—_ЛЕВАЯ_ПОЛОВИНА_—_4_ШТ.STEP_ID_0_COPY_0"
+    assert moonraker.normalized_object_name(ok) == ok
+    for bad in ("cube CANCEL_PRINT", "cube\nM112", "cube;x", "cube#x",
+                "cube*1", 'cube"', "cube'", "cube\\", "A=B", "_hidden",
+                "cube​", "cube M112", ""):
+        assert moonraker.normalized_object_name(bad) == "", bad
+
+
+def test_exclude_state_carries_outlines_of_known_objects_only():
+    raw = {"exclude_object": {"objects": [
+        {"name": "ДЕТАЛЬ", "center": [5, 5],
+         "polygon": [[0, 0], [10, 0], [10, 10], "junk"]},
+        {"name": "bad name", "polygon": [[0, 0], [1, 0], [1, 1]]},
+        {"name": "FLAT", "polygon": [[0, 0], [1, 1]]},
+    ]}}
+    state = moonraker.normalize_exclude_state(raw)
+    shapes = moonraker.exclude_shapes(raw, state["Objects"])
+    assert shapes == {"ДЕТАЛЬ": {"polygon": [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)],
+                                 "center": (5.0, 5.0)}}
+
+
+def test_remaining_time_comes_from_the_file_profile_once_it_is_loaded(monkeypatch):
+    lines = b"M73 P0 R100\n" + b"G1 X1\n" * 50 + b"M73 P50 R50\n" + b"G1 X1\n" * 50 + b"M73 P100 R0\n"
+    fake = FakeOpener([lines])
+    client = moonraker.Client("http://printer.local", opener=fake,
+                              estimate_remaining=True)
+    started = []
+    monkeypatch.setattr(moonraker.threading, "Thread",
+                        lambda target, args, daemon: type("T", (), {
+                            "start": lambda self: started.append(args)})())
+    objects = printing_objects()
+    objects["virtual_sdcard"]["file_position"] = lines.index(b"M73 P50")
+
+    first = moonraker.normalize_status(objects)
+    client._refine_remaining(objects, first)
+    assert started == [("parts/cube.gcode",)]
+    assert first["PrintInfo"]["TotalTicks"] == 2400      # old estimate until loaded
+
+    client._load_profile("parts/cube.gcode")
+    request, _ = fake.requests[0]
+    assert request.full_url == "http://printer.local/server/files/gcodes/parts/cube.gcode"
+    objects["print_stats"]["print_duration"] = 3600
+    status = moonraker.normalize_status(objects)
+    client._refine_remaining(objects, status)
+    # Half the slicer's 100 minutes is ahead; 60 real minutes bought 50 slicer
+    # minutes, and the pace is taken from the whole job until a window forms.
+    assert status["PrintInfo"]["RemainingMeasured"] is True
+    assert status["PrintInfo"]["TotalTicks"] == 3600 + 3600
+
+    idle = moonraker.normalize_status({"print_stats": {"state": "standby"}})
+    client._refine_remaining({}, idle)
+    assert client._eta_job == ("", None)

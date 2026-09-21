@@ -20,6 +20,11 @@ STATUS_TRANSIENT = {1, 7, 12, 16, 18, 21}
 # Manual pause from the screen and M600 from the G-code produce the same codes.
 STATUS_PAUSED = {5, 6}
 
+# Not a printer code: the Moonraker backend maps "Klipper is not ready" onto it,
+# which in practice means the firmware shut down mid-print. The reason is not in
+# the number - it arrives as free text in Moonraker.Message, and the UI shows it.
+STATUS_KLIPPY_ERROR = 77
+
 # Confirmed by observation. Unknown codes are appended to status-codes.txt in
 # the data directory so a new one can be named later.
 STATUS_META = {
@@ -35,6 +40,7 @@ STATUS_META = {
     16: ("heating", "\U0001F525"),
     18: ("preparing", "\U0001F527"),
     21: ("calibrating", "\U0001F527"),
+    STATUS_KLIPPY_ERROR: ("аварийная остановка", "🛑"),
 }
 
 # A print that reached this far is a finish, not a cancellation. The printer

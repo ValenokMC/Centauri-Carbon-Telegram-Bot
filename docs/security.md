@@ -10,6 +10,10 @@ the threat model. This page is the practical version.
 > your printer's port 3030 can pause it, stop it, move the head, and start a
 > print — with or without this bot.
 
+OpenCentauri/COSMOS uses Moonraker instead. Keep it on the LAN too. If Moonraker
+does not treat the bot host as trusted, configure an API key; the bot sends it
+in a header and never includes it in a URL or summary.
+
 So:
 
 - **Never forward ports 3030 or 3031 to the internet.** Not "just for a while".
@@ -67,11 +71,23 @@ to watch the printer, they run their own bot with their own token.
 buttons are absent, and a command arriving anyway is refused in code. Choose it
 in the wizard if you never need to pause or stop remotely.
 
+Moonraker adds another layer: an old `allow_control: true` does not carry broad
+control across a firmware migration. Pause/resume/cancel and single-object
+exclusion share a job-control opt-in; remote file start is enabled separately.
+Arbitrary G-code, macros and service or firmware restarts
+are not exposed.
+
 ## Dangerous actions
 
-Stop, pause and starting a print all require an explicit confirmation. Starting
+Stop, pause, excluding one model and starting a print all require an explicit
+confirmation. An object confirmation is bound to the exact object name and
+print file, which are checked again immediately before execution. Starting
 a print also shows a camera frame first, so you can see whether the bed is
 clear.
+
+The file confirmation contains a short one-use token bound to the exact path.
+It expires after five minutes. Refreshing or reordering the printer's file list
+cannot make an old button start a different file.
 
 That confirmation is the last thing between a mis-tap in your pocket and a hot
 machine running unattended. It is not going to be made optional.

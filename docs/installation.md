@@ -57,7 +57,7 @@ A path with spaces or Cyrillic characters is fine; that case is tested.
 
 Double-click **`Setup.cmd`** (or `Настроить.cmd`).
 
-It goes through nine steps:
+It goes through eleven steps:
 
 | Step | What happens |
 |---|---|
@@ -65,11 +65,13 @@ It goes through nine steps:
 | 2. Token | You paste the token. **Nothing appears as you type** — that is deliberate, it is not frozen. Press Enter. |
 | 3. Verification | Asks Telegram whether the token works, and shows you the bot's username. |
 | 4. chat_id | Asks you to press `/start` in your own bot, then finds your id from the bot's own updates. |
-| 5. Printer | You enter the address from step 3. |
-| 6. Connection | Checks port 3030 (status) and 3031 (camera), reporting each separately. |
-| 7. Name | A label for the printer in messages. |
-| 8. Mode | Monitoring only, or monitoring and control. |
-| 9. Anonymous statistics | Optional and off by default. No leaves every bot feature working. Yes sends only a random installation id, project code and version at most once per 30 days; see [PRIVACY.md](../PRIVACY.md). |
+| 5. Firmware | Stock Elegoo (SDCP), or OpenCentauri/COSMOS (Moonraker). |
+| 6. Printer | You enter the address from step 3. |
+| 7. Moonraker | COSMOS only: confirms the URL and, only if required, takes an API key without echoing it. |
+| 8. Connection | Stock checks ports 3030/3031; COSMOS requests a Klipper status and webcam description from Moonraker. |
+| 9. Name | A label for the printer in messages. |
+| 10. Mode | Monitoring only, or the controls supported by the selected backend. Moonraker asks separately about job control and remote start. |
+| 11. Anonymous statistics | Optional and off by default. No leaves every bot feature working. Yes sends only a random installation id, project code and version at most once per 30 days; see [PRIVACY.md](../PRIVACY.md). |
 
 Then it shows a summary — with the token masked — and asks whether to save.
 
@@ -88,8 +90,8 @@ becomes the only person the bot obeys.
 Not fatal. The wizard offers to save anyway, so you can fix the network later
 without redoing the whole thing. Check `Check.cmd` afterwards.
 
-A closed camera port (3031) is not an error at all — the bot runs without
-photos.
+A closed stock camera port (3031), or a Moonraker setup without a webcam, is not
+an error at all — the bot runs without photos.
 
 ## 6. Start it
 
