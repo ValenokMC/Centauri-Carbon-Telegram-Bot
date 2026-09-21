@@ -26,11 +26,11 @@ def answers(monkeypatch):
 
 def test_naydennaya_proshivka_predlagaetsya(monkeypatch, answers):
     monkeypatch.setattr(wiz.detect_mod, "detect", lambda host, **kw: (
-        backend.MOONRAKER, "http://10.0.0.5:7125", "нашли Moonraker"))
+        backend.MOONRAKER, "http://printer.local:7125", "нашли Moonraker"))
 
-    name, url = wiz.ask_backend("10.0.0.5")
+    name, url = wiz.ask_backend("printer.local")
 
-    assert (name, url) == (backend.MOONRAKER, "http://10.0.0.5:7125")
+    assert (name, url) == (backend.MOONRAKER, "http://printer.local:7125")
     assert any("Использовать режим" in p for p in answers["yes"])
     assert not answers["choices"], "спрашивать вручную было незачем"
 
@@ -42,14 +42,14 @@ def test_otkaz_ot_naydennogo_vozvraschaet_k_ruchnomu_vyboru(monkeypatch):
     monkeypatch.setattr(wiz, "ask_choice",
                         lambda prompt, options: backend.MOONRAKER)
 
-    assert wiz.ask_backend("10.0.0.5") == (backend.MOONRAKER, "")
+    assert wiz.ask_backend("printer.local") == (backend.MOONRAKER, "")
 
 
 def test_molchanie_printera_privodit_k_voprosu(monkeypatch, answers):
     monkeypatch.setattr(wiz.detect_mod, "detect",
                         lambda host, **kw: ("", "", "никто не ответил"))
 
-    name, url = wiz.ask_backend("10.0.0.5")
+    name, url = wiz.ask_backend("printer.local")
 
     assert name == backend.SDCP        # первый вариант списка
     assert url == ""
@@ -72,7 +72,7 @@ def test_prezhniy_rezhim_ostavlyayut_bez_oprosa(monkeypatch):
     monkeypatch.setattr(wiz.detect_mod, "detect", ne_zvat)
     monkeypatch.setattr(wiz, "ask_yes", lambda prompt, default=True: False)
 
-    assert wiz.ask_backend("10.0.0.5", backend.MOONRAKER) == (
+    assert wiz.ask_backend("printer.local", backend.MOONRAKER) == (
         backend.MOONRAKER, "")
 
 
