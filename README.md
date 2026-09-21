@@ -110,7 +110,8 @@ Consent can be withdrawn by re-running `Setup.cmd`. Details: [PRIVACY.md](PRIVAC
 
 **Watching**
 
-- Live status: state, file, progress, layer, time remaining, nozzle and bed
+- Live status: state, file, progress, layer, time remaining and — on COSMOS —
+  the finish time on the clock, nozzle and bed
 - A camera frame with the status, and `/snap` for one on demand
 - Brief and detailed views — chamber temperature, fans, light, position
 - Notifications: started · paused · resumed · finished · stopped · connection
@@ -121,7 +122,8 @@ Consent can be withdrawn by re-running `Setup.cmd`. Details: [PRIVACY.md](PRIVAC
 **Controlling** *(optional — the wizard offers a monitoring-only mode)*
 
 - Pause · resume · stop
-- On COSMOS, exclude one failed model while the other objects keep printing
+- On COSMOS, exclude one failed model while the other objects keep printing,
+  picked by number on a picture of the bed
 - Chamber light on and off, and an automatic switch-off at night after a print
 - Print speed: 50 / 75 / 100 / 125 / 150 %
 - Nozzle and bed heating presets

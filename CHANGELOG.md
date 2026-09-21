@@ -40,8 +40,33 @@ this project uses [Semantic Versioning](https://semver.org/).
   binds the confirmation to the exact object and print file, then rechecks both
   against Moonraker immediately before sending the fixed Klipper command.
 
+- A finish time next to the time left on COSMOS ("done ≈ tomorrow at 01:26").
+  The time left now comes from the job's own G-code: the slicer's per-minute
+  `M73` marks and the `EXCLUDE_OBJECT` markers give the slicer time still ahead
+  and which model it belongs to. Removing a model takes its share off at once; a
+  speed change rescales the estimate immediately, and the pace the printer
+  actually keeps (measured over the last 15 minutes) takes over within minutes.
+  The file is read once per job, streamed and never stored; files without `M73`
+  keep the previous estimate. The finish time is hidden while paused.
+- The object-removal screen on COSMOS shows a picture of the bed with every
+  model outlined and numbered; the buttons carry the same numbers, so two
+  copies of one model can be told apart. The model being printed is outlined in
+  blue, removed ones are hatched red. Drawn without third-party libraries.
+
+### Fixed
+
+- Object removal was never offered for models whose names are not in Latin
+  letters. Orca names objects after the model file, so a Cyrillic file name
+  hid the button. Any alphabet is now accepted; whitespace and the characters
+  Klipper treats specially (`; # * = " ' \`) are still refused.
+- After confirming a print, a scheduled start or a deletion, the status landed
+  in the confirmation message, which the refresh loop does not track: it froze
+  while the loop kept editing the older one. The result now goes into the one
+  tracked status message and the confirmation is removed.
+
 ### Changed
 
+- Object removal has its own ✂️ icon instead of sharing 🧩 with macros.
 - The "printer cooled down" notice repeats the frame taken when the print
   ended, with the bed still up, instead of a fresh frame of the lowered bed.
   "Refresh" still shows the live camera.
