@@ -388,7 +388,7 @@ def kb_main(status, allow_control=True, detailed=False, maintenance=(False, Fals
             rows.append(ctl)
         if ((printing or paused) and backend.EXCLUDE_OBJECT in allowed
                 and len(active_objects(status)) > 1):
-            rows.append([{"text": "🧩 Убрать объект",
+            rows.append([{"text": "✂️ Убрать объект",
                           "callback_data": "objects"}])
         settings = []
         lit = ((status.get("LightStatus") or {}).get("SecondLight") == 1)
@@ -505,7 +505,7 @@ def objects_text(state):
     excluded = set(state.get("ExcludedObjects") or [])
     current = state.get("CurrentObject") or ""
     active = [name for name in names if name not in excluded]
-    lines = ["<b>🧩 Объекты текущей печати</b>",
+    lines = ["<b>✂️ Объекты текущей печати</b>",
              "Осталось: %d из %d" % (len(active), len(names))]
     labels = object_labels(names)
     for name in active:

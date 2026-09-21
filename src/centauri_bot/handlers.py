@@ -165,10 +165,10 @@ def show_objects(bot, chat, mid=None, is_photo=False, force_new=False):
     active = [name for name in names if name not in excluded]
     photo = None
     if state.get("PrintState") not in ("printing", "paused"):
-        text = "🧩 Сейчас нет активной печати с отдельными объектами."
+        text = "✂️ Сейчас нет активной печати с отдельными объектами."
         rows = ui.kb_back()
     elif len(active) < 2:
-        text = ("🧩 Убрать модель нельзя: в задании не размечено несколько "
+        text = ("✂️ Убрать модель нельзя: в задании не размечено несколько "
                 "объектов или остался только один.")
         rows = ui.kb_back()
     else:
@@ -185,7 +185,7 @@ def show_objects(bot, chat, mid=None, is_photo=False, force_new=False):
         text = ui.objects_text(state)
         if photo and len(text) > CAPTION_LIMIT:
             # A caption holds 1024 characters; the buttons carry the names anyway.
-            text = ("<b>🧩 Объекты текущей печати</b>\nОсталось: %d из %d\n\n"
+            text = ("<b>✂️ Объекты текущей печати</b>\nОсталось: %d из %d\n\n"
                     "Номера на кнопках — те же, что на схеме стола."
                     % (len(active), len(names)))
         rows = ui.kb_objects(active, refs, state.get("CurrentObject") or "", names)
@@ -670,7 +670,7 @@ def _do_action(bot, chat, mid, query, what):
             note = "⚠️ Подтверждение устарело. Открой объекты заново.\n\n"
         else:
             ok, info = bot.perform(backend.EXCLUDE_OBJECT, value)
-            note = ("🧩 Модель <b>%s</b> убрана из текущей печати.\n\n"
+            note = ("✂️ Модель <b>%s</b> убрана из текущей печати.\n\n"
                     % escape(value.get("label") or ui.object_label(value["name"]))) if ok \
                 else "⚠️ Убрать модель не вышло (%s).\n\n" % escape(info)
     elif what.startswith("prompt:"):
