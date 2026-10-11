@@ -16,16 +16,15 @@ DAY = 86400
 
 # ------------------------------------------------------------------ the link
 
-def test_tribute_url_is_a_single_source_of_truth():
-    assert support.TRIBUTE_URL_TELEGRAM.startswith("https://")
-    assert support.TRIBUTE_URL_WEB.startswith("https://")
-    assert "dP54" in support.TRIBUTE_URL_TELEGRAM
-    assert "P54" in support.TRIBUTE_URL_WEB
+def test_donate_url_is_a_single_source_of_truth():
+    assert support.DONATE_URL.startswith("https://pay.cloudtips.ru/p/")
+    assert support.TRIBUTE_URL.startswith("https://")
+    assert support.SUPPORT_BUTTON["url"] == support.DONATE_URL
 
 
-def test_tribute_link_carries_no_tracking_parameters():
+def test_donate_links_carry_no_tracking_parameters():
     """Nothing is measured. The link must not smuggle an identifier either."""
-    for url in (support.TRIBUTE_URL_TELEGRAM, support.TRIBUTE_URL_WEB):
+    for url in (support.DONATE_URL, support.TRIBUTE_URL):
         lowered = url.lower()
         for marker in ("utm_", "ref=", "referrer", "click_id", "uid="):
             assert marker not in lowered
@@ -35,7 +34,7 @@ def test_help_screen_always_offers_support():
     """There is no setting that hides this. That is on purpose."""
     _, keyboard = ui.help_screen()
     urls = [b["url"] for row in keyboard for b in row if "url" in b]
-    assert support.TRIBUTE_URL_TELEGRAM in urls
+    assert support.DONATE_URL in urls
 
 
 def test_help_screen_has_all_five_promised_entries():
@@ -62,13 +61,13 @@ def test_monitoring_only_help_does_not_promise_control_buttons():
 def test_status_keyboard_never_carries_the_support_button(bot):
     keyboard = ui.kb_main(status(13, "demo.gcode", progress=50))
     urls = [b.get("url") for row in keyboard for b in row]
-    assert support.TRIBUTE_URL_TELEGRAM not in urls
+    assert support.DONATE_URL not in urls
 
 
 def test_confirmation_keyboard_never_carries_the_support_button():
     keyboard = ui.kb_confirm("stop", "остановить")
     urls = [b.get("url") for row in keyboard for b in row]
-    assert support.TRIBUTE_URL_TELEGRAM not in urls
+    assert support.DONATE_URL not in urls
     assert len(keyboard) == 1 and len(keyboard[0]) == 2
 
 
@@ -76,7 +75,7 @@ def test_fan_and_speed_menus_carry_no_support_button():
     for keyboard in (ui.kb_speed(100), ui.kb_temp(),
                      ui.kb_fans({"ModelFan": 0, "BoxFan": 0, "AuxiliaryFan": 0})):
         urls = [b.get("url") for row in keyboard for b in row]
-        assert support.TRIBUTE_URL_TELEGRAM not in urls
+        assert support.DONATE_URL not in urls
 
 
 # ------------------------------------------------------------ the 30-day rule
@@ -111,7 +110,7 @@ def test_reminder_text_is_short_and_unpressured():
 def test_reminder_keyboard_is_exactly_one_button():
     keyboard = support.reminder_keyboard()
     assert len(keyboard) == 1 and len(keyboard[0]) == 1
-    assert keyboard[0][0]["url"] == support.TRIBUTE_URL_TELEGRAM
+    assert keyboard[0][0]["url"] == support.DONATE_URL
 
 
 # ------------------------------------------------ persistence across restarts

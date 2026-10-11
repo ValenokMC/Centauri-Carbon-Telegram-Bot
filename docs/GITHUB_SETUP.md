@@ -91,7 +91,8 @@ Delete "General" — it collects everything and belongs nowhere.
 **Settings → General → Features → Sponsorships → ✅**
 
 `.github/FUNDING.yml` is already committed, so a **Sponsor** button appears once
-this is enabled. Nothing else is needed; the Tribute link is in the file.
+this is enabled. Nothing else is needed; the CloudTips and Tribute links are in
+the file.
 
 ## 8. Security
 

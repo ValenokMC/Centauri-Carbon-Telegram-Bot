@@ -1,4 +1,5 @@
 # Shown as a "Sponsor" button once Sponsorships are enabled in the repository
-# settings. Tribute is not one of GitHub's built-in platforms, so it goes under
-# `custom`, which takes a list of URLs.
-custom: ["https://web.tribute.tg/d/P54"]
+# settings. Neither CloudTips nor Tribute is one of GitHub's built-in platforms,
+# so they go under `custom`, which takes a list of URLs. CloudTips first (SBP and
+# Russian cards, lower fee); Tribute for paying with a foreign card.
+custom: ["https://pay.cloudtips.ru/p/5440d07c", "https://web.tribute.tg/d/P54"]

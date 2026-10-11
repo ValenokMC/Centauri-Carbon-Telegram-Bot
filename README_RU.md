@@ -17,7 +17,7 @@
 
 [English](README.md) · **Русский**
 
-[Изменения](CHANGELOG.md) · [Документация](docs/installation.md) · [Поддержка](SUPPORT.md) · [Telegram](https://t.me/SupporBiBot?start=centauri_bot) · [Поддержать автора](https://web.tribute.tg/d/P54)
+[Изменения](CHANGELOG.md) · [Документация](docs/installation.md) · [Поддержка](SUPPORT.md) · [Telegram](https://t.me/SupporBiBot?start=centauri_bot) · [Поддержать автора](https://pay.cloudtips.ru/p/5440d07c)
 
 ### [⬇ Скачать для Windows](https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/releases/latest)
 
@@ -236,7 +236,9 @@ Telegram. Токен, chat_id и адрес принтера не покидаю
 
 <div align="center">
 
-### [☕ Поддержать на Tribute](https://web.tribute.tg/d/P54)
+### [☕ Поддержать на CloudTips](https://pay.cloudtips.ru/p/5440d07c)
+
+СБП или любой российской картой. Иностранной картой — через [Tribute](https://web.tribute.tg/d/P54).
 
 </div>
 

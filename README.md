@@ -17,7 +17,7 @@
 
 **English** · [Русский](README_RU.md)
 
-[Changelog](CHANGELOG.md) · [Documentation](docs/installation.md) · [Support](SUPPORT.md) · [Telegram](https://t.me/SupporBiBot?start=centauri_bot) · [Support the author](https://web.tribute.tg/d/P54)
+[Changelog](CHANGELOG.md) · [Documentation](docs/installation.md) · [Support](SUPPORT.md) · [Telegram](https://t.me/SupporBiBot?start=centauri_bot) · [Support the author](https://pay.cloudtips.ru/p/5440d07c)
 
 ### [⬇ Download for Windows](https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/releases/latest)
 
@@ -239,7 +239,9 @@ If the bot turned out to be useful, you can support its development:
 
 <div align="center">
 
-### [☕ Support on Tribute](https://web.tribute.tg/d/P54)
+### [☕ Support on CloudTips](https://pay.cloudtips.ru/p/5440d07c)
+
+Paying with a foreign card? [Tribute](https://web.tribute.tg/d/P54) works too.
 
 </div>
 

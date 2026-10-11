@@ -7,6 +7,12 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The "Support the author" button now opens CloudTips instead of Tribute: a
+  lower fee, and it takes SBP and any Russian bank card. Tribute stays in the
+  README and the GitHub Sponsor button for paying with a foreign card.
+
 ### Added
 
 - Delayed print start on COSMOS. A `.gcode` sent into the chat is uploaded to
