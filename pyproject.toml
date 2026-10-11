@@ -39,7 +39,7 @@ Homepage = "https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot"
 Documentation = "https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/blob/main/docs/installation.md"
 Changelog = "https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/blob/main/CHANGELOG.md"
 Issues = "https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/issues"
-Funding = "https://web.tribute.tg/d/P54"
+Funding = "https://pay.cloudtips.ru/p/5440d07c"
 
 [tool.setuptools.packages.find]
 where = ["src"]
