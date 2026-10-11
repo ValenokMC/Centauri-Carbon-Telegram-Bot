@@ -18,14 +18,16 @@ pressed is not knowable from here, by design.
 import time
 
 
-# The single source of truth for the author's links. Changing the Tribute
-# address means changing these two lines and nothing else.
+# The single source of truth for the author's links. Changing the donation
+# page means changing this line and nothing else.
 #
-# Two forms of the same page: the t.me deep link opens Tribute inside Telegram,
-# which is what an inline button in a chat should do; the web address is for
-# README, FUNDING.yml and anywhere a browser will open it.
-TRIBUTE_URL_TELEGRAM = "https://t.me/tribute/app?startapp=dP54"
-TRIBUTE_URL_WEB = "https://web.tribute.tg/d/P54"
+# CloudTips is the main page: a lower fee than Tribute, and it takes SBP and any
+# Russian bank card. The button opens it in Telegram's built-in browser.
+DONATE_URL = "https://pay.cloudtips.ru/p/5440d07c"
+
+# Tribute stays as the second option for paying with a foreign card. It appears
+# only in README and FUNDING.yml - the bot itself shows one button, not a choice.
+TRIBUTE_URL = "https://web.tribute.tg/d/P54"
 
 GITHUB_URL = "https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot"
 ISSUES_URL = GITHUB_URL + "/issues"
@@ -35,7 +37,7 @@ SUPPORT_BOT_URL = "https://t.me/SupporBiBot?start=centauri_bot"
 REMINDER_INTERVAL_DAYS = 30
 REMINDER_INTERVAL_SEC = REMINDER_INTERVAL_DAYS * 86400
 
-SUPPORT_BUTTON = {"text": "☕ Поддержать автора", "url": TRIBUTE_URL_TELEGRAM}
+SUPPORT_BUTTON = {"text": "☕ Поддержать автора", "url": DONATE_URL}
 
 # Short on purpose. Two lines, no timer, no counter, no second ask.
 REMINDER_TEXT = ("\n\n<i>Если бот оказался полезен, "
