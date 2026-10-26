@@ -53,9 +53,12 @@ STATE_DEFAULT = {
     "message_id": None,
     "installed_at": None,
     "last_support_reminder_at": None,
-    "telemetry_installation_id": None,
-    "last_telemetry_at": None,
 }
+
+# The random installation id and report date of the anonymous statistics that
+# 1.1.0-1.1.2 offered and 1.1.3 removed. An installation that had opted in still
+# holds them; forget_statistics() deletes them.
+OBSOLETE_STATE_KEYS = ("telemetry_installation_id", "last_telemetry_at")
 
 
 def load_state():
@@ -102,9 +105,20 @@ def set_message_id(mid):
     update_state(message_id=mid)
 
 
-def clear_telemetry():
-    """Forget the local anonymous id when the user withdraws consent."""
-    update_state(telemetry_installation_id=None, last_telemetry_at=None)
+def forget_statistics():
+    """Delete what the removed anonymous statistics left in state.json.
+
+    Rewrites the file only when there is something to delete, so a start
+    without leftovers touches nothing.
+    """
+    with _lock:
+        d = _read(paths.state_path(), STATE_DEFAULT)
+        if not any(k in d for k in OBSOLETE_STATE_KEYS):
+            return False
+        for k in OBSOLETE_STATE_KEYS:
+            d.pop(k, None)
+        _write(paths.state_path(), d)
+        return True
 
 
 # ------------------------------------------------------- maintenance.json

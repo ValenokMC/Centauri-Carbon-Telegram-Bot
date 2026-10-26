@@ -95,7 +95,7 @@ def test_load_fills_in_defaults_for_missing_keys(base_config):
     loaded = config_mod.load()
     assert loaded["keepalive_sec"] == config_mod.DEFAULTS["keepalive_sec"]
     assert loaded["maintenance_hours"] == config_mod.DEFAULTS["maintenance_hours"]
-    assert loaded["anonymous_statistics"] is False
+    assert "anonymous_statistics" not in loaded
     assert loaded["backend"] == "sdcp"
     assert loaded["moonraker_allow_remote_start"] is False
 

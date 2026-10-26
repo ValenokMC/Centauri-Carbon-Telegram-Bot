@@ -22,12 +22,10 @@ Written for someone about to change the code. If you only want to run the bot,
                         │  schedule_loop                │
                         └──────────────────────────────┘
    camera          ◄──── SDCP MJPEG or Moonraker snapshot (on demand)
-   stats endpoint  ◄──── telemetry_loop (only after explicit opt-in, monthly)
 ```
 
-Four normal threads (five on COSMOS, where `schedule_loop` reminds about and
-starts planned prints), plus one optional statistics thread, one shared `Bot`
-object, one re-entrant lock around the mutable
+Four threads (five on COSMOS, where `schedule_loop` reminds about and starts
+planned prints), one shared `Bot` object, one re-entrant lock around the mutable
 parts. No inbound sockets: everything is an outgoing connection.
 
 ## Modules
@@ -46,7 +44,6 @@ parts. No inbound sockets: everything is an outgoing connection.
 | `ui.py` | **Pure.** Status text and keyboards | no |
 | `support.py` | **Pure.** Links and the 30-day rule | no |
 | `schedule.py` | **Pure.** Delayed starts: reading a start time, jobs, the start-or-ask decision | no |
-| `telemetry.py` | Explicit opt-in, minimal monthly heartbeat | network, filesystem |
 | `handlers.py` | What a button or a command does | via `Bot` |
 | `app.py` | The threads and the shared state | via the above |
 | `setup_wizard.py` | First run | network, filesystem |

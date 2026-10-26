@@ -56,13 +56,12 @@ def test_sockets_are_never_opened_by_the_pure_modules(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", refuse)
 
     from centauri_bot import printer_state as ps
-    from centauri_bot import ui, support, telemetry
+    from centauri_bot import ui, support
     life = ps.PrinterLifecycle()
     life.observe({"PrintInfo": {"Status": 13, "Filename": "a.gcode",
                                 "TaskId": "t", "Progress": 5}})
     ui.render({"PrintInfo": {"Status": 13}}, True, "Demo")
     support.due({"installed_at": 0})
-    telemetry.due({"last_telemetry_at": None}, now=1)
 
 
 # ------------------------------------------------------------- log hygiene

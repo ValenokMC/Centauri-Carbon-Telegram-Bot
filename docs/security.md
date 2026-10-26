@@ -94,11 +94,9 @@ machine running unattended. It is not going to be made optional.
 
 ## What the bot does not do
 
-- **No telemetry unless you explicitly opt in.** The wizard defaults to No and
-  declining disables no feature. If enabled, one minimal report is sent at most
-  once per 30 days; it contains only a random installation id, project code and
-  application version. It never contains Telegram or printer data. See
-  [PRIVACY.md](../PRIVACY.md) for the exact fields, endpoint and withdrawal.
+- **No telemetry.** Nothing is measured, counted or sent anywhere. The
+  opt-in statistics of 1.1.0–1.1.2 were removed in 1.1.3; see
+  [PRIVACY.md](../PRIVACY.md).
 - **No inbound connections.** Nothing listens on a port. There is nothing to
   firewall and nothing to scan.
 - **No third-party runtime dependencies.** The whole supply chain is the Python

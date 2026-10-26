@@ -427,21 +427,14 @@ def run(api_factory=TelegramAPI, argv=None):
             moonraker_remote_start = ask_yes(
                 "Разрешить удалённый запуск выбранного файла?",
                 default=bool(existing.get("moonraker_allow_remote_start", False)))
-
-        head("11. Анонимная статистика")
-        say("  %sПомочь узнать, сколько установок реально используется?%s" % (DIM, RESET))
-        say("  Передаются не чаще раза в 30 дней только случайный id установки,")
-        say("  версия приложения и название проекта. Без Telegram-данных, IP принтера,")
-        say("  имён файлов и статуса печати. Отказ ни на что не влияет.")
-        anonymous_statistics = ask_yes(
-            "Разрешить анонимную статистику?",
-            default=bool(existing.get("anonymous_statistics", False)))
     except SetupCancelled:
         say("\nНастройка прервана. Ничего не сохранено.")
         return 1
 
     cfg = dict(config_mod.DEFAULTS)
     cfg.update(existing)
+    for key in config_mod.OBSOLETE_KEYS:
+        cfg.pop(key, None)
     cfg.update({
         "telegram_token": token,
         "chat_id": str(chat_id),
@@ -453,7 +446,6 @@ def run(api_factory=TelegramAPI, argv=None):
         "moonraker_allow_job_control": moonraker_job_control,
         "moonraker_allow_remote_start": moonraker_remote_start,
         "allow_control": allow_control,
-        "anonymous_statistics": anonymous_statistics,
         "send_photo": bool(camera_ok) if not existing else existing.get("send_photo", True),
         "owner_user_id": (str(chat_id) if not str(chat_id).startswith("-") else
                           str(existing.get("owner_user_id") or "")),
@@ -472,8 +464,7 @@ def run(api_factory=TelegramAPI, argv=None):
     # Stamp the install date now, not on first run: the 30-day support interval
     # should count from the moment the user actually set the bot up.
     storage.mark_installed()
-    if not anonymous_statistics:
-        storage.clear_telemetry()
+    storage.forget_statistics()
 
     say("\n%sГотово.%s Запусти бот: Run.cmd (или Запустить.cmd)" % (GREEN, RESET))
     say("Автозапуск при входе в Windows: Install-Autostart.cmd")

@@ -61,7 +61,7 @@ FORBIDDEN_IN_ARCHIVE = (
 REQUIRED_IN_ARCHIVE = (
     "Setup.cmd", "Run.cmd", "VERSION",
     "src/centauri_bot/__main__.py", "src/centauri_bot/app.py",
-    "src/centauri_bot/telemetry.py", "examples/config.example.json",
+    "examples/config.example.json",
     "LICENSE", "PRIVACY.md",
 )
 
