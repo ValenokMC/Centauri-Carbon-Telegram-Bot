@@ -1,6 +1,5 @@
 {
     "allow_control": true,
-    "anonymous_statistics": false,
     "backend": "sdcp",
     "chat_id": "",
     "keepalive_sec": 20,

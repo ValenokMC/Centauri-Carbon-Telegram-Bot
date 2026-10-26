@@ -66,7 +66,6 @@ than this first backend can safely infer.
 | `allow_control` | `true` | Global control switch. `false` makes either backend read-only. Moonraker still requires the two narrower opt-ins above. |
 | `send_photo` | `true` | `false` turns off camera frames everywhere. Useful if the camera is disabled, or you would rather not have photos in a chat. |
 | `progress_every_pct` | `0` | `0` is off. `25` sends a progress report at each quarter. Off by default because most people find it noise. |
-| `anonymous_statistics` | `false` | Explicit opt-in. If `true`, sends only a random installation id, project code and version at most once per 30 days. `false` disables no bot feature. Re-run `Setup.cmd` to change it; see [PRIVACY.md](../PRIVACY.md). |
 
 ## Timing
 
