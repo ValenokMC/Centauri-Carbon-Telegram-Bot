@@ -7,6 +7,17 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.3] — 2026-10-26
+
+### Removed
+
+- The optional anonymous statistics added in 1.1.0. The bot now talks only to
+  Telegram and to the printer. On its first start it deletes the random
+  installation id and report date an older version may have left in
+  `state.json`. The setup wizard no longer asks about statistics and drops the
+  old `anonymous_statistics` setting from `config.json`. `PRIVACY.md` describes
+  the change.
+
 ## [1.1.2] — 2026-08-23
 
 ### Fixed
@@ -92,7 +103,8 @@ personal is baked into the code.
 - `config.json` cannot reach the repository: it is not there, it is gitignored,
   and `tools/check_public_safety.py` fails the build if one appears.
 
-[Unreleased]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.2...HEAD
+[Unreleased]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.3...HEAD
+[1.1.3]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.0.0...v1.1.0

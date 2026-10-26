@@ -19,11 +19,9 @@ Written for someone about to change the code. If you only want to run the bot,
                         │  refresh_loop                 │
                         └──────────────────────────────┘
    printer :3031   ◄──── sdcp.grab_frame (on demand)
-   stats endpoint  ◄──── telemetry_loop (only after explicit opt-in, monthly)
 ```
 
-Four normal threads, plus one optional statistics thread, one shared `Bot`
-object, one re-entrant lock around the mutable
+Four threads, one shared `Bot` object, one re-entrant lock around the mutable
 parts. No inbound sockets: everything is an outgoing connection.
 
 ## Modules
@@ -39,7 +37,6 @@ parts. No inbound sockets: everything is an outgoing connection.
 | `printer_state.py` | **Pure.** Status codes → lifecycle events | no |
 | `ui.py` | **Pure.** Status text and keyboards | no |
 | `support.py` | **Pure.** Links and the 30-day rule | no |
-| `telemetry.py` | Explicit opt-in, minimal monthly heartbeat | network, filesystem |
 | `handlers.py` | What a button or a command does | via `Bot` |
 | `app.py` | The threads and the shared state | via the above |
 | `setup_wizard.py` | First run | network, filesystem |

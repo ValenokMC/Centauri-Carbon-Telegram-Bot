@@ -132,29 +132,42 @@ def test_full_wizard_writes_a_usable_config(monkeypatch):
     assert cfg["printer_ip"] == "10.0.0.5"
     assert cfg["printer_name"] == "Demo Centauri"
     assert cfg["allow_control"] is True
-    assert cfg["anonymous_statistics"] is True
+    assert "anonymous_statistics" not in cfg
 
 
-def test_declining_statistics_still_saves_a_fully_working_bot(monkeypatch):
-    api = FakeTelegram(updates=[update_from(555000111)])
-    monkeypatch.setattr(wiz, "ask_secret", lambda prompt: VALID_TOKEN)
+def test_rerunning_over_an_opted_in_install_removes_the_statistics(
+        monkeypatch, base_config):
+    """1.1.0-1.1.2 offered opt-in statistics. Re-running the wizard over such an
+    install must not ask about them, and must drop the setting and the random
+    id they left behind while keeping everything else."""
+    from centauri_bot import storage
+    config_mod.save(dict(base_config, anonymous_statistics=True))
+    storage.update_state(
+        telemetry_installation_id="0b5c2a0e-8a63-4f0e-9d1b-1f3e6c2a9a11",
+        last_telemetry_at=123)
+    storage.set_message_id(777)
+
+    asked = []
 
     def answer(prompt, default=True):
-        return False if "анонимную статистику" in prompt else True
+        asked.append(prompt)
+        return True
 
+    api = FakeTelegram(updates=[update_from(555000111)])
+    monkeypatch.setattr(wiz, "ask_secret", lambda prompt: VALID_TOKEN)
     monkeypatch.setattr(wiz, "ask_yes", answer)
     monkeypatch.setattr(wiz, "ask_choice", lambda prompt, options: options[1][0])
-    monkeypatch.setattr(wiz, "ask", lambda prompt, default=None: {
-        "IP-адрес или имя принтера": "10.0.0.5",
-        "Понятное имя": "Demo Centauri",
-    }.get(prompt, default or "10.0.0.5"))
+    monkeypatch.setattr(wiz, "ask", lambda prompt, default=None: default or "10.0.0.9")
     monkeypatch.setattr(wiz.sdcp, "tcp_reachable", lambda *a, **k: True)
 
     assert wiz.run(api_factory=factory_for(api)) == 0
-    cfg = config_mod.load_valid()
-    assert cfg["anonymous_statistics"] is False
-    assert cfg["allow_control"] is True
-    assert cfg["telegram_token"] == VALID_TOKEN
+
+    assert not [p for p in asked if "статистик" in p]
+    assert "anonymous_statistics" not in config_mod.load_valid()
+    state = storage.load_state()
+    assert "telemetry_installation_id" not in state
+    assert "last_telemetry_at" not in state
+    assert state["message_id"] == 777
 
 
 def test_wizard_stamps_the_install_date_for_the_support_interval(monkeypatch):

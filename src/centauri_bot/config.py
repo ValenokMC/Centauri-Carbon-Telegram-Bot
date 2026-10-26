@@ -22,9 +22,6 @@ DEFAULTS = {
     "send_photo": True,
     "progress_every_pct": 0,        # 0 = no interim reports, 25 = every 25%
     "allow_control": True,          # False keeps the bot read-only
-    # Explicit opt-in in Setup.cmd. The heartbeat contains only a random
-    # installation id, this project's slug and the application version.
-    "anonymous_statistics": False,
     "keepalive_sec": 20,            # the printer drops a silent connection
     "offline_grace_sec": 60,        # stay quiet until a dropout really lasts
     "status_refresh_sec": 120,      # how often to refresh the message while printing
@@ -49,6 +46,12 @@ TOKEN_RE = re.compile(r"^\d{6,12}:[A-Za-z0-9_-]{30,}$")
 IPV4_RE = re.compile(r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$")
 HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
                          r"(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$")
+
+
+# Keys earlier versions wrote and nothing reads any more. The wizard drops
+# them, so a config file does not keep a setting that no longer exists.
+# anonymous_statistics: the opt-in statistics removed in 1.1.3.
+OBSOLETE_KEYS = ("anonymous_statistics",)
 
 
 class ConfigError(Exception):
@@ -171,5 +174,4 @@ def summary(cfg):
         "Mode           : %s" % ("monitoring and control" if cfg.get("allow_control")
                                  else "monitoring only"),
         "Camera photos  : %s" % ("on" if cfg.get("send_photo") else "off"),
-        "Anonymous stats: %s" % ("on" if cfg.get("anonymous_statistics") else "off"),
     ]

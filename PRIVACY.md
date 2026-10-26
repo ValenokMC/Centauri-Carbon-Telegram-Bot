@@ -2,55 +2,45 @@
 
 ## English
 
-The bot runs on your computer and talks directly to your printer and Telegram.
-Anonymous usage statistics are **optional and disabled by default**.
+The bot runs on your computer and talks only to Telegram and to your printer on
+the local network. It collects no usage statistics and sends nothing to the
+author or to any other server.
 
-If you explicitly enable them in `Setup.cmd`, the bot sends one report at most
-once every 30 days to
-`https://cdn03.korveline.com/api/centauri-telemetry/v1`. The report contains
-exactly:
+### Earlier versions
 
-- a random installation identifier generated on your computer;
-- the project code `centauri_bot`;
-- the installed application version;
-- the telemetry schema version.
+Versions 1.1.0–1.1.2 offered optional anonymous statistics, disabled by
+default: after explicit consent in `Setup.cmd`, at most once every 30 days a
+random installation identifier, the project code and the application version.
 
-It does **not** contain your Telegram token or id, printer address or name,
-filenames, print status, camera images, logs, computer name or Windows account.
-The server hashes the random identifier immediately and stores only the hash,
-first and last report times, and application version. Access logging is disabled
-for this endpoint, so source addresses are not kept in the application or nginx
-logs. The data is used only for aggregate install, 30-day activity and version
-counts.
+Version 1.1.3 removed this completely. On its first start it deletes the random
+identifier and last-report date that an older version may have left in
+`state.json`; running `Setup.cmd` again also removes the old setting from
+`config.json`.
 
-Declining does not disable or limit any feature. A failed report never affects
-the bot. To withdraw consent, run `Setup.cmd` again and answer No; the local
-random identifier and last-report date are deleted. Previously aggregated server
-records cannot be linked back to your Telegram account or printer because those
-details were never collected.
+If you still run 1.1.0–1.1.2 and agreed to statistics, update to the current
+version, or run `Setup.cmd` again and answer No. Reports from older versions
+were stored only as a hash of the random identifier, the version and the report
+dates; these records will be deleted when the receiver for older versions is
+switched off.
 
 ## Русский
 
-Бот работает на вашем компьютере и напрямую общается с принтером и Telegram.
-Анонимная статистика **добровольна и по умолчанию выключена**.
+Бот работает на вашем компьютере и общается только с Telegram и с принтером в
+домашней сети. Статистику использования он не собирает и ничего не отправляет
+ни автору, ни на другие серверы.
 
-Если явно разрешить её в `Настроить.cmd`, не чаще раза в 30 дней бот отправляет
-на `https://cdn03.korveline.com/api/centauri-telemetry/v1` только:
+### Прежние версии
 
-- случайный идентификатор установки, созданный на вашем компьютере;
-- код проекта `centauri_bot`;
-- установленную версию приложения;
-- версию формата статистики.
+В версиях 1.1.0–1.1.2 была добровольная анонимная статистика, по умолчанию
+выключенная: после явного согласия в `Настроить.cmd` не чаще раза в 30 дней
+передавались случайный идентификатор установки, код проекта и версия приложения.
 
-Не передаются Telegram-токен и id, адрес и имя принтера, имена файлов, состояние
-печати, кадры камеры, логи, имя компьютера или учётной записи Windows. Сервер
-сразу хеширует случайный идентификатор и хранит только хеш, даты первого и
-последнего сигнала и версию приложения. Для этого адреса отключены access-логи,
-поэтому исходные IP не сохраняются ни приложением, ни nginx. Данные нужны только
-для общих счётчиков установок, активности за 30 дней и версий.
+В версии 1.1.3 она удалена полностью. При первом запуске бот стирает случайный
+идентификатор и дату последней отправки, которые могла оставить в `state.json`
+прежняя версия; повторный запуск `Настроить.cmd` убирает и старую настройку из
+`config.json`.
 
-Отказ не отключает и не ограничивает ни одну функцию. Ошибка отправки никогда не
-мешает боту. Чтобы отозвать согласие, снова запустите `Настроить.cmd` и ответьте
-«Нет»: локальный случайный id и дата последней отправки будут удалены. Уже
-агрегированные записи невозможно связать с Telegram-аккаунтом или принтером,
-потому что эти сведения никогда не собирались.
+Если у вас 1.1.0–1.1.2 и вы соглашались на статистику, обновитесь до текущей
+версии или снова запустите `Настроить.cmd` и ответьте «Нет». Отчёты прежних
+версий хранились только как хеш случайного идентификатора, версия и даты
+отправки; эти записи будут удалены, когда приёмник для прежних версий отключат.

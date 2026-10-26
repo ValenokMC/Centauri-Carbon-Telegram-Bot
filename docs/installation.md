@@ -57,7 +57,7 @@ A path with spaces or Cyrillic characters is fine; that case is tested.
 
 Double-click **`Setup.cmd`** (or `Настроить.cmd`).
 
-It goes through nine steps:
+It goes through eight steps:
 
 | Step | What happens |
 |---|---|
@@ -69,7 +69,6 @@ It goes through nine steps:
 | 6. Connection | Checks port 3030 (status) and 3031 (camera), reporting each separately. |
 | 7. Name | A label for the printer in messages. |
 | 8. Mode | Monitoring only, or monitoring and control. |
-| 9. Anonymous statistics | Optional and off by default. No leaves every bot feature working. Yes sends only a random installation id, project code and version at most once per 30 days; see [PRIVACY.md](../PRIVACY.md). |
 
 Then it shows a summary — with the token masked — and asks whether to save.
 
@@ -123,7 +122,7 @@ nothing left behind.
 ```
 %LOCALAPPDATA%\CentauriCarbonTelegramBot\
 ├── config.json        your token, chat id, printer address
-├── state.json         pinned message id, install date, optional anonymous-stat dates/id
+├── state.json         pinned message id, install date, support reminder date
 ├── maintenance.json   accumulated printing hours
 ├── status-codes.txt   any printer status code not yet documented
 └── logs\              rotating log, token redacted

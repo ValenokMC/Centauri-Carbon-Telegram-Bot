@@ -4,7 +4,6 @@
   printer_loop   - holds the SDCP websocket, turns statuses into events
   keepalive_loop - stops the printer dropping a silent connection
   refresh_loop   - keeps the status message current while a print runs
-  telemetry_loop - optional anonymous heartbeat, at most once per 30 days
   telegram_loop  - long-polls for updates (runs on the main thread)
 
 Only one instance of this may run at a time: Telegram allows exactly one
@@ -20,7 +19,6 @@ from . import printer_state as ps
 from . import sdcp
 from . import storage
 from . import support
-from . import telemetry
 from . import ui
 from .telegram_api import TelegramAPI
 
@@ -473,9 +471,11 @@ class Bot(object):
 
     def run(self):
         log.info("bot started, printer %s", self.host)
+        try:
+            storage.forget_statistics()
+        except OSError as e:  # housekeeping must never stop the bot starting
+            log.debug("could not tidy state.json: %r", e)
         targets = [self.printer_loop, self.keepalive_loop, self.refresh_loop]
-        if self.cfg.get("anonymous_statistics", False):
-            targets.append(lambda: telemetry.loop(self.stopping, self.cfg))
         for target in targets:
             threading.Thread(target=target, daemon=True).start()
         try:

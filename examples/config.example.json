@@ -1,6 +1,5 @@
 {
     "allow_control": true,
-    "anonymous_statistics": false,
     "chat_id": "",
     "keepalive_sec": 20,
     "light_off_at_night": true,
