@@ -397,6 +397,12 @@ class Bot(object):
         on the same message, one deleted it, the other failed to edit and made
         another, and the chat was left with two. The old message is now deleted
         in every case, including when a new one is made after a failed edit.
+
+        Telegram lets a bot delete its own messages in a private chat for 48
+        hours only. An older status message can no longer be moved down, so it
+        is updated where it stands; a new one is made only once the old one is
+        really gone. Without this every lost connection and every restart left
+        one more status message behind.
         """
         with self.main_lock:
             mid = storage.message_id()
@@ -406,13 +412,14 @@ class Bot(object):
             kb = keyboard if keyboard is not None else self.keyboard()
 
             if mid and not force_new:
-                if self.api.edit_message(self.owner, mid, body,
-                                         keyboard=kb, photo=photo).get("ok"):
+                if self._edit_in_place(mid, body, kb, photo):
                     return mid
                 # the edit failed: the message was deleted by hand, or is stale
 
             if mid:
-                self.api.delete_message(self.owner, mid)
+                gone = self.api.delete_message(self.owner, mid).get("ok")
+                if not gone and self._edit_in_place(mid, body, kb, photo):
+                    return mid
                 storage.set_message_id(None)
 
             answer = self.api.send_message(self.owner, body, keyboard=kb, photo=photo)
@@ -421,6 +428,24 @@ class Bot(object):
             mid = answer["result"]["message_id"]
             storage.set_message_id(mid)
             return mid
+
+    def _edit_in_place(self, mid, body, kb, photo):
+        """Edit the status message whatever it currently is.
+
+        The message may be text or a photo, and the new content may carry a
+        frame or not; Telegram refuses some of these pairs. Each refusal is
+        answered with the next form that can still fit: without the frame, then
+        as a caption. "Not modified" means it already shows this content.
+        """
+        attempts = [dict(photo=photo)] if photo else []
+        attempts += [dict(), dict(is_photo=True)]
+        for extra in attempts:
+            answer = self.api.edit_message(self.owner, mid, body, keyboard=kb, **extra)
+            if answer.get("ok") or "not modified" in str(answer.get("description")):
+                return True
+            if "not found" in str(answer.get("description")):
+                return False
+        return False
 
     def edit_main_from_callback(self, clicked_mid, text, keyboard=None,
                                 photo=None, is_photo=False):
