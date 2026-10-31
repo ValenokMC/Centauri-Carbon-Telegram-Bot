@@ -399,10 +399,12 @@ class Bot(object):
         in every case, including when a new one is made after a failed edit.
 
         Telegram lets a bot delete its own messages in a private chat for 48
-        hours only. An older status message can no longer be moved down, so it
-        is updated where it stands; a new one is made only once the old one is
-        really gone. Without this every lost connection and every restart left
-        one more status message behind.
+        hours only. An older status message still has to come down: editing it
+        where it stands made /status, /files and every notification land
+        silently far up the chat, where nobody saw them. So the new message is
+        sent anyway and the old one is cut down to a one-line pointer without
+        buttons. That leaves at most one such line per 48 quiet hours, since
+        the new message can again be deleted for the next two days.
         """
         with self.main_lock:
             mid = storage.message_id()
@@ -416,18 +418,28 @@ class Bot(object):
                     return mid
                 # the edit failed: the message was deleted by hand, or is stale
 
-            if mid:
-                gone = self.api.delete_message(self.owner, mid).get("ok")
-                if not gone and self._edit_in_place(mid, body, kb, photo):
-                    return mid
-                storage.set_message_id(None)
-
             answer = self.api.send_message(self.owner, body, keyboard=kb, photo=photo)
             if not answer.get("ok"):
+                # nothing new reached the chat: keep the old message working
+                if mid and self._edit_in_place(mid, body, kb, photo):
+                    return mid
                 return None
-            mid = answer["result"]["message_id"]
-            storage.set_message_id(mid)
-            return mid
+            new_mid = answer["result"]["message_id"]
+            storage.set_message_id(new_mid)
+            if mid and not self.api.delete_message(self.owner, mid).get("ok"):
+                self._retire(mid)
+            return new_mid
+
+    RETIRED_TEXT = "⬇️ Статус — ниже"
+
+    def _retire(self, mid):
+        """Turn a status message Telegram no longer lets us delete into a
+        pointer to the current one. Without buttons, so nothing is pressed on
+        a stale panel. A message deleted by hand simply refuses both edits."""
+        for extra in (dict(), dict(is_photo=True)):
+            answer = self.api.edit_message(self.owner, mid, self.RETIRED_TEXT, **extra)
+            if answer.get("ok") or "not modified" in str(answer.get("description")):
+                return
 
     def _edit_in_place(self, mid, body, kb, photo):
         """Edit the status message whatever it currently is.
