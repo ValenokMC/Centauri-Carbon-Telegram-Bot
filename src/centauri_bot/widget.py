@@ -39,7 +39,7 @@ from . import printer_state as ps
 
 log = logging.getLogger(__name__)
 
-VERSION = 9
+VERSION = 10
 
 # storage.message_kind() of a card sent with this very HTML. A sent widget's
 # HTML can never be replaced, so a card from an older version is not ours to
@@ -61,7 +61,7 @@ CAPTION_LIMIT = 1024         # characters after entity parsing
 QUERY_LIMIT = 64             # bytes of a request from the widget
 ANSWER_LIMIT = 1024          # bytes of the bot's answer to it
 
-# Buttons on the card, one letter each in the state's "b".
+# Buttons on the card, one letter each (see ACTIONS, and buttons()).
 PAUSE, RESUME, STOP, CAMERA = "P", "R", "S", "C"
 
 # Short keys: 1024 bytes is 512 Cyrillic letters, and a long file name has to
@@ -69,10 +69,11 @@ PAUSE, RESUME, STOP, CAMERA = "P", "R", "S", "C"
 #   v  format version          k  "p" printing, "w" paused, "x" anything else
 #   s  state, in Russian       f  file name
 #   p  progress, %             l  "слой 20 из 45"
-#   m  "сопло 245° · стол 70°" (and the air inside, when the printer has it)
+#   tn, tb  the nozzle's and the bed's heating ring, see heat(); ti the air inside
+#      in whole degrees, only when the printer has it
 #   r  seconds left            e  finish, epoch seconds (printing only)
 #   sp speed, % (only if not 100)                      o  1 online, 0 not
-#   b  the buttons to draw, letters from above
+#   ab the action buttons to draw: [[label, request, style], ...], see ACTIONS
 #   mn the rest of the panel behind "⚙️ Ещё": [[label, callback_data], ...],
 #      taken from the very keyboard the bot would put under a message, so
 #      the owner's permissions decide here exactly as there
@@ -91,14 +92,16 @@ HTML = r"""<style>
 body{font-variant-numeric:tabular-nums;margin:0;padding:8px;color:var(--tg-theme-text-color)}
 .cd{border-radius:18px;padding:12px;border:1px solid var(--l);background:linear-gradient(140deg,light-dark(rgba(60,120,255,.12),rgba(90,150,255,.2)),light-dark(rgba(255,255,255,.45),rgba(255,255,255,.03)) 65%)}
 .k-w{--ac:#e5a50a}.k-x{--ac:var(--tg-theme-destructive-text-color)}.k-i{--ac:var(--tg-theme-hint-color)}
-.top,.rg,.rg b,.hd,.a,.rw{display:flex}.top,.rg,.rg b,.hd{align-items:center}
+.top,.rg,.rg b,.hd,.a,.rw,.ht,.tl{display:flex}.top,.rg,.rg b,.hd,.tl{align-items:center}
 .rg,.rg b{border-radius:50%;justify-content:center}.top{gap:12px}
-.rg{width:70px;height:70px;flex:none}
-.rg b{width:56px;height:56px;background:var(--tg-theme-bg-color);font-size:1.2em}
-.k-i .rg{display:none}
+.rg{--s:70px;--t:14px;width:var(--s);height:var(--s);flex:none;color:var(--ac)}
+.rg b{width:calc(var(--s) - var(--t));height:calc(var(--s) - var(--t));background:var(--tg-theme-bg-color);color:var(--tg-theme-text-color);font-size:1.2em}
+.tl{gap:8px;flex:1}.tl .rg{--s:38px;--t:7px}.ht{gap:10px;margin-top:10px}
+svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linejoin:round}
+@media(prefers-reduced-motion:no-preference){.hot .rg{animation:pu 2s infinite}@keyframes pu{50%{opacity:.45}}}
+.k-i #rg{display:none}
 .mn{flex:1;min-width:0}
-.s{font-size:1.15em;font-weight:700}
-.dt{color:var(--ac);margin-right:6px;font-size:.7em;vertical-align:middle}
+.s{font-size:1.15em;font-weight:700;color:var(--ac)}
 .f,.h,.u,.n,button:disabled{color:var(--tg-theme-hint-color)}
 .f{font-size:.88em;margin-top:1px}
 .l{margin-top:4px}.h{font-size:.85em;margin-top:1px}
@@ -108,12 +111,11 @@ body{font-variant-numeric:tabular-nums;margin:0;padding:8px;color:var(--tg-theme
 .g{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}.g .y{grid-column:1/-1}
 .f,.hd b,button{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 button{background:var(--b);border:1px solid var(--l);color:inherit;border-radius:12px;padding:9px 6px;font:inherit;font-size:.9em;min-width:0}
-button:active{background:var(--l)}
 .rw .k:not(:only-child){flex:none;padding:9px 14px}
 .rw button:disabled{flex:2;padding:9px 6px 0}
 .a,.wr{flex-wrap:wrap}.a button,.wr button{min-width:max-content;padding-inline:4px}
 @media(max-width:399px){.a button{flex:1 1 40%}}
-#cz{width:100%;height:auto;display:block;margin-top:8px;border-radius:12px;background:var(--g)}
+#cz{width:170px;max-width:100%;height:auto;display:block;margin:8px auto 0;border-radius:12px;background:var(--g)}
 .z,button.k{color:var(--tg-theme-destructive-text-color)}
 button.y{background:var(--tg-theme-button-color);color:var(--tg-theme-button-text-color);border-color:transparent}
 button:disabled{background:none;border-color:transparent;padding:4px 6px 0}
@@ -123,12 +125,13 @@ button:disabled{background:none;border-color:transparent;padding:4px 6px 0}
 .n{font-size:.84em;margin-top:6px}.u{font-size:.75em;margin-top:6px;text-align:right}
 </style>
 <div id=c class=cd><div id=cv><div class=top><div class=rg id=rg><b id=p></b></div>
-<div class=mn><div class=s><i class=dt>●</i><span id=s></span></div><div class=f id=f></div>
+<div class=mn><div class=s><span id=s></span></div><div class=f id=f></div>
 <div class=l><span id=l></span> <span id=t></span></div><div class=h id=e></div></div></div>
-<div class=cp id=m></div><div class=a id=a></div><div class=g id=g hidden></div></div>
-<div id=v hidden><div class=hd><button id=bk>‹ Назад</button><b id=vt></b></div><canvas id=cz width=480 height=480 hidden></canvas><div class=tx id=vx></div><div id=vk></div></div>
+<div class=ht><div class=tl id=tn><i class=rg id=rn><b><svg viewBox="0 0 24 24"><path d="M8 4h8v6l-4 9-4-9z"/></svg></b></i><span id=xn></span></div>
+<div class=tl id=tb><i class=rg id=rb><b><svg viewBox="0 0 24 24"><path d="M3 11h18v4H3zM6 15v5M18 15v5"/></svg></b></i><span id=xb></span></div></div><div class=cp id=m></div><div class=a id=a></div><div class=g id=g hidden></div></div>
+<div id=v hidden><div class=hd><button id=bk>‹ Назад</button><b id=vt></b></div><canvas id=cz width=340 height=340 hidden></canvas><div class=tx id=vx></div><div id=vk></div></div>
 <div class=n id=n></div><div class=u id=u></div></div>
-<p id=q hidden>⬇️ Статус — ниже</p>
+<p id=q hidden></p>
 <script>(function(){
 var W=window.TelegramWidget,d=null,ask=null,busy=0,mnu=0,sc=null,ln='';
 function $(i){return document.getElementById(i)}
@@ -138,15 +141,16 @@ function clr(i){var a=$(i);a.textContent='';return a}
 function el(p,t,v){var e=document.createElement(t);e.textContent=v;p.appendChild(e);return e}
 function dur(s){var m=Math.max(1,Math.round(s/60)),h=Math.floor(m/60);m%=60;
 return h?(m?h+' ч '+m+' мин':h+' ч'):m+' мин'}
-function clock(e){return new Date(e*1e3).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}
+function clock(e){return new Date(e*1e3).toTimeString().slice(0,5)}
 function tick(){if(!d)return;var now=Date.now()/1e3,left=d.e?Math.max(0,d.e-now):d.r,age=now-d.u;
 x('t',left>0?(d.l?'· ':'')+'ещё '+dur(left):'');
 x('e',d.e&&left>0?'готово ≈ '+clock(d.e):'');$('u').className=age>600?'u z':'u';
-x('u',(d.sp?'скорость '+d.sp+'% · ':'')+(age>600?'нет обновлений '+dur(age):'обновлено '+clock(d.u)))}
+x('u',age>600?'нет обновлений '+dur(age):'обновлено '+clock(d.u))}
+function rr(i,f,c){var e=$(i);if(c)e.style.color=c;e.style.background='conic-gradient(currentColor '+f+'%,var(--l) 0)'}
+function tm(k,a){a=a||[0,0,0,210,0];$('t'+k).className='tl'+(a[4]?' hot':'');rr('r'+k,a[2],'hsl('+a[3]+',80%,50%)');x('x'+k,a[0]+'°'+(a[4]?' → '+a[1]+'°':''))}
 function mk(p,t,c,f){var e=el(p,'button',t);e.className=c;if(f)e.onclick=f;else e.disabled=true;return e}
-function pj(v){if(typeof v=='string')try{v=JSON.parse(v)}catch(e){return{m:v}}return v&&typeof v=='object'?v:{}}
 function go(q){if(busy)return;busy=1;mnu=0;x('n','Отправляю…');
-W.request(q).then(null,function(e){return{result:{m:e&&e.code=='RATE_LIMITED'?'Слишком часто':'Не дошло, ещё раз'}}}).then(function(r){busy=0;try{var o=typeof r=='object'&&r,v=o&&('result' in o)?o.result:r,a=pj(v);
+W.request(q).then(null,function(){return{result:'{"m":"Не дошло, ещё раз"}'}}).then(function(r){busy=0;try{var a=JSON.parse(r.result);
 ask=a.t?a:null;if(a.sc)sc=a.sc;if(a.close||ask)sc=null;
 x('n',ask?ask.q:a.m||'');show()}catch(e){er(e)}})}
 function tap(c){if(c=='b'){sc=null;x('n','');show()}else if(c.slice(0,2)=='u:'){var u=c.slice(2);
@@ -154,23 +158,23 @@ try{if(/^https:\/\/t\.me\//.test(u))W.openTelegramLink(u);else W.openLink(u)}cat
 function btns(){var a=clr('a'),g=clr('g');g.hidden=!mnu;
 if(!d||!W.request||W.isForward)return;
 if(ask){mk(a,ask.y,'y',function(){go('do:'+ask.a+':'+ask.t)});mk(a,'Отмена','',function(){ask=null;x('n','');show()});return}
-var b=d.b||'',mn=d.mn||[];
-[['P','⏸ Пауза','','ask:pause'],['R','▶️ Дальше','','ask:resume'],['S','⏹ Стоп','k','ask:stop'],['C','📷 Кадр','','snap']].forEach(function(i){if(b.indexOf(i[0])>=0)mk(a,i[1],i[2],function(){go(i[3])})});
+var mn=d.mn||[];
+(d.ab||[]).forEach(function(i){mk(a,i[0],i[2],function(){go(i[1])})});
 var t=function(){mnu=!mnu;x('n','');show()};
 if(mn.length)mk(a,'⚙️ Ещё','',t);
 if(mnu){mn.forEach(function(i){mk(g,i[0],'',function(){go('c:'+i[1])})});mk(g,'‹ Назад в главное','y',t)}}
 function cv(n){return getComputedStyle(document.documentElement).getPropertyValue(n)}
-function fig(g){var c=$('cz'),o=g&&g.s,m=g&&g.m,t,B=468,K=B/63,i,j,q,f,n,s,a,x,y,w,h,z,A='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';c.hidden=!(o||m);if(c.hidden)return;
-c.width=480;t=c.getContext('2d');
-if(m){for(i=0;i<m.h;i++)for(j=0;j<m.w;j++){q=m.z[i*m.w+j]/Math.max(1,(m.hi-m.lo)*1e3);
-t.fillStyle='hsl('+(q<.5?210:5)+',65%,'+(95-110*Math.abs(q-.5))+'%)';t.fillRect(6+j*B/m.w,6+i*B/m.h,B/m.w+.5,B/m.h+.5)}return}
+function fig(g){var c=$('cz'),o=g&&g.s,m=g&&g.m,t,B=328,K=B/63,i,j,f,n,s,a,x,y,w,h,z,u,A='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';c.hidden=!(o||m);if(c.hidden)return;
+c.width=340;t=c.getContext('2d');
+if(m){for(i=0;i<m.h;i++)for(j=0;j<m.w;j++){u=m.z[i*m.w+j]/99;
+t.fillStyle='hsl('+(u<.5?210:5)+',65%,'+(95-110*Math.abs(u-.5))+'%)';t.fillRect(6+j*B/m.w,6+i*B/m.h,B/m.w+.5,B/m.h+.5)}return}
 f=cv('--tg-theme-text-color');t.globalAlpha=.2;t.strokeStyle=f;t.lineWidth=3;t.strokeRect(6,6,B,B);
-for(i=1;i<8;i++){j=6+B*i/8;t.moveTo(j,6);t.lineTo(j,474);t.moveTo(6,j);t.lineTo(474,j)}t.stroke();
 for(n=0;n<o.length;n++){s=+o[n];if(s>2)continue;
 a=g.b.substr(4*n,4).split('').map(function(k){return A.indexOf(k)*K});x=6+a[0];y=6+a[1];w=a[2]-a[0];h=a[3]-a[1];
 t.fillStyle=t.strokeStyle=cv(s==1?'--tg-theme-destructive-text-color':'--tg-theme-button-color');
 t.globalAlpha=s==1?.25:s==2?.85:.12;t.fillRect(x,y,w,h);t.globalAlpha=s==1?.6:1;t.strokeRect(x,y,w,h);
-z=Math.min(44,Math.min(w,h)*.5);if(z>=10){t.fillStyle=s==2?'#fff':f;t.font='600 '+z+'px sans-serif';
+z=Math.min(30,Math.min(w,h)*.55);
+if(z>=14&&String(n+1).length*z*.6<=w){t.fillStyle=s==2?'#fff':f;t.font='600 '+z+'px sans-serif';
 t.textAlign='center';t.textBaseline='middle';t.fillText(n+1,x+w/2,y+h/2)}}}
 function drawScreen(){try{x('vt',sc.t||'');fig(sc.g);var t=clr('vx');(sc.x||[]).forEach(function(s){el(t,'div',s)});
 var k=clr('vk');(sc.k||[]).forEach(function(r){var w=el(k,'div','');
@@ -181,8 +185,8 @@ function draw(){try{d=null;try{d=JSON.parse(W.chatData)}catch(e){}
 var ok=!!(d&&d.v);$('c').hidden=!ok;$('q').hidden=ok;if(!ok)return;
 $('c').className='cd k-'+d.k;x('s',d.s);x('f',d.f||'');
 var p=Math.max(0,Math.min(100,+d.p||0));x('p',Math.floor(p)+'%');
-$('rg').style.background='conic-gradient(var(--ac) '+p+'%,var(--l) 0)';
-x('l',d.l||'');var m=clr('m');(d.m||'').split(' · ').forEach(function(s){if(s)el(m,'span',s)});
+rr('rg',p);tm('n',d.tn);tm('b',d.tb);
+x('l',d.l||'');var m=clr('m');if(d.ti!=null)el(m,'span','внутри '+d.ti+'°');
 if(!busy)show();tick();
 if(d.n&&d.n!=ln&&!busy&&!ask){ln=d.n;x('n',d.n)}if(!d.n)ln='';
 if(d.go&&!busy&&W.request&&!W.isForward){var l='';try{l=localStorage.getItem('go')}catch(e){}
@@ -195,7 +199,7 @@ if(W){W.onEvent('chatDataChanged',draw);draw();setInterval(tick,15e3);if(W.ready
 # First 12 hex digits of sha256 of HTML. A card that is already in the chat
 # keeps the HTML it was sent with, so any change of HTML must bump VERSION; a
 # test compares this with the real hash and fails until both are updated.
-HTML_SHA = "55af97a7d236"
+HTML_SHA = "69194e93aed1"
 
 
 def html_fits(html=HTML):
@@ -243,12 +247,30 @@ def _whole(value):
         return 0
 
 
-def _temp(cur, target):
-    """"245°", or "180→245°" while it is still heating."""
+# What a full heating ring means when there is no target (the heater is off
+# or cooling): the ring then shows the temperature against this, so it visibly
+# drains as the nozzle or bed cools.
+NOZZLE_TOP, BED_TOP = 300, 120
+
+
+def heat(cur, target, top):
+    """One heating ring's numbers: [current, target, fill %, hue, heating].
+
+    Fill is current / target (full at the target, never over), or current /
+    ``top`` when there is no target. The hue is blue (210) below 40 °C, then
+    amber (45) at 40 °C falling linearly to red (0) at 80 % of ``top``. ``heating`` is 1 while the
+    target is still more than 2 degrees away: the ring then pulses.
+    """
     cur, target = round(float(cur or 0)), round(float(target or 0))
-    if target and abs(cur - target) > 2:
-        return "%d→%d°" % (cur, target)
-    return "%d°" % cur
+    fill = min(100, max(0, cur * 100 // (target or top)))
+    # Blue while cold; from 40 degrees amber (45) falling to red (0), never green.
+    hue = 210 if cur < 40 else int(45 * (1 - min(1.0, (cur - 40) / (top * 0.8 - 40))))
+    return [cur, target, fill, hue, 1 if target > 0 and cur < target - 2 else 0]
+
+
+# What each letter of buttons() is on the card: label, request, style.
+ACTIONS = {PAUSE: ["⏸ Пауза", "ask:pause", ""], RESUME: ["▶️ Дальше", "ask:resume", ""],
+           STOP: ["⏹ Стоп", "ask:stop", "k"], CAMERA: ["📷 Кадр", "snap", ""]}
 
 
 def buttons(status, online, allowed, camera):
@@ -318,13 +340,6 @@ def card(status, online, printer_name, now, keys="", items=None, go="", note="")
     left = max(0, int((info.get("TotalTicks") or 0) - (info.get("CurrentTicks") or 0))) \
         if live else 0
     total = _whole(info.get("TotalLayer")) if live else 0
-    temps = "сопло %s · стол %s" % (
-        _temp(status.get("TempOfNozzle"), status.get("TempTargetNozzle")),
-        _temp(status.get("TempOfHotbed"), status.get("TempTargetHotbed")))
-    # Stock SDCP reports the air inside the printer; COSMOS does not, and an
-    # empty cell for it only puzzled.
-    if status.get("TempOfBox") is not None:
-        temps += " · внутри %d°" % round(float(status.get("TempOfBox") or 0))
     data = {
         "v": VERSION, "k": kind, "s": state_ru(code, online),
         "f": str(info.get("Filename") or "") if live else "",
@@ -332,9 +347,16 @@ def card(status, online, printer_name, now, keys="", items=None, go="", note="")
         "l": ("слой %d из %d" % (_whole(info.get("CurrentLayer")), total) if total
               else "" if live else
               "Можно ставить печать" if online else "Переподключаюсь к принтеру"),
-        "m": temps,
-        "r": left, "o": 1 if online else 0, "b": keys, "u": int(now),
+        "tn": heat(status.get("TempOfNozzle"), status.get("TempTargetNozzle"), NOZZLE_TOP),
+        "tb": heat(status.get("TempOfHotbed"), status.get("TempTargetHotbed"), BED_TOP),
+        "r": left, "o": 1 if online else 0, "u": int(now),
     }
+    # Stock SDCP reports the air inside the printer; COSMOS does not, and an
+    # empty cell for it only puzzled.
+    if status.get("TempOfBox") is not None:
+        data["ti"] = round(float(status.get("TempOfBox") or 0))
+    if keys:
+        data["ab"] = [list(ACTIONS[key]) for key in keys]
     if items:
         data["mn"] = items
     if go:
@@ -344,9 +366,11 @@ def card(status, online, printer_name, now, keys="", items=None, go="", note="")
     # Only while it prints: on a pause the finish moves with every minute.
     if kind == "p" and online and left > 0:
         data["e"] = int(now + left)
+    # The speed, when it is not the usual one, rides on the layer line: the
+    # card's own script has no room left for a part of its own.
     speed = info.get("PrintSpeedPct")
-    if speed not in (None, 100):
-        data["sp"] = speed
+    if speed not in (None, 100) and live:
+        data["l"] = (data["l"] + " · " if data["l"] else "") + "⚡%s%%" % speed
     return data
 
 
@@ -510,6 +534,17 @@ SCREENS_KEPT = 16
 MAX_LINES = 8
 MAX_ROWS = 9
 LINE_WIDTH = 60
+# An estimate of how tall a page draws, in px, from what a bubble shows:
+# everything but the content (back button, paddings, the note and update
+# lines), a figure (170 px and its margin), a line of text, a row of buttons.
+# The bubble is 600 px at most and clips; a page stays under MAX_HEIGHT_PX at
+# the narrowest bubble, where lines wrap most.
+PAGE_BASE_PX = 118
+FIGURE_PX = 178
+LINE_PX = 20
+ROW_PX = 44
+MAX_HEIGHT_PX = 560
+CHAR_PX = 7.2          # a character of text; of a button label 7.5 and 20 around it
 FIGURE_ON_EVERY_PAGE = 150     # bytes: only a drawing this small is repeated on each page
 
 
@@ -521,6 +556,21 @@ def thin_figure(figure):
         return None
     thin = states.replace("1", "3").rstrip("3")
     return {"b": figure["b"][:4 * len(thin)], "s": thin} if thin else None
+
+
+def estimate_height(sc, width=320):
+    """How many px the screen ``sc`` (title, lines "x", rows "k", figure "g")
+    takes in a bubble ``width`` px wide, by the constants above."""
+    inner = max(120, width - 42)
+    per_line = max(10, int(inner / CHAR_PX))
+    height = PAGE_BASE_PX + (FIGURE_PX if sc.get("g") else 0)
+    for line in sc.get("x") or ():
+        height += LINE_PX * max(1, -(-len(line) // per_line))
+    for row in sc.get("k") or ():
+        need = sum(len(b[0]) * 7.5 + 20 for b in row) + 6 * (len(row) - 1)
+        # a row of three or more wraps; one or two buttons clip their label
+        height += ROW_PX * (max(1, int(-(-need // inner))) if len(row) > 2 else 1)
+    return height
 
 
 def nav_row(tok, n, total):
@@ -575,7 +625,8 @@ def paginate(sc, tok, note=""):
     # The note never changes where the pages break (a later request for the
     # same page carries none): it rides on page 0 when there is room.
     one = _answer_text(whole)
-    if _small_answer(one) and len(sc["x"]) <= MAX_LINES and len(sc["k"]) <= MAX_ROWS:
+    if (_small_answer(one) and len(sc["x"]) <= MAX_LINES and len(sc["k"]) <= MAX_ROWS
+            and estimate_height(whole) <= MAX_HEIGHT_PX):
         return [_with_note(whole, note)]
     tok = tok() if callable(tok) else tok
     on_every = bool(figure) and len(_dump(figure)) <= FIGURE_ON_EVERY_PAGE
@@ -591,7 +642,9 @@ def paginate(sc, tok, note=""):
         # the worst nav row is counted in the rows
         if len(x) > MAX_LINES or len(k) + 1 > MAX_ROWS:
             return False
-        return _small_answer(_answer_text(build(x, k, first)))
+        page = build(x, k, first)
+        return (estimate_height(page) <= MAX_HEIGHT_PX
+                and _small_answer(_answer_text(page)))
 
     if figure and not fits([], sc["k"][:1], True):
         # No room for the drawing and one button: try it without the objects

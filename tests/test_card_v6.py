@@ -283,7 +283,7 @@ def test_objects_outside_card_mode_are_still_a_png(mr_bot, fake_telegram):
 def test_mesh_figure_flips_rows_and_uses_integers():
     fig = heightmap.figure([[0.0, 0.1], [0.2, 0.3]])["m"]
     # Klipper's first row is the front edge; the picture's first row the back
-    assert fig == {"w": 2, "h": 2, "z": [200, 300, 0, 100], "lo": 0.0, "hi": 0.3}
+    assert fig == {"w": 2, "h": 2, "z": [66, 99, 0, 33]}    # 0..99 of the spread
     assert all(isinstance(v, int) for v in fig["z"])
     with pytest.raises(ValueError):
         heightmap.figure([[0.0, 0.1], [0.2]])
@@ -292,7 +292,7 @@ def test_mesh_figure_flips_rows_and_uses_integers():
 def test_mesh_on_the_card_is_drawn(mr_bot, fake_telegram):
     handlers.handle_widget_query(mr_bot, widget_query("c:mesh"))
     sc = last_answer(fake_telegram)["sc"]
-    assert sc["g"]["m"]["z"] == [200, 300, 0, 100] and fake_telegram.sent == []
+    assert sc["g"]["m"]["z"] == [66, 99, 0, 33] and fake_telegram.sent == []
     assert sc["t"] == "🗺 Карта высот стола" and len(sc["x"]) == 2
 
 
@@ -658,7 +658,7 @@ def test_widget_reads_an_answer_whatever_shape_it_arrives_in():
     """The card parses defensively (a string, a string inside a string, an
     object) and says what it got when a screen comes in empty."""
     html = widget.HTML
-    assert "pj(" in html and "JSON.parse(v)" in html
+    assert "JSON.parse(r.result)" in html
     assert "пустой экран" not in html                      # the temporary diagnostic is gone
     assert "<canvas" in html and "pg:" in html and "localStorage" in html
     assert widget.html_fits()
@@ -808,7 +808,7 @@ def test_html_changes_must_come_with_a_new_version():
     import hashlib
     digest = hashlib.sha256(widget.HTML.encode("utf-8")).hexdigest()[:12]
     assert digest == widget.HTML_SHA, "HTML changed: bump VERSION and update HTML_SHA"
-    assert widget.KIND == "widget-%d" % widget.VERSION == "widget-9"
+    assert widget.KIND == "widget-%d" % widget.VERSION == "widget-10"
 
 
 # ------------------------------------------------------------ round 6
@@ -1059,3 +1059,102 @@ def test_the_open_menu_ends_with_a_full_width_way_back():
     assert "mk(g,'‹ Назад в главное','y',t)" in html          # the same handler closes the menu
     assert html.index("mn.forEach(function(i){mk(g") < html.index("'‹ Назад в главное'")
     assert ".g .y{grid-column:1/-1}" in html                 # across both columns, accent fill
+
+
+# ------------------------------------------------------------ round 7: rings and a compact objects screen
+
+def test_ring_maths_heating_at_target_cooling_and_off():
+    # [now, target, fill %, hue, heating]
+    assert widget.heat(180, 245, widget.NOZZLE_TOP) == [180, 245, 73, 13, 1]    # heating: pulses, amber-red
+    assert widget.heat(245, 245, widget.NOZZLE_TOP) == [245, 245, 100, 0, 0]    # at target: full, red
+    assert widget.heat(244, 245, widget.NOZZLE_TOP)[4] == 0                     # within 2 degrees
+    assert widget.heat(250, 245, widget.NOZZLE_TOP)[2] == 100                   # never over
+    cooling = widget.heat(150, 0, widget.NOZZLE_TOP)                            # target 0: of the top
+    assert cooling[2] == 50 and cooling[4] == 0 and cooling[3] == 20
+    assert widget.heat(30, 0, widget.NOZZLE_TOP)[3] == 210                      # cold: blue
+    assert widget.heat(25, 0, widget.BED_TOP)[2] == 20 and widget.heat(25, 0, widget.BED_TOP)[3] == 210                          # bed: of 120
+    assert widget.heat(0, 0, widget.BED_TOP) == [0, 0, 0, 210, 0]               # off
+    hot, cool = widget.heat(100, 0, widget.BED_TOP), widget.heat(50, 0, widget.BED_TOP)
+    assert hot[3] < cool[3] <= 45                                               # redder as it heats
+    # a warm heater is never green or cyan: nothing between 46 and 209
+    assert all(not 45 < widget.heat(t, 0, top)[3] < 210
+               for top in (widget.NOZZLE_TOP, widget.BED_TOP) for t in range(0, 320))
+    assert widget.heat(70, 70, widget.BED_TOP)[3] == 20 and widget.heat(180, 180, widget.NOZZLE_TOP)[3] == 13
+    assert 0 <= widget.heat(70, 70, widget.BED_TOP)[3] <= 45
+    assert widget.heat(None, None, widget.BED_TOP)[:2] == [0, 0]
+
+
+def test_the_rings_and_their_motion_are_in_the_html():
+    html = widget.HTML
+    assert 'id=tn' in html and 'id=tb' in html and html.count("<svg viewBox") == 2
+    assert "conic-gradient(currentColor" in html and "hsl('+a[3]+'" in html
+    # the pulse only runs when the viewer has not asked for less motion
+    assert re.search(r"@media\(prefers-reduced-motion:no-preference\)\{\.hot \.rg\{animation", html)
+    assert "innerHTML" not in html
+
+
+def test_the_fullest_card_state_with_rings_still_fits(card_bot):
+    fullest_keyboard(card_bot)
+    card_bot.cfg["send_photo"] = True
+    card_bot.status = status(13, "Очень_длинное_имя_файла_" * 10 + ".gcode", progress=5,
+                             TempOfNozzle=180, TempTargetNozzle=245, TempOfHotbed=40,
+                             TempTargetHotbed=70)
+    data = card_bot._card()
+    assert data["tn"][4] == 1 and data["tb"][4] == 1 and data["ti"] == 30 and data["ab"]
+    data.update(n="ж" * 300, go="abcdefgh")
+    text = widget.encode(data)
+    assert len(text.encode("utf-8")) <= widget.DATA_LIMIT
+    assert card_of(text)["tn"] == data["tn"] and card_of(text)["ab"] == data["ab"]
+
+
+def test_the_action_buttons_are_data_the_card_only_draws():
+    data = widget.card(status(13, "a.gcode"), True, "P", NOW_FOR_RINGS,
+                       keys=widget.buttons(status(13, "a.gcode"), True,
+                                           {"pause", "cancel"}, True))
+    assert data["ab"] == [["⏸ Пауза", "ask:pause", ""], ["⏹ Стоп", "ask:stop", "k"],
+                          ["📷 Кадр", "snap", ""]]
+    assert "b" not in data
+    assert "ab" not in widget.card(status(13, "a.gcode"), True, "P", NOW_FOR_RINGS)
+
+
+NOW_FOR_RINGS = 1_700_000_000.0
+
+
+def object_pages(mr_bot, fake_telegram):
+    big_job(mr_bot)
+    return pages_of(mr_bot, fake_telegram, "c:objects")
+
+
+@pytest.mark.parametrize("width", [320, 430])
+def test_every_page_of_the_56_object_screen_fits_the_bubble(mr_bot, fake_telegram, width):
+    pages = object_pages(mr_bot, fake_telegram)
+    assert len(pages) > 1
+    for n, sc in enumerate(pages):
+        assert widget.estimate_height(sc, width) <= widget.MAX_HEIGHT_PX, (n, width)
+        assert len(json.dumps({"sc": sc}, ensure_ascii=False,
+                              separators=(",", ":")).encode("utf-8")) <= widget.ANSWER_LIMIT
+        rows = [r for r in sc["k"] if r[0][1].startswith("c:ask:exclude:")]
+        if n == 0:
+            assert "g" in sc and len(rows) <= 4          # the drawing, and a few buttons
+        else:
+            assert "g" not in sc and len(rows) <= 8      # no drawing, a page of buttons
+        assert any(re.fullmatch(r"%d/%d" % (n + 1, len(pages)), b[0])
+                   for b in sc["k"][-1])                          # the pager is there
+    # every remaining object is reachable on some page, with a label of its own
+    exclude = [b for sc in pages for row in sc["k"] for b in row
+               if b[1].startswith("c:ask:exclude:")]
+    assert len(exclude) == 53
+    own = [b[0] for b in exclude]
+    assert len(own) == len(set(own))
+    assert "Осталось 53 из 56" in pages[0]["x"][0]
+
+
+def test_the_height_model_counts_figures_wrapped_lines_and_wrapped_rows():
+    plain = {"t": "T", "x": [], "k": []}
+    assert widget.estimate_height(plain) == widget.PAGE_BASE_PX
+    assert widget.estimate_height(dict(plain, g={"b": "A", "s": "0"})) \
+        == widget.PAGE_BASE_PX + widget.FIGURE_PX
+    long_line = dict(plain, x=["ж" * 45])                # wraps at 320 px, not at 430
+    assert widget.estimate_height(long_line, 320) > widget.estimate_height(long_line, 430)
+    speeds = dict(plain, k=[[[l, "c:x", ""] for l in ("50%", "75%", "100%", "125%", "150%")]])
+    assert widget.estimate_height(speeds, 320) >= widget.PAGE_BASE_PX + widget.ROW_PX

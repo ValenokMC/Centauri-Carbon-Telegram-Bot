@@ -76,10 +76,12 @@ def test_printing_card_carries_the_numbers_and_the_finish_time():
     assert data["k"] == "p" and data["p"] == 42
     # Ready-made strings: the card draws them as they are.
     assert data["l"] == "слой 12 из 300"
-    assert data["m"] == "сопло 210° · стол 60° · внутри 30°"
+    # Each heater as a ring: [now, target, fill %, hue, heating]; the air inside in whole degrees
+    assert data["tn"] == [210, 210, 100, 6, 0] and data["tb"] == [60, 60, 100, 28, 0]
+    assert data["ti"] == 30 and "m" not in data
     assert data["r"] == 3000 and data["e"] == int(NOW) + 3000
     assert data["f"] == "Benchy_PLA.gcode" and data["u"] == int(NOW)
-    assert "sp" not in data
+    assert "sp" not in data and "⚡" not in data["l"]
 
 
 def test_paused_card_has_no_finish_time():
@@ -111,14 +113,14 @@ def test_layer_is_a_finished_string():
 
 def test_heating_shows_the_target():
     st = printing(TempOfNozzle=180, TempTargetNozzle=245)
-    assert widget.card(st, True, "P", NOW)["m"].startswith("сопло 180→245°")
+    assert widget.card(st, True, "P", NOW)["tn"] == [180, 245, 73, 13, 1]   # 73 % full, pulsing
 
 
 def test_no_air_temperature_when_the_printer_has_none():
     """COSMOS sends no chamber temperature; the card must not show a dash for it."""
     st = printing()
     st.pop("TempOfBox")
-    assert widget.card(st, True, "P", NOW)["m"] == "сопло 210° · стол 60°"
+    assert "ti" not in widget.card(st, True, "P", NOW)
 
 
 @pytest.mark.parametrize("code, allowed, camera, want", [
@@ -148,7 +150,7 @@ def test_compact_caption_is_one_russian_line(live_bot):
 def test_speed_is_shown_only_when_changed():
     info = printing()
     info["PrintInfo"]["PrintSpeedPct"] = 125
-    assert widget.card(info, True, "P", NOW)["sp"] == 125
+    assert widget.card(info, True, "P", NOW)["l"] == "слой 12 из 300 · ⚡125%"
 
 
 @pytest.mark.parametrize("st, online, live", [
@@ -241,7 +243,7 @@ def test_running_print_goes_out_as_the_card(live_bot, fake_telegram):
     assert sent["allow_queries"] is True
     assert sent["silent"] is False                   # an event still notifies
     assert card_of(sent["chat_data"])["p"] == 42
-    assert card_of(sent["chat_data"])["b"] == "PS"   # no camera in the test config
+    assert [b[1] for b in card_of(sent["chat_data"])["ab"]] == ["ask:pause", "ask:stop"]   # no camera in the test config
     assert storage.message_id() == mid and storage.message_kind() == widget.KIND
     assert fake_telegram.deleted == [(live_bot.owner, 500)]
 
