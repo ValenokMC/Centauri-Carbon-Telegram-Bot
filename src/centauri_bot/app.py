@@ -89,6 +89,7 @@ class Bot(object):
         self.widget_sent = None
         self.widget_sent_at = 0.0
         self.widget_retry_at = 0.0
+        self.snapshot_checked_at = 0.0
 
         self.lifecycle = ps.PrinterLifecycle(cfg.get("progress_every_pct") or 0)
         self.maintenance = ps.MaintenanceCounter()
@@ -425,6 +426,9 @@ class Bot(object):
             mid = storage.message_id()
             kind = storage.message_kind() if mid else None
             kb = keyboard if keyboard is not None else self.keyboard()
+            # The card carries its own buttons; under it only "Menu".
+            card_kb = keyboard if keyboard is not None else (
+                self.card_keyboard() if text is None else kb)
             live = text is None and self._widget_wanted()
             # A print that runs under an ordinary message gets its card on the
             # next refresh: moved down quietly, like any status recreation.
@@ -446,7 +450,7 @@ class Bot(object):
 
             def keep_old():
                 if kind == widget.KIND:
-                    return self._edit_widget(mid, caption(), kb)
+                    return self._edit_widget(mid, caption(), card_kb)
                 if widget.is_card(kind):
                     # a card of an older version: its caption only, never a
                     # frame, which would turn the widget into a photo
@@ -459,7 +463,7 @@ class Bot(object):
                 # the edit failed: the message was deleted by hand, or is stale
 
             if live:
-                new_mid = self._send_widget(kb, header, silent=promote)
+                new_mid = self._send_widget(card_kb, header, silent=promote)
                 if new_mid:
                     self._drop_old(mid, kind)
                     return new_mid
@@ -519,8 +523,64 @@ class Bot(object):
 
     def _card(self):
         status, online = self._snapshot()
+        keys = widget.buttons(status, online, self.allowed_actions(),
+                              camera=bool(self.cfg.get("send_photo")))
         return widget.card(status, online,
-                           self.cfg.get("printer_name", "Centauri Carbon"), self.clock())
+                           self.cfg.get("printer_name", "Centauri Carbon"), self.clock(),
+                           keys=keys)
+
+    MENU_BUTTON = {"text": "⚙️ Меню", "callback_data": "cardmenu"}
+    FOLD_BUTTON = {"text": "▲ Свернуть меню", "callback_data": "refresh"}
+
+    def card_keyboard(self):
+        """Under the card: one button. Pause, stop and the camera are on the
+        card itself; everything else opens from here."""
+        return [[dict(self.MENU_BUTTON)]]
+
+    def card_menu_keyboard(self):
+        """The full panel, opened from the card, with a way back."""
+        return self.keyboard() + [[dict(self.FOLD_BUTTON)]]
+
+    # ---------------------------------------------- a camera frame on request
+
+    SNAPSHOT_TTL_SEC = 300
+
+    def send_snapshot(self):
+        """A fresh frame as its own message, taken down again after a while.
+
+        The card cannot show a picture (no network in the widget, 1 KB of
+        state), so the "📷" button on it sends one beside it. Only the newest
+        frame stays; the previous one is deleted at once. The message id is
+        kept in state.json, so a restart still cleans up.
+        """
+        shot = self.grab()
+        if not shot:
+            return False
+        minutes = self.SNAPSHOT_TTL_SEC // 60
+        answer = self.api.send_message(
+            self.owner, "📷 %s · уберу через %d мин" % (
+                time.strftime("%H:%M", time.localtime(self.clock())), minutes),
+            photo=shot)
+        if not answer.get("ok"):
+            return False
+        old = storage.load_state().get("snapshot_message")
+        storage.update_state(snapshot_message=[answer["result"]["message_id"],
+                                               self.clock() + self.SNAPSHOT_TTL_SEC])
+        if old:
+            self.api.delete_message(self.owner, old[0])
+        return True
+
+    def expire_snapshot(self):
+        """Take down a requested frame once its time is up. Looks at most
+        every 15 s: it runs on every printer status."""
+        if self.clock() - self.snapshot_checked_at < 15:
+            return
+        self.snapshot_checked_at = self.clock()
+        snap = storage.load_state().get("snapshot_message")
+        if not snap or self.clock() < float(snap[1]):
+            return
+        storage.update_state(snapshot_message=None)
+        self.api.delete_message(self.owner, snap[0])
 
     def _send_widget(self, kb, header, silent=False):
         """Send the card. Its message id, or None if it did not go out."""
@@ -530,7 +590,7 @@ class Bot(object):
         data = self._card()
         answer = self.api.send_widget(self.owner, widget.HTML, caption=caption,
                                       keyboard=kb, chat_data=widget.encode(data),
-                                      silent=silent)
+                                      silent=silent, allow_queries=True)
         if not answer.get("ok"):
             self.widget_retry_at = self.clock() + self.WIDGET_RETRY_SEC
             log.info("live card refused, sending the ordinary message: %s",
@@ -1192,6 +1252,10 @@ class Bot(object):
             self.push_widget()
         except Exception as e:
             log.debug("live card not updated: %r", e)
+        try:
+            self.expire_snapshot()
+        except Exception as e:
+            log.debug("camera frame not taken down: %r", e)
 
     def keepalive_loop(self):
         """The printer closes the websocket if the client stays silent.
@@ -1234,8 +1298,12 @@ class Bot(object):
             except Exception as e:
                 log.warning("status not refreshed: %r", e)
 
+    # Named outright: taps on the live card arrive as widget_query, which a
+    # default subscription is not promised to include.
+    UPDATES = ["message", "callback_query", "widget_query"]
+
     def telegram_loop(self):
-        from .handlers import handle_callback, handle_message
+        from .handlers import handle_callback, handle_message, handle_widget_query
         offset = None
         self.api.set_my_commands([
             {"command": "status", "description": "состояние принтера"},
@@ -1250,12 +1318,15 @@ class Bot(object):
         ])
         while not self.stopping.is_set():
             try:
-                answer = self.api.get_updates(offset=offset, timeout=25)
+                answer = self.api.get_updates(offset=offset, timeout=25,
+                                              allowed=self.UPDATES)
                 for update in answer.get("result", []):
                     offset = update["update_id"] + 1
                     try:
                         if "callback_query" in update:
                             handle_callback(self, update["callback_query"])
+                        elif "widget_query" in update:
+                            handle_widget_query(self, update["widget_query"])
                         elif "message" in update:
                             handle_message(self, update["message"])
                     except Exception as e:

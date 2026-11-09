@@ -15,9 +15,12 @@ this project uses [Semantic Versioning](https://semver.org/).
   message is an HTML widget (Telegram Bot API 10.4) that shows the state,
   progress, layer, temperatures and time left and is kept current with
   `editMessageWidgetData`: silent, no "edited" mark, and the time left counts
-  down on the phone between updates. The buttons stay under it, and Pause and
-  Stop still ask for confirmation. A refused widget, a group chat or a screen
-  too long for a caption falls back to the ordinary message. New settings:
+  down on the phone between updates. Pause or resume, Stop and a camera frame
+  are buttons on the card itself: Pause and Stop ask for confirmation on the
+  card with a one-use token, and the frame arrives as its own message that is
+  taken down after five minutes. Everything else opens from one "⚙️ Menu"
+  button under the card. A refused widget, a group chat or a screen too long
+  for a caption falls back to the ordinary message. New settings:
   `status_widget`, `widget_refresh_sec`.
 - Delayed print start on COSMOS. A `.gcode` sent into the chat is uploaded to
   the printer and offered for printing now or at a set time: quick choices

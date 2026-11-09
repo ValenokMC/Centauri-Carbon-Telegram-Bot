@@ -178,13 +178,21 @@ class TelegramAPI:
     # caption instead, so the caption must make sense on its own.
 
     def send_widget(self, chat, html, caption=None, keyboard=None,
-                    chat_data=None, silent=False):
+                    chat_data=None, silent=False, allow_queries=False):
+        """``allow_queries`` lets the widget's own buttons ask the bot."""
         p = {"chat_id": chat, "html": html, "chat_data": chat_data,
              "caption": caption, "parse_mode": "HTML" if caption else None,
-             "disable_notification": True if silent else None}
+             "disable_notification": True if silent else None,
+             "allow_queries": True if allow_queries else None}
         if keyboard:
             p["reply_markup"] = {"inline_keyboard": keyboard}
         return self.call("sendWidget", p)
+
+    def answer_widget_query(self, query_id, data=None):
+        """Within 15 seconds, or the widget sees TIMEOUT. Only the widget
+        that asked receives ``data``; nothing is shown to anyone else."""
+        return self.call("answerWidgetQuery",
+                         {"widget_query_id": query_id, "data": data})
 
     def edit_widget_data(self, chat, message_id, chat_data):
         """Silent: no "edited" mark, no notification. "" clears the state."""

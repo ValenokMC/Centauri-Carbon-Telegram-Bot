@@ -85,6 +85,7 @@ class FakeTelegram(object):
         self.edit_forms = []    # (message_id, "text" | "caption" | "photo")
         self.widgets = []       # sendWidget calls
         self.widget_edits = []  # (message_id, chat_data)
+        self.widget_answers = []  # (widget_query_id, data)
         self.widget_answer = None
         self.widget_data_answer = None
 
@@ -121,15 +122,19 @@ class FakeTelegram(object):
     # Bot API 10.4 widgets. ``widget_answer`` replaces the reply to sendWidget,
     # ``widget_data_answer`` the reply to editMessageWidgetData.
     def send_widget(self, chat, html, caption=None, keyboard=None,
-                    chat_data=None, silent=False):
+                    chat_data=None, silent=False, allow_queries=False):
         self.widgets.append({"chat": str(chat), "html": html, "caption": caption,
                              "keyboard": keyboard, "chat_data": chat_data,
-                             "silent": silent})
+                             "silent": silent, "allow_queries": allow_queries})
         if self.widget_answer is not None:
             return self.widget_answer
         self._next_id += 1
         return {"ok": True, "result": {"message_id": self._next_id,
                                        "widget": {"html": html}}}
+
+    def answer_widget_query(self, query_id, data=None):
+        self.widget_answers.append((query_id, data))
+        return {"ok": True, "result": True}
 
     def edit_widget_data(self, chat, message_id, chat_data):
         self.widget_edits.append((message_id, chat_data))

@@ -253,17 +253,26 @@ def handle_callback(bot, query):
             is_photo=is_photo)
         return
 
+    if data == "cardmenu":
+        # The full panel under the live card, with "Свернуть" to fold it.
+        bot.api.answer_callback(query["id"])
+        bot.edit_main_from_callback(mid, bot.render(compact=True),
+                                    keyboard=bot.card_menu_keyboard(), is_photo=True)
+        return
+
     if data in ("refresh", "details", "brief", "snap"):
         detailed = (data == "details")
         bot.api.answer_callback(query["id"])
         # Under the live card the short caption is enough: the card shows the
         # rest. "Подробно" still opens the full text, for the fan speeds and
-        # the coordinates the card has no room for.
-        compact = _is_widget(query.get("message", {})) and not detailed
+        # the coordinates the card has no room for; Refresh and Brief fold the
+        # panel back to the one "Menu" button.
+        on_card = _is_widget(query.get("message", {}))
+        compact = on_card and not detailed
         bot.edit_main_from_callback(
             mid, bot.render(detailed=detailed, compact=compact),
-            keyboard=bot.keyboard(detailed), photo=bot.grab(max_age=5),
-            is_photo=is_photo)
+            keyboard=bot.card_keyboard() if compact else bot.keyboard(detailed),
+            photo=bot.grab(max_age=5), is_photo=is_photo)
         return
 
     if data == "files":
@@ -722,10 +731,91 @@ def _do_action(bot, chat, mid, query, what):
     # the pressed one in place left the status in a message the refresh loop
     # does not track: it stayed frozen while the loop kept editing the old one.
     message = query.get("message", {})
-    bot.edit_main_from_callback(mid, bot.render(note, compact=_is_widget(message)),
-                                keyboard=bot.keyboard(),
+    on_card = _is_widget(message)
+    bot.edit_main_from_callback(mid, bot.render(note, compact=on_card),
+                                keyboard=bot.card_keyboard() if on_card else bot.keyboard(),
                                 photo=bot.grab(max_age=5),
                                 is_photo=_has_caption(message))
+
+
+# ------------------------------------------------------- taps on the live card
+
+# Pause, resume and stop from the card: the question it shows and the label
+# of the button that confirms. The confirmation is the same one-use token an
+# inline button gets, bound to the exact action.
+CARD_ACTIONS = {
+    "pause": (backend.PAUSE, "Поставить печать на паузу?", "⏸ Да, на паузу"),
+    "resume": (backend.RESUME, "Продолжить печать?", "▶️ Да, продолжить"),
+    "stop": (backend.CANCEL, "Остановить печать? Отменить будет нельзя.", "⏹ Да, остановить"),
+}
+CARD_DONE = {
+    backend.PAUSE: ("⏸ Пауза поставлена", "Пауза не прошла"),
+    backend.RESUME: ("▶️ Печать продолжается", "Не продолжилось"),
+    backend.CANCEL: ("⏹ Печать остановлена", "Не остановилось"),
+}
+
+
+def handle_widget_query(bot, query):
+    """A button on the live card. Every query is answered, also on failure:
+    an unanswered one ends in the card as TIMEOUT after 15 seconds.
+
+    The query does not carry the card's state, and its data is untrusted
+    like callback_data: who tapped is checked first, an action needs a token
+    the bot issued, and the bot re-checks that the action is allowed.
+    """
+    from . import widget
+    qid = query.get("id")
+    data = str(query.get("data") or "")
+    chat = str((query.get("chat") or {}).get("id") or "")
+    sender = (query.get("from") or {}).get("id")
+
+    def reply(**fields):
+        bot.api.answer_widget_query(qid, widget.answer(**fields))
+
+    if not _is_owner(bot, chat, sender):
+        reply(m="Этот бот личный.")
+        log.info("widget query from a foreign chat was refused")
+        return
+
+    if data.startswith("ask:"):
+        what = data[4:]
+        if what not in CARD_ACTIONS:
+            reply(m="Неизвестная кнопка.")
+            return
+        action, question, yes = CARD_ACTIONS[what]
+        if not bot.action_allowed(action):
+            reply(m="Управление выключено в настройках.")
+            return
+        reply(a=action, t=bot.issue_action_confirmation(action), q=question, y=yes)
+        return
+
+    if data.startswith("do:"):
+        parts = data.split(":", 2)
+        action = parts[1] if len(parts) == 3 else ""
+        token = parts[2] if len(parts) == 3 else ""
+        if (action not in CARD_DONE or not bot.action_allowed(action)
+                or not bot.consume_action_confirmation(action, token)):
+            reply(m="Подтверждение устарело. Нажми кнопку ещё раз.")
+            return
+        ok, info = bot.perform(action)
+        done, failed = CARD_DONE[action]
+        reply(m=done if ok else "⚠️ %s (%s)" % (failed, info))
+        # The card's own state is redrawn by the bot, never by the answer.
+        time.sleep(SETTLE_AFTER_ACTION_SEC)
+        bot.refresh_main()
+        return
+
+    if data == "snap":
+        if not bot.cfg.get("send_photo"):
+            reply(m="Камера выключена в настройках.")
+            return
+        # Answer first: grabbing a frame through the tunnel can take seconds.
+        reply(m="📷 Снимаю — кадр придёт ниже")
+        if not bot.send_snapshot():
+            bot.api.send_message(chat, "📷 Кадр получить не вышло.")
+        return
+
+    reply(m="Неизвестная кнопка.")
 
 
 # ------------------------------------------------------------------ messages

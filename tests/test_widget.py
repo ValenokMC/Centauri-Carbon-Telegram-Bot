@@ -72,8 +72,9 @@ def test_html_loads_nothing_and_never_parses_state_as_markup():
 def test_printing_card_carries_the_numbers_and_the_finish_time():
     data = widget.card(printing(), True, "Demo Centauri", NOW)
     assert data["k"] == "p" and data["p"] == 42
-    assert data["l"] == [12, 300]
-    assert data["tn"] == [210, 210] and data["tb"] == [60, 60] and data["tc"] == 30
+    # Ready-made strings: the card draws them as they are.
+    assert data["l"] == "слой 12 из 300"
+    assert data["m"] == "сопло 210° · стол 60° · внутри 30°"
     assert data["r"] == 3000 and data["e"] == int(NOW) + 3000
     assert data["f"] == "Benchy_PLA.gcode" and data["u"] == int(NOW)
     assert "sp" not in data
@@ -96,18 +97,45 @@ def test_card_speaks_russian():
     assert "42" in widget.card(status(42, "a.gcode"), True, "P", NOW)["s"]
 
 
-def test_moonraker_fractional_layer_is_a_whole_number():
-    """COSMOS reported "слой 19.45 из 45" on the first live card."""
+def test_layer_is_a_finished_string():
+    """The live cards showed "слой 20.45 из 45" for the data [20, 45]: the bot
+    now writes the line itself, and a fractional layer is cut to a whole one."""
     st = printing()
     st["PrintInfo"]["CurrentLayer"] = 19.45
-    assert widget.card(st, True, "P", NOW)["l"] == [19, 300]
+    assert widget.card(st, True, "P", NOW)["l"] == "слой 19 из 300"
+    st["PrintInfo"]["TotalLayer"] = 0
+    assert widget.card(st, True, "P", NOW)["l"] == ""
+
+
+def test_heating_shows_the_target():
+    st = printing(TempOfNozzle=180, TempTargetNozzle=245)
+    assert widget.card(st, True, "P", NOW)["m"].startswith("сопло 180→245°")
 
 
 def test_no_air_temperature_when_the_printer_has_none():
     """COSMOS sends no chamber temperature; the card must not show a dash for it."""
     st = printing()
     st.pop("TempOfBox")
-    assert "tc" not in widget.card(st, True, "P", NOW)
+    assert widget.card(st, True, "P", NOW)["m"] == "сопло 210° · стол 60°"
+
+
+@pytest.mark.parametrize("code, allowed, camera, want", [
+    (13, {"pause", "resume", "cancel"}, True, "PSC"),
+    (6, {"pause", "resume", "cancel"}, True, "RSC"),
+    (13, {"pause", "resume", "cancel"}, False, "PS"),
+    (13, set(), True, "C"),                    # monitoring only: just the camera
+    (13, set(), False, ""),
+])
+def test_buttons_follow_the_state_and_the_policy(code, allowed, camera, want):
+    st = status(code, "a.gcode")
+    assert widget.buttons(st, True, allowed, camera) == want
+
+
+def test_answer_is_small_json():
+    text = widget.answer(a="cancel", t="tok", q="Остановить?", y="Да")
+    assert json.loads(text) == {"a": "cancel", "t": "tok", "q": "Остановить?", "y": "Да"}
+    long = widget.answer(m="ж" * 2000)
+    assert len(long.encode("utf-8")) <= widget.ANSWER_LIMIT
 
 
 def test_compact_caption_is_one_russian_line(live_bot):
@@ -166,14 +194,20 @@ def test_send_widget_is_a_plain_bot_api_call():
     rec = Recorder()
     TelegramAPI.send_widget(rec, "555", "<p>x</p>", caption="<b>c</b>",
                             keyboard=[[{"text": "a", "callback_data": "b"}]],
-                            chat_data="{}", silent=True)
+                            chat_data="{}", silent=True, allow_queries=True)
     method, p = rec.calls[0]
     assert method == "sendWidget"
     assert p["html"] == "<p>x</p>" and p["caption"] == "<b>c</b>"
     assert p["parse_mode"] == "HTML" and p["chat_data"] == "{}"
-    assert p["disable_notification"] is True
+    assert p["disable_notification"] is True and p["allow_queries"] is True
     assert p["reply_markup"] == {"inline_keyboard": [[{"text": "a", "callback_data": "b"}]]}
-    assert "allow_queries" not in p        # the card never talks back
+
+
+def test_answer_widget_query_call():
+    rec = Recorder()
+    TelegramAPI.answer_widget_query(rec, "q1", '{"m":"ok"}')
+    assert rec.calls == [("answerWidgetQuery",
+                          {"widget_query_id": "q1", "data": '{"m":"ok"}'})]
 
 
 def test_edit_widget_data_call():
@@ -200,9 +234,12 @@ def test_running_print_goes_out_as_the_card(live_bot, fake_telegram):
     assert sent["caption"].startswith("🖨 <b>Печать началась</b>")
     assert "42%" in sent["caption"]
     assert "сопло" not in sent["caption"] and "ещё" not in sent["caption"]  # on the card
-    assert sent["keyboard"] == live_bot.keyboard()   # pause / stop stay buttons
+    # Pause, stop and the camera are on the card; under it only "Menu".
+    assert sent["keyboard"] == live_bot.card_keyboard()
+    assert sent["allow_queries"] is True
     assert sent["silent"] is False                   # an event still notifies
     assert card_of(sent["chat_data"])["p"] == 42
+    assert card_of(sent["chat_data"])["b"] == "PS"   # no camera in the test config
     assert storage.message_id() == mid and storage.message_kind() == widget.KIND
     assert fake_telegram.deleted == [(live_bot.owner, 500)]
 
@@ -443,3 +480,117 @@ def test_long_screen_on_the_card_becomes_an_ordinary_message(live_bot, fake_tele
     assert new_mid != mid and storage.message_id() == new_mid
     assert storage.message_kind() is None
     assert (live_bot.owner, mid) in fake_telegram.deleted
+
+
+# ------------------------------------------------------------ taps on the card
+
+def widget_query(data, sender="555000111", chat="555000111", qid="wq-1"):
+    return {"id": qid, "from": {"id": sender, "is_bot": False},
+            "chat": {"id": chat, "type": "private"}, "message_id": 77,
+            "chat_instance": "1", "type": {"type": "data"}, "data": data}
+
+
+def last_answer(fake_telegram):
+    return json.loads(fake_telegram.widget_answers[-1][1])
+
+
+@pytest.fixture
+def card_bot(live_bot):
+    live_bot.ws = object()
+    live_bot.commands = []
+    live_bot.run_command = lambda cmd, *a, **k: (live_bot.commands.append(cmd), (True, "Ack=0"))[1]
+    live_bot.refresh_main(force_new=True)
+    return live_bot
+
+
+def test_stop_on_the_card_asks_then_acts(card_bot, fake_telegram):
+    from centauri_bot import sdcp
+    handlers.handle_widget_query(card_bot, widget_query("ask:stop"))
+    ask = last_answer(fake_telegram)
+    assert card_bot.commands == []                     # nothing happened yet
+    assert ask["a"] == "cancel" and ask["t"] and "Остановить" in ask["q"]
+    request = "do:%s:%s" % (ask["a"], ask["t"])
+    assert len(request.encode("utf-8")) <= widget.QUERY_LIMIT
+    handlers.handle_widget_query(card_bot, widget_query(request, qid="wq-2"))
+    assert sdcp.CMD_STOP in card_bot.commands
+    assert "остановлена" in last_answer(fake_telegram)["m"]
+    # every query was answered, and the card was brought up to date
+    assert [q for q, _ in fake_telegram.widget_answers] == ["wq-1", "wq-2"]
+    assert fake_telegram.widget_edits
+
+
+def test_card_token_is_one_use(card_bot, fake_telegram):
+    handlers.handle_widget_query(card_bot, widget_query("ask:pause"))
+    ask = last_answer(fake_telegram)
+    request = "do:%s:%s" % (ask["a"], ask["t"])
+    handlers.handle_widget_query(card_bot, widget_query(request))
+    handlers.handle_widget_query(card_bot, widget_query(request))
+    assert len(card_bot.commands) == 1
+    assert "устарело" in last_answer(fake_telegram)["m"]
+
+
+def test_token_for_pause_does_not_stop(card_bot, fake_telegram):
+    handlers.handle_widget_query(card_bot, widget_query("ask:pause"))
+    token = last_answer(fake_telegram)["t"]
+    handlers.handle_widget_query(card_bot, widget_query("do:cancel:" + token))
+    assert card_bot.commands == []
+
+
+def test_forged_or_foreign_taps_do_nothing(card_bot, fake_telegram):
+    handlers.handle_widget_query(card_bot, widget_query("do:cancel:guess"))
+    handlers.handle_widget_query(card_bot, widget_query("ask:stop", sender="999"))
+    handlers.handle_widget_query(card_bot, widget_query("rm -rf"))
+    assert card_bot.commands == []
+    answers = [json.loads(d) for _, d in fake_telegram.widget_answers]
+    assert all("t" not in a for a in answers) and len(answers) == 3
+
+
+def test_control_off_card_refuses(card_bot, fake_telegram):
+    card_bot.cfg["allow_control"] = False
+    handlers.handle_widget_query(card_bot, widget_query("ask:stop"))
+    assert "выключено" in last_answer(fake_telegram)["m"]
+
+
+def test_camera_button_sends_a_frame_that_goes_away(card_bot, fake_telegram):
+    card_bot.cfg["send_photo"] = True
+    card_bot.grab = lambda max_age=0: b"\xff\xd8frame"
+    handlers.handle_widget_query(card_bot, widget_query("snap"))
+    assert "Снимаю" in last_answer(fake_telegram)["m"]
+    [(_, text, _, has_photo)] = fake_telegram.sent
+    assert has_photo and "уберу" in text
+    snap_mid = storage.load_state()["snapshot_message"][0]
+
+    # a second frame replaces the first at once
+    handlers.handle_widget_query(card_bot, widget_query("snap", qid="wq-2"))
+    assert (card_bot.owner, snap_mid) in fake_telegram.deleted
+    snap_mid = storage.load_state()["snapshot_message"][0]
+
+    card_bot.clock_control.now += card_bot.SNAPSHOT_TTL_SEC + 20
+    card_bot.expire_snapshot()
+    assert (card_bot.owner, snap_mid) in fake_telegram.deleted
+    assert storage.load_state()["snapshot_message"] is None
+
+
+def test_camera_off_says_so(card_bot, fake_telegram):
+    handlers.handle_widget_query(card_bot, widget_query("snap"))
+    assert "выключена" in last_answer(fake_telegram)["m"]
+    assert fake_telegram.sent == []
+
+
+def test_menu_button_opens_and_folds_the_panel(card_bot, fake_telegram):
+    mid = storage.message_id()
+    handlers.handle_callback(card_bot, card_callback("cardmenu", mid))
+    opened = fake_telegram.edited[-1][3]
+    labels = [b["text"] for row in opened for b in row]
+    assert "📂 Файлы" in labels and "▲ Свернуть меню" in labels
+    handlers.handle_callback(card_bot, card_callback("refresh", mid))
+    assert fake_telegram.edited[-1][3] == card_bot.card_keyboard()
+
+
+def test_widget_queries_reach_the_handler(card_bot, fake_telegram):
+    fake_telegram._updates = [{"update_id": 1, "widget_query": widget_query("ask:stop")}]
+    card_bot.api.get_updates = (lambda orig: lambda **kw: (
+        card_bot.stopping.set(), orig(**kw))[1])(fake_telegram.get_updates)
+    card_bot.telegram_loop()
+    assert fake_telegram.widget_answers and "t" in last_answer(fake_telegram)
+    assert "widget_query" in card_bot.UPDATES
