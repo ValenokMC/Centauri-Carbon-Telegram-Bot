@@ -16,6 +16,7 @@ from . import backend
 from . import printer_state as ps
 from . import schedule
 from . import support
+from . import widget
 
 
 HEAT_PRESETS = {
@@ -283,13 +284,14 @@ def render(status, online, printer_name, header="", detailed=False,
         summary += " · %s%%" % print_info.get("Progress", 0)
     top.append(summary)
     if compact:
-        # The caption under the live card. The card shows the rest; this is
-        # what the chat list, notifications and apps without widgets show.
-        if filename:
-            left = (print_info.get("TotalTicks") or 0) - (print_info.get("CurrentTicks") or 0)
-            top.append("📄 <i>%s</i>" % filename)
-            if left > 0:
-                top.append("⏳ ещё %s" % hhmm(left))
+        # The caption under the live card: one line, since the card shows the
+        # rest. It is also what the chat list, notifications and apps without
+        # widgets show, so it keeps the state and the percentage, in the
+        # card's Russian words.
+        top[-1] = "%s <b>%s</b> · %s" % (
+            icon, printer_name, widget.state_ru(code, online).lower())
+        if filename and online:
+            top[-1] += " · %s%%" % int(float(print_info.get("Progress") or 0))
         return "\n".join(top)
     # The code alone is not actionable. Klipper says why it stopped, so that
     # line goes directly under the summary where it will be read first.

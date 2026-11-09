@@ -48,6 +48,16 @@ def test_html_fits_the_sendwidget_limits():
     assert widget.html_fits()
 
 
+def test_state_classes_do_not_restyle_the_card():
+    """The card gets class "p", "w" or "x" by state. A rule for one of those
+    names elsewhere restyled the whole card: on the first live card ".p" (the
+    big percentage) made every line large and bold."""
+    style = widget.HTML.split("</style>")[0]
+    for kind in ("p", "w", "x"):
+        rules = re.findall(r"(?:^|[}\n,])\s*\.%s\s*[{,]" % kind, style)
+        assert rules == [], kind
+
+
 def test_html_loads_nothing_and_never_parses_state_as_markup():
     """The sandbox loads nothing anyway; a file name must not become HTML."""
     assert not re.search(r"<script[^>]*\bsrc\b", widget.HTML)
@@ -76,7 +86,33 @@ def test_paused_card_has_no_finish_time():
 
 def test_offline_card_says_so():
     data = widget.card(printing(), False, "P", NOW)
-    assert data["o"] == 0 and data["s"] == "связь потеряна" and "e" not in data
+    assert data["o"] == 0 and data["s"] == "Нет связи" and "e" not in data
+
+
+def test_card_speaks_russian():
+    assert widget.card(printing(), True, "P", NOW)["s"] == "Печатает"
+    assert widget.card(status(6, "a.gcode"), True, "P", NOW)["s"] == "Пауза"
+    assert widget.card(status(77, "a.gcode"), True, "P", NOW)["s"] == "Аварийная остановка"
+    assert "42" in widget.card(status(42, "a.gcode"), True, "P", NOW)["s"]
+
+
+def test_moonraker_fractional_layer_is_a_whole_number():
+    """COSMOS reported "слой 19.45 из 45" on the first live card."""
+    st = printing()
+    st["PrintInfo"]["CurrentLayer"] = 19.45
+    assert widget.card(st, True, "P", NOW)["l"] == [19, 300]
+
+
+def test_no_air_temperature_when_the_printer_has_none():
+    """COSMOS sends no chamber temperature; the card must not show a dash for it."""
+    st = printing()
+    st.pop("TempOfBox")
+    assert "tc" not in widget.card(st, True, "P", NOW)
+
+
+def test_compact_caption_is_one_russian_line(live_bot):
+    caption = live_bot.render("", compact=True)
+    assert caption == "🖨 <b>Demo Centauri</b> · печатает · 42%"
 
 
 def test_speed_is_shown_only_when_changed():
@@ -162,8 +198,8 @@ def test_running_print_goes_out_as_the_card(live_bot, fake_telegram):
     [sent] = fake_telegram.widgets
     assert sent["html"] == widget.HTML and sent["chat"] == live_bot.owner
     assert sent["caption"].startswith("🖨 <b>Печать началась</b>")
-    assert "42%" in sent["caption"] and "ещё" in sent["caption"]
-    assert "сопло" not in sent["caption"]            # the card shows that
+    assert "42%" in sent["caption"]
+    assert "сопло" not in sent["caption"] and "ещё" not in sent["caption"]  # on the card
     assert sent["keyboard"] == live_bot.keyboard()   # pause / stop stay buttons
     assert sent["silent"] is False                   # an event still notifies
     assert card_of(sent["chat_data"])["p"] == 42
@@ -245,6 +281,26 @@ def test_print_under_an_ordinary_message_gets_its_card_quietly(live_bot, fake_te
     assert sent["silent"] is True
     assert mid != 500 and storage.message_kind() == widget.KIND
     assert fake_telegram.deleted == [(live_bot.owner, 500)]
+
+
+def test_card_of_an_older_version_is_replaced(live_bot, fake_telegram):
+    """A sent widget keeps its HTML forever. After an update the old card
+    would read the new data with the old code, so a new card takes over."""
+    storage.set_message_id(500, kind="widget")        # what 1.2.0's first card stored
+    mid = live_bot.refresh_main()
+    assert mid != 500 and storage.message_kind() == widget.KIND
+    assert fake_telegram.widgets[-1]["silent"] is True
+    assert (live_bot.owner, 500) in fake_telegram.deleted
+    assert fake_telegram.widget_edits == []           # old card never fed new data
+
+
+def test_older_card_is_edited_through_its_caption_only(bot, fake_telegram):
+    bot.cfg["send_photo"] = True
+    bot.grab = lambda max_age=0: b"\xff\xd8frame"
+    bot.status, bot.online = status(9), True          # not live: no new card
+    storage.set_message_id(500, kind="widget")
+    bot.refresh_main()
+    assert all(form != "photo" for _, form in fake_telegram.edit_forms)
 
 
 def test_refused_promotion_keeps_the_old_message(live_bot, fake_telegram):

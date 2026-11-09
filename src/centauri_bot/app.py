@@ -447,6 +447,10 @@ class Bot(object):
             def keep_old():
                 if kind == widget.KIND:
                     return self._edit_widget(mid, caption(), kb)
+                if widget.is_card(kind):
+                    # a card of an older version: its caption only, never a
+                    # frame, which would turn the widget into a photo
+                    return self._edit_in_place(mid, caption(), kb, False)
                 return self._edit_in_place(mid, body(), kb, frame())
 
             if mid and not force_new and not promote:
@@ -487,7 +491,7 @@ class Bot(object):
         A live card loses its state too, so it stops showing numbers that
         nobody updates any more."""
         forms = (dict(), dict(is_photo=True))
-        if kind == widget.KIND:
+        if widget.is_card(kind):
             self.api.edit_widget_data(self.owner, mid, "")
             forms = (dict(is_photo=True),)
         for extra in forms:
@@ -618,10 +622,11 @@ class Bot(object):
             tracked_kind = storage.message_kind() if tracked_mid else None
 
             def edit(target):
-                if target == tracked_mid and tracked_kind == widget.KIND:
+                if target == tracked_mid and widget.is_card(tracked_kind):
                     # The live card: its text is the caption, and a frame
                     # would replace the widget, so the camera stays out.
-                    self._push_widget_locked(target, force=True)
+                    if tracked_kind == widget.KIND:
+                        self._push_widget_locked(target, force=True)
                     form = dict(photo=None, is_photo=True)
                 else:
                     form = dict(photo=photo, is_photo=is_photo)
