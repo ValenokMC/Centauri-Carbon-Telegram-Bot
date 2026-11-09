@@ -228,60 +228,12 @@ def test_kb_files_labels_keep_the_end_of_the_name():
 
 # ------------------------------------------------------------ 1b / 1c: figures
 
-def decode(fig):
-    """What the card's script does with the compact figure: (number, x0, y0,
-    x1, y1, state) in 4 mm cells, skipping what is not drawn."""
-    out = []
-    for n, state in enumerate(fig["s"]):
-        if state == "3":
-            continue
-        cells = [objectmap.ALPHABET.index(c) for c in fig["b"][4 * n:4 * n + 4]]
-        out.append((n + 1, *cells, int(state)))
-    return out
 
 
-def test_objects_figure_coordinates_and_states():
-    names = ["A", "B", "C"]
-    shapes = {"A": {"polygon": [(10, 10), (60, 10), (60, 60), (10, 60)]},
-              "B": {"polygon": [(100, 100), (150, 100), (150, 150), (100, 150)]}}
-    fig = objectmap.figure(names, shapes, excluded=["B"], current="A")
-    assert fig["s"] == "213"                   # printing, excluded, not drawn
-    assert len(fig["b"]) == 4 * len(names)
-    # 4 mm cells (63 over the bed), y from the top (the back wall)
-    assert decode(fig) == [(1, 2, 48, 15, 61, 2), (2, 24, 26, 37, 39, 1)]
-    assert decode(objectmap.figure(["A"], {"A": shapes["A"]}))[0][-1] == 4      # selected, to print
-    assert decode(objectmap.figure(["A", "B"], shapes, current="B", highlight={"A"}))[0][-1] == 4
-    # zoomed to A's window, B (far away) is not in the picture at all
-    assert [d[-1] for d in decode(objectmap.figure(["A", "B"], shapes, highlight={"A"}))] == [4]
-    assert [d[-1] for d in decode(objectmap.figure(["A", "B"], shapes, highlight=set()))] == [0, 0]
-    far = {"A": {"polygon": [(-20, -5), (400, -5), (400, 400)]}}
-    assert decode(objectmap.figure(["A"], far)) == [(1, 0, 0, 63, 63, 4)]
-    tiny = {"A": {"polygon": [(100, 100), (101, 100), (101, 101)]}}
-    [(_, x0, y0, x1, y1, _)] = decode(objectmap.figure(["A"], tiny))
-    assert x1 > x0 and y1 > y0                             # never an empty box
-    with pytest.raises(ValueError):
-        objectmap.figure(["A"], {})
 
 
-def test_widget_alphabet_is_the_bots_alphabet():
-    assert "'%s'" % objectmap.ALPHABET in widget.HTML
 
 
-def test_objects_on_the_card_are_drawn_not_sent_as_a_picture(mr_bot, fake_telegram):
-    mr_bot.status = status(13, "x.gcode", progress=50)
-    handlers.handle_widget_query(mr_bot, widget_query("c:objects"))
-    sc = last_answer(fake_telegram)["sc"]
-    assert fake_telegram.sent == []                       # no PNG
-    # three parts, B already gone: two models are still to print -> the models first
-    assert sc["t"] == "✂️ Убрать объект" and sc["x"] == ["Осталось 2 из 3 · моделей 2"]
-    assert "g" not in sc                                  # no map on the list of models
-    codes = [b[1] for row in sc["k"] for b in row]
-    assert sum(c.startswith("c:objgrp:") for c in codes) == 2
-    handlers.handle_widget_query(mr_bot, widget_query(next(c for c in codes if "objgrp" in c),
-                                                      qid="wq-2"))
-    level2 = last_answer(fake_telegram)["sc"]
-    assert level2["t"] == "✂️ A" and decode(level2["g"])[0][-1] == 2    # A is printing now
-    assert [b[0] for row in level2["k"] for b in row if b[1].startswith("c:xo:")] == ["▶ 1"]
 
 
 def test_objects_outside_card_mode_are_still_a_png(mr_bot, fake_telegram):
@@ -291,20 +243,8 @@ def test_objects_outside_card_mode_are_still_a_png(mr_bot, fake_telegram):
     assert fake_telegram.widgets[-1:] == fake_telegram.widgets[:1]   # no new card
 
 
-def test_mesh_figure_flips_rows_and_uses_integers():
-    fig = heightmap.figure([[0.0, 0.1], [0.2, 0.3]])["m"]
-    # Klipper's first row is the front edge; the picture's first row the back
-    assert fig == {"w": 2, "h": 2, "z": "66990033"}    # two digits each, 00..99 of the spread
-    assert isinstance(fig["z"], str)                  # a string: no list of numbers
-    with pytest.raises(ValueError):
-        heightmap.figure([[0.0, 0.1], [0.2]])
 
 
-def test_mesh_on_the_card_is_drawn(mr_bot, fake_telegram):
-    handlers.handle_widget_query(mr_bot, widget_query("c:mesh"))
-    sc = last_answer(fake_telegram)["sc"]
-    assert sc["g"]["m"]["z"] == "66990033" and fake_telegram.sent == []
-    assert sc["t"] == "🗺 Карта высот стола" and len(sc["x"]) == 2
 
 
 # ------------------------------------------------------------ 1d: screens the bot opens
@@ -319,7 +259,8 @@ def command(bot, text):
 def test_commands_in_card_mode_are_a_card_with_go(mr_bot, fake_telegram, cmd):
     sent_before = len(fake_telegram.sent)
     command(mr_bot, cmd)
-    assert len(fake_telegram.sent) == sent_before         # no message
+    # no message but the picture slot: the bed map goes in above the card
+    assert len(fake_telegram.sent) == sent_before + (1 if cmd == "/mesh" else 0)
     data = card_of(fake_telegram.widgets[-1]["chat_data"])
     assert data["go"]
     handlers.handle_widget_query(mr_bot, widget_query("pg:%s:0" % data["go"]))
@@ -671,7 +612,7 @@ def test_widget_reads_an_answer_whatever_shape_it_arrives_in():
     html = widget.HTML
     assert "JSON.parse(r.result)" in html
     assert "пустой экран" not in html                      # the temporary diagnostic is gone
-    assert "<canvas" in html and "pg:" in html and "localStorage" in html
+    assert "pg:" in html and "localStorage" in html
     assert widget.html_fits()
 
 
@@ -730,17 +671,6 @@ def big_job(mr_bot, count=56, excluded=(3, 20, 41), current=10):
     return names, shapes, state
 
 
-def test_a_drawing_that_cannot_fit_is_thinned_then_dropped_with_a_log(caplog):
-    caplog.set_level(logging.INFO)
-    rows = [[["❌ 1 · деталь", "c:ask:exclude:abc", ""]]]
-    huge = {"b": "ABCD" * 300, "s": "0" * 300}
-    pages = widget.paginate({"t": "T", "x": [], "k": rows, "g": huge}, "tok")
-    assert pages and "g" not in json.loads(pages[0])["sc"]
-    assert "drawing dropped" in caplog.text
-    # the excluded ones are given up first
-    thin = widget.thin_figure({"b": "AAAABBBBCCCC", "s": "101"})
-    assert thin == {"b": "AAAABBBB", "s": "30", "n": ""}
-    assert widget.thin_figure({"b": "AAAA", "s": "1"}) is None
 
 
 def test_macros_on_the_card_are_a_title_and_buttons(mr_bot, fake_telegram):
@@ -791,7 +721,7 @@ def test_html_changes_must_come_with_a_new_version():
     import hashlib
     digest = hashlib.sha256(widget.HTML.encode("utf-8")).hexdigest()[:12]
     assert digest == widget.HTML_SHA, "HTML changed: bump VERSION and update HTML_SHA"
-    assert widget.KIND == "widget-%d" % widget.VERSION == "widget-13"
+    assert widget.KIND == "widget-%d" % widget.VERSION == "widget-14"
 
 
 # ------------------------------------------------------------ round 6
@@ -1069,14 +999,25 @@ def test_ring_maths_heating_at_target_cooling_and_off():
 
 def test_the_rings_and_their_motion_are_in_the_html():
     html = widget.HTML
-    assert 'id=tn' in html and 'id=tb' in html and html.count("<svg viewBox") == 2
+    # three identical rings in one centred row: print, nozzle, bed, each with a caption
+    for tile in ("id=tp", "id=tn", "id=tb"):
+        assert tile in html
+    assert html.index("id=tp") < html.index("id=tn") < html.index("id=tb") < html.index("id=s>")
+    assert "<span>печать</span>" in html and "'сопло'" in html and "'стол'" in html
+    assert ".rg{position:relative;width:76px;height:76px;" in html     # the same size for all
+    assert "grid-auto-flow:column" in html and "justify-content:center" in html
+    assert "→ '+a[1]" in html                                          # heating: the target
+    assert ".k-i #tp{display:none}" in html                            # idle: nozzle and bed only
     # crisp rings: vector circles with a path length of 100, a dash per percent, a muted
     # track under a round-capped arc in the temperature's hue; no raster, no gradient
     assert "pathLength:100" in html and "'stroke-dasharray']=f+' 100'" in html
     assert "stroke:var(--l)" in html and "hsl('+a[3]+'" in html and "conic-gradient" not in html
     assert ".rg>svg{stroke-width:3.6}" in html                # the arc is at least 3.5 of 36
     assert ".rg>svg,.rg b{position:absolute;inset:0;" in html  # the text sits over the ring, centred
-    assert ".rg b{justify-content:center}" in html
+    assert ".rg b,.tl{justify-content:center}" in html or ".rg b{justify-content:center}" in html
+    assert "<svg viewBox" not in html                          # no glyphs in the rings any more
+    # the state, the file, the layer line and the finish time are centred under them
+    assert ".mn{margin-top:8px;text-align:center}" in html and ".cp{display:flex;flex-wrap:wrap;justify-content:center" in html
     # the pulse only runs when the viewer has not asked for less motion
     assert re.search(r"@media\(prefers-reduced-motion:no-preference\)\{\.hot \.rg,\.re\{animation", html)
     assert "innerHTML" not in html
@@ -1110,15 +1051,6 @@ def test_the_action_buttons_are_data_the_card_only_draws():
 NOW_FOR_RINGS = 1_700_000_000.0
 
 
-def test_the_height_model_counts_figures_wrapped_lines_and_wrapped_rows():
-    plain = {"t": "T", "x": [], "k": []}
-    assert widget.estimate_height(plain) == widget.PAGE_BASE_PX
-    assert widget.estimate_height(dict(plain, g={"b": "A", "s": "0"})) \
-        == widget.PAGE_BASE_PX + widget.FIGURE_PX
-    long_line = dict(plain, x=["ж" * 45])                # wraps at 320 px, not at 430
-    assert widget.estimate_height(long_line, 320) > widget.estimate_height(long_line, 430)
-    speeds = dict(plain, k=[[[l, "c:x", ""] for l in ("50%", "75%", "100%", "125%", "150%")]])
-    assert widget.estimate_height(speeds, 320) >= widget.PAGE_BASE_PX + widget.ROW_PX
 
 
 
@@ -1200,20 +1132,53 @@ def test_the_fan_icon_spins_only_while_a_fan_runs(card_bot):
     assert fan(card_bot._card()["mn"])[2] == "fa1"
 
 
-def test_the_icon_table_is_valid_and_fits_one_answer():
-    answer = widget.icons_answer()
-    assert len(answer.encode("utf-8")) <= widget.ANSWER_LIMIT
-    table = json.loads(answer)["ic"]
+def test_the_icon_table_is_valid_and_comes_in_pieces_that_each_fit_an_answer():
+    chunks = widget.icon_chunks()
+    assert len(chunks) >= 2                                   # the whole set is over 1 KB
+    table = {}
+    for index in range(len(chunks)):
+        answer = widget.icons_answer(index)
+        assert len(answer.encode("utf-8")) <= widget.ANSWER_LIMIT
+        piece = json.loads(answer)
+        assert piece["v"] == widget.ICON_SET and piece["i"] == index and piece["n"] == len(chunks)
+        table.update(piece["ic"])
     assert table == widget.ICONS and len(table) >= 20
     for icon, path in table.items():
         assert re.fullmatch(r"[a-z]{2}", icon)
         assert re.fullmatch(r"M[MmLlHhVvCcSsQqTtAaZz0-9eE.,\s-]+", path), icon
-    assert {"pa", "re", "fa", "ca"} <= set(table)
+    assert {"pa", "re", "fa", "ca", "cu", "hp", "in"} <= set(table)
+    assert list(widget.ICONS)[-1] == "bk"                     # the card knows the set is whole by its last icon
+    assert widget.icons_answer(99) == widget.icons_answer(len(chunks) - 1)   # clamped
+
+
+def test_the_icon_set_has_a_version_the_card_keys_its_cache_by():
+    """Old cached icons must not survive a redraw: the card's storage key and the
+    answers carry the set's version; bump ICON_SET whenever a path changes."""
+    assert widget.ICON_SET == 2
+    assert "'ic%d'" % widget.ICON_SET in widget.HTML and "a.v==%d" % widget.ICON_SET in widget.HTML
+    assert "'ic11'" not in widget.HTML
+
+
+def test_the_redrawn_icons_are_the_ones_asked_for():
+    """Scissors: two rings and two crossing blades; help: a ring with a question
+    mark's dot; details: a ring with an "i"; they were a dash and a few strokes."""
+    icons = widget.ICONS
+    assert icons["cu"].count("a3 3") >= 2 and icons["cu"].count("L") >= 2   # rings and blades
+    assert "M12 17h.01" in icons["hp"] and "a8.5 8.5" in icons["hp"]        # ? in a circle
+    assert "M12 7.8h.01" in icons["in"] and "M12 11v5.5" in icons["in"] and "a8.5 8.5" in icons["in"]
+    assert icons["fa"].count("M") == 3                                      # a fan: three blades
+    # the mapping: details is the info icon, the project's help a question mark
+    assert widget.icon_for("details") == "in" and widget.icon_for("help") == "hp"
+    assert widget.icon_for("objects") == "cu" and widget.icon_for("ask:exclude:x") == "cu"
+    assert widget.plain("ℹ️ Подробнее") == "Подробнее" and widget.plain("❔ О проекте") == "О проекте"
 
 
 def test_the_icon_request_is_answered_to_the_owner_and_data_queries_only(card_bot, fake_telegram):
     handlers.handle_widget_query(card_bot, widget_query("ic"))
-    assert json.loads(fake_telegram.widget_answers[-1][1])["ic"] == widget.ICONS
+    assert json.loads(fake_telegram.widget_answers[-1][1])["i"] == 0
+    handlers.handle_widget_query(card_bot, widget_query("ic:1", qid="wq-1"))
+    second = json.loads(fake_telegram.widget_answers[-1][1])
+    assert second["i"] == 1 and second["v"] == widget.ICON_SET
     handlers.handle_widget_query(card_bot, widget_query("ic", sender="999", qid="wq-2"))
     assert last_answer(fake_telegram) == {"m": "Этот бот личный."}
     other = widget_query("ic", qid="wq-3")
@@ -1227,11 +1192,12 @@ def test_the_icon_request_is_answered_to_the_owner_and_data_queries_only(card_bo
 def test_the_cards_script_fetches_icons_late_quietly_and_without_storage():
     script = widget.HTML.split("<script>")[1]
     assert "setTimeout(ic,4e3)" in script                    # after the first render
-    assert "function ic(){if(IC.pa)return;" in script and "W.request('ic')" in script
-    assert "function(){setTimeout(ic,3e4)}" in script        # a failure: later, no note line
+    assert "function ic(i){i=i||0;if(IC.bk)return;if(busy)return setTimeout(ic,5e3,i)" in script
+    assert "W.request('ic:'+i)" in script and "if(a.n>i+1)ic(i+1)" in script   # piece after piece
+    assert "function(){setTimeout(ic,3e4,i)}" in script      # a failure: later, no note line
     # every storage access is guarded; the card works without icons
-    assert "try{IC=JSON.parse(localStorage.getItem('ic11'))||{}}catch(e){}" in script
-    assert "try{localStorage.setItem('ic11',JSON.stringify(IC))}catch(e){}" in script
+    assert "try{IC=JSON.parse(localStorage.getItem('ic2'))||{}}catch(e){}" in script
+    assert "try{localStorage.setItem('ic2',JSON.stringify(IC))}catch(e){}" in script
     assert "S('svg',{viewBox:'0 0 24 24','class':n})" in script and "catch(r){}" in script
     assert ".insertBefore(s,e.firstChild)" in script
     assert "innerHTML" not in script
@@ -1280,114 +1246,18 @@ def copies_job(mr_bot, groups, excluded=(), current=1):
     return names, shapes, state
 
 
-def numbers_of(pages):
-    """The numbers on the grid buttons of the pages, in order."""
-    return [int("".join(ch for ch in b[0] if ch.isdigit()))
-            for sc in pages for row in sc["k"] for b in row
-            if b[1].startswith("c:xo:")]
 
 
-def assert_pages_fit(pages):
-    for n, sc in enumerate(pages):
-        for width in (320, 430):
-            assert widget.estimate_height(sc, width) <= widget.MAX_HEIGHT_PX, (n, width)
-        assert len(json.dumps({"sc": sc}, ensure_ascii=False,
-                              separators=(",", ":")).encode("utf-8")) <= widget.ANSWER_LIMIT
 
 
-def test_two_models_of_28_copies_list_the_models_then_a_grid(mr_bot, fake_telegram):
-    names, shapes, state = copies_job(mr_bot, [("МОДЕЛЬ А", 28), ("МОДЕЛЬ Б", 28)],
-                                      excluded=(3,), current=10)
-    first = pages_of(mr_bot, fake_telegram, "c:objects")
-    assert len(first) == 1
-    sc = first[0]
-    assert sc["t"] == "✂️ Убрать объект" and sc["x"] == ["Осталось 55 из 56 · моделей 2"]
-    rows = [r for r in sc["k"] if r[0][1].startswith("c:objgrp:")]
-    assert [r[0][0] for r in rows] == ["МОДЕЛЬ А ×28 · осталось 27", "МОДЕЛЬ Б ×28 · осталось 28"]
-    assert "g" not in sc                                  # no map on the list of models
-    assert_pages_fit(first)
-
-    second = pages_of(mr_bot, fake_telegram, rows[0][0][1])      # a tap on the first model
-    assert len(second) <= 2
-    assert second[0]["t"] == "✂️ МОДЕЛЬ А" and second[0]["x"] == ["Осталось 27 из 28"]
-    assert_pages_fit(second)
-    grid = numbers_of(second)
-    assert sorted(grid) == [n for n in range(1, 29) if n != 3]  # 3 is gone; B is not here
-    assert len(grid) == len(set(grid))
-    marks = [b[0] for sc2 in second for row in sc2["k"] for b in row if b[0].startswith("▶")]
-    assert marks == ["▶ 10"]                                     # the one printing now
-    # the map: this model highlighted with its numbers, the rest dimmed
-    st = "".join(str(d[-1]) for d in decode(second[0]["g"]))
-    assert st.count("4") == 26 and st.count("2") == 1 and st.count("1") == 1
-    assert st.count("0") == 28
-    assert "g" in second[0] and all("g" not in p for p in second[1:])
-    assert any(b[0] == "К группам" or b[0] == "‹ К группам"
-               for sc2 in second for row in sc2["k"] for b in row)
-    # up to 8 numbers in a row, and a grid button is the existing confirmation
-    assert max(len(r) for sc2 in second for r in sc2["k"]) <= 8
-    code = next(b[1] for row in second[0]["k"] for b in row if b[1].startswith("c:xo:"))
-    handlers.handle_widget_query(mr_bot, widget_query(code, qid="wq-x"))
-    ask = last_answer(fake_telegram)["sc"]
-    assert ask["t"] == "❌ Убрать деталь №1 из печати?"
-    assert any(b[2] == "y" and b[1].startswith("c:do:exclude:") for row in ask["k"] for b in row)
 
 
-def test_back_to_the_models_works_and_a_stale_model_token_says_so(mr_bot, fake_telegram):
-    copies_job(mr_bot, [("МОДЕЛЬ А", 5), ("МОДЕЛЬ Б", 5)])
-    first = pages_of(mr_bot, fake_telegram, "c:objects")[0]
-    group = next(r[0][1] for r in first["k"] if r[0][1].startswith("c:objgrp:"))
-    second = pages_of(mr_bot, fake_telegram, group)
-    back = next(b[1] for row in second[0]["k"] for b in row if b[0].endswith("К группам"))
-    assert back == "c:objects"
-    again = pages_of(mr_bot, fake_telegram, back)
-    assert again[0]["t"] == "✂️ Убрать объект"
-    handlers.handle_widget_query(mr_bot, widget_query(group, qid="wq-2"))   # the token is spent
-    assert "устарел" in last_answer(fake_telegram)["m"]
 
 
-def test_56_identical_copies_are_one_screen_of_numbers(mr_bot, fake_telegram):
-    model = "ПРУЖИННЫЙ ПРИЖИМ КАРТОНА — 28 ШТ"
-    copies_job(mr_bot, [(model, 56)], current=1)
-    pages = pages_of(mr_bot, fake_telegram, "c:objects")        # one model: the grid at once
-    assert len(pages) <= 2
-    assert_pages_fit(pages)
-    assert pages[0]["t"] == "✂️ " + model and pages[0]["x"] == ["Осталось 56 из 56"]
-    grid = numbers_of(pages)
-    assert sorted(grid) == list(range(1, 57)) and len(grid) == len(set(grid))
-    assert not any(b[0].endswith("К группам") for sc in pages for r in sc["k"] for b in r)
-    st = "".join(str(d[-1]) for d in decode(pages[0]["g"]))
-    assert st.count("4") == 55 and st.count("2") == 1            # all highlighted, one printing
-    assert max(len(r) for sc in pages for r in sc["k"]) <= 8
 
 
-def test_one_big_part_twenty_small_and_35_copies(mr_bot, fake_telegram):
-    groups = [("ОСНОВАНИЕ", 1)] + [("МЕЛОЧЬ %d" % i, 1) for i in range(20)] + [("ЗАЖИМ", 35)]
-    copies_job(mr_bot, groups, excluded=(25,), current=30)
-    pages = pages_of(mr_bot, fake_telegram, "c:objects")
-    assert_pages_fit(pages)
-    models = [b for sc in pages for r in sc["k"] for b in r if b[1].startswith("c:objgrp:")]
-    assert len(models) == 22                                      # all reachable
-    assert len({b[0] for b in models}) == len(models)
-    assert all("g" not in sc for sc in pages)                    # too many models for a map
-    clips = next(b for b in models if b[0].startswith("ЗАЖИМ"))
-    assert clips[0] == "ЗАЖИМ ×35 · осталось 34"
-    second = pages_of(mr_bot, fake_telegram, clips[1])
-    assert len(second) <= 2
-    assert_pages_fit(second)
-    grid = numbers_of(second)
-    assert sorted(grid) == [n for n in range(22, 57) if n != 25]
-    assert len(grid) == len(set(grid)) == 34
-    assert [b[0] for sc in second for r in sc["k"] for b in r if b[0].startswith("▶")] == ["▶ 30"]
-    assert "g" in second[0]
 
 
-def test_the_object_screen_outside_card_mode_is_unchanged(mr_bot, fake_telegram):
-    copies_job(mr_bot, [("МОДЕЛЬ А", 3), ("МОДЕЛЬ Б", 3)])
-    mr_bot.cfg["status_widget"] = False
-    handlers.show_objects(mr_bot, OWNER, force_new=True)
-    text, keyboard, has_photo = fake_telegram.sent[-1][1], fake_telegram.sent[-1][2], fake_telegram.sent[-1][3]
-    assert "Объекты текущей печати" in text and has_photo           # the PNG, the long list
-    assert sum(b["callback_data"].startswith("ask:exclude:") for r in keyboard for b in r) == 6
 
 
 # ------------------------------------------------------------ no numeric lists, ever
@@ -1413,42 +1283,6 @@ def test_the_walker_finds_numbers_in_lists():
     assert numeric_lists({"a": 5, "b": ["x", ["y"]], "c": {"d": "1"}}) == []
 
 
-def test_no_list_of_numbers_in_chat_data_or_any_answer_the_card_reads(mr_bot, fake_telegram):
-    """Telegram Desktop's widget sandbox reads an array of numbers out of
-    chat_data or an answer wrongly: elements come out joined by dots ("слой
-    20.45 из 45" for [20, 45] on the first card, "245.245°" on a heating ring).
-    Strings, and plain numbers outside a list, are fine. So nothing the bot
-    sends to the card may hold a list with a number in it."""
-    fullest_keyboard(mr_bot)
-    mr_bot.cfg["send_photo"] = True
-    mr_bot.grab = lambda max_age=0: bytes([255, 216]) + b"frame"
-    mr_bot.cfg["moonraker_macro_whitelist"] = ["PARK_NOZZLE", "CALIBRATE_BED_60"]
-    mr_bot.moonraker.list_macros = lambda: ["PARK_NOZZLE", "CALIBRATE_BED_60"]
-    mr_bot.status = status(13, "Очень_длинное_имя_файла_" * 5 + ".gcode", progress=5,
-                           TempOfNozzle=180, TempTargetNozzle=245, TempOfHotbed=40,
-                           TempTargetHotbed=70,
-                           CurrentFanSpeed={"ModelFan": 80, "BoxFan": 0, "AuxiliaryFan": 0})
-    mr_bot.status["PrintInfo"]["PrintSpeedPct"] = 125
-    data = mr_bot._card()
-    data.update(n="заметка", go="abcdefgh")
-    assert numeric_lists(json.loads(widget.encode(data))) == []
-    assert numeric_lists(data) == []
-    copies_job(mr_bot, [("МОДЕЛЬ А", 28), ("МОДЕЛЬ Б", 28)], excluded=(3,), current=10)
-    group = None
-    for query in ("c:files", "c:history", "c:macros", "c:diag", "c:mesh", "c:menu:fans",
-                  "c:menu:speed", "c:menu:temp", "c:objects", "ic", "ask:stop", "snap"):
-        handlers.handle_widget_query(mr_bot, widget_query(query, qid=query))
-        answer = last_answer(fake_telegram)
-        assert numeric_lists(answer) == [], (query, numeric_lists(answer))
-        if query == "c:objects":
-            group = next(b[1] for r in answer["sc"]["k"] for b in r
-                         if b[1].startswith("c:objgrp:"))
-    pages = pages_of(mr_bot, fake_telegram, group)            # the numbered grid and its map
-    assert pages and all(numeric_lists({"sc": sc}) == [] for sc in pages)
-    handlers.handle_widget_query(mr_bot, widget_query("c:mesh", qid="m"))
-    assert isinstance(last_answer(fake_telegram)["sc"]["g"]["m"]["z"], str)   # heights: a string
-    # the pager
-    assert numeric_lists({"k": [widget.nav_row("tok", 1, 3)]}) == []
 
 
 def test_the_heating_rings_and_the_air_arrive_as_strings(card_bot):
@@ -1488,87 +1322,14 @@ def live_like_job(mr_bot):
 K = 428 / 63.0
 
 
-def boxes_and_labels(fig):
-    """What the card's script would draw: the boxes (x, y, w, h) in canvas px and
-    the label rectangles, worked out here from the figure alone."""
-    out, labels = [], []
-    for n, state in enumerate(fig["s"]):
-        if state == "3":
-            continue
-        a = [objectmap.ALPHABET.index(c) * K for c in fig["b"][4 * n:4 * n + 4]]
-        box = (6 + a[0], 6 + a[1], a[2] - a[0], a[3] - a[1])
-        out.append((n + 1, state, box))
-        code = int(fig["n"][n], 36)
-        if not code:
-            continue
-        size = 20 + 8 * ((code - 1) // 5)
-        place = (code - 1) % 5
-        x, y, w, h = box
-        half = .3 * size * len(str(n + 1))
-        cx = x + w / 2 + (0, 0, 1, -1, 0)[place] * (w / 2 + 3 + half)
-        cy = y + h / 2 + (0, -1, 0, 0, 1)[place] * (h / 2 + 3 + .4 * size)
-        labels.append((n + 1, (cx - half, cy - .4 * size, cx + half, cy + .4 * size), place))
-    return out, labels
 
 
-def overlap(a, b):
-    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
-def test_a_zoomed_map_labels_most_copies_and_no_label_overlaps(mr_bot, fake_telegram):
-    names, shapes, state = live_like_job(mr_bot)
-    first = pages_of(mr_bot, fake_telegram, "c:objects")
-    assert len(first) >= 1 and "g" not in first[0]               # level one: no map at all
-    assert all("g" not in sc for sc in first)
-    group = next(b[1] for sc in first for r in sc["k"] for b in r
-                 if b[1].startswith("c:objgrp:") and b[0].startswith("АЛЬФА"))
-    pages = pages_of(mr_bot, fake_telegram, group)
-    assert_pages_fit(pages)
-    fig = pages[0]["g"]
-    assert len(fig["n"]) == len(fig["s"]) == len(names)
-    boxes, labels = boxes_and_labels(fig)
-    mine = [(n, box) for n, state_, box in boxes if state_ in "24"]
-    assert len(mine) == 27                                       # 28 copies minus the one gone
-    # the window holds every copy, and they fill it (not squeezed into a corner)
-    assert all(0 <= b[0] and b[0] + b[2] <= 440 and 0 <= b[1] and b[1] + b[3] <= 440
-               for _n, b in mine)
-    span = max(max(b[0] + b[2] for _n, b in mine) - min(b[0] for _n, b in mine),
-               max(b[1] + b[3] for _n, b in mine) - min(b[1] for _n, b in mine))
-    assert span > 0.75 * 428
-    # the other models that reach into the window are there, dimmed, without labels
-    dim = [n for n, state_, _b in boxes if state_ == "0"]
-    assert dim and all(not any(lab[0] == n for lab in labels) for n in dim)
-    # at least 70 % of the selected copies carry a label; the rest are on the grid
-    labelled = {n for n, _r, _p in labels}
-    assert len([n for n, _b in mine if n in labelled]) >= 0.7 * len(mine)
-    # every label is on the canvas, and no two overlap each other or any box but its own
-    for n, rect, place in labels:
-        assert rect[0] >= 0 and rect[1] >= 0 and rect[2] <= 440 and rect[3] <= 440, (n, rect)
-    for i, (n, rect, place) in enumerate(labels):
-        for m, other, _p in labels[i + 1:]:
-            assert not overlap(rect, other), (n, m)
-    for sc in pages:
-        assert numeric_lists({"sc": sc}) == []
 
 
-def test_a_lone_copy_and_a_whole_bed_view_still_label(mr_bot):
-    one = objectmap.figure(["A"], {"A": {"polygon": [(100, 100), (112, 100), (112, 112)]}},
-                           highlight={"A"})
-    assert one["s"] == "4" and one["n"] != "0"               # zoomed to a 40 mm window
-    whole = objectmap.figure(["A", "B"], {"A": {"polygon": [(10, 10), (60, 10), (60, 60)]},
-                                          "B": {"polygon": [(100, 100), (150, 100), (150, 150)]}})
-    assert whole["n"] == "bb"                                # big boxes: the largest size, centred
 
 
-def test_the_scripts_label_formulas_are_the_bots():
-    """The card draws what objectmap placed; its formulas must stay equal."""
-    html = widget.HTML
-    assert "z=20+8*((v-1)/5|0);p=(v-1)%5" in html and "v=parseInt(g.n[n],36)" in html
-    assert "[0,0,1,-1,0][p]*(w/2+3+.3*z*String(n+1).length)" in html
-    assert "[0,-1,0,0,1][p]*(h/2+3+.4*z)" in html
-    assert objectmap.FONTS == (20, 28, 40) and objectmap.PLACES == 5
-    assert (objectmap.CANVAS, objectmap.MARGIN, objectmap.SPAN) == (440, 6, 428)
-    assert 'width=440 height=440' in html and "B=428" in html
 
 
 def test_object_tokens_have_a_store_of_their_own(mr_bot):
@@ -1584,52 +1345,8 @@ def test_object_tokens_have_a_store_of_their_own(mr_bot):
 
 # ------------------------------------------------------------ the confirmation shows the part
 
-def test_the_exclusion_confirmation_shows_only_the_chosen_part(mr_bot, fake_telegram):
-    names, shapes, state = live_like_job(mr_bot)
-    first = pages_of(mr_bot, fake_telegram, "c:objects")
-    group = next(b[1] for sc in first for r in sc["k"] for b in r
-                 if b[1].startswith("c:objgrp:") and b[0].startswith("АЛЬФА"))
-    grid = pages_of(mr_bot, fake_telegram, group)
-    cells = [b for sc in grid for r in sc["k"] for b in r if b[1].startswith("c:xo:")]
-    chosen = next(b for b in cells if b[0] == "16")                 # a part without a drawn number
-    handlers.handle_widget_query(mr_bot, widget_query(chosen[1], qid="wq-c"))
-    answer = last_answer(fake_telegram)
-    assert len(fake_telegram.widget_answers[-1][1].encode("utf-8")) <= widget.ANSWER_LIMIT
-    sc = answer["sc"]
-    assert sc["t"] == "❌ Убрать деталь №16 из печати?" and "16" in " ".join(sc["x"])
-    fig = sc["g"]
-    # only the chosen part (number 16) is highlighted and labelled; the others are dimmed
-    boxes, labels = boxes_and_labels(fig)
-    assert [n for n, st, _b in boxes if st in "24"] == [16]
-    assert [n for n, _r, _p in labels] == [16]
-    assert sum(1 for _n, st, _b in boxes if st == "0") >= 27          # the rest of the model, dimmed
-    assert fig["s"][4] == "1"                                         # the one already gone
-    # unchanged flow: the second step is a one-use confirmation of that very part
-    yes = next(b for r in sc["k"] for b in r if b[1].startswith("c:do:exclude:"))
-    assert yes[2] == "y"
-    for width in (320, 430):
-        assert widget.estimate_height(sc, width) <= widget.MAX_HEIGHT_PX
-    assert numeric_lists(answer) == []
-    # the zoom is the model's window, not the part's: the 28 copies are all in the picture
-    assert len(boxes) >= 28
 
 
-def test_labels_ignore_boxes_but_never_overlap_each_other():
-    """Thin slanted parts have bounding boxes that overlap heavily; the numbers
-    are drawn on top, so only label-label overlaps and the canvas edge count."""
-    shapes = {}
-    names = []
-    for i in range(20):                                   # overlapping boxes in a row
-        name = "BAR.STEP_ID_%d_COPY_0" % i
-        shapes[name] = {"polygon": [(30 + 6 * i, 60), (50 + 6 * i, 60), (50 + 6 * i, 150),
-                                    (30 + 6 * i, 150)]}
-        names.append(name)
-    fig = objectmap.figure(names, shapes, highlight=set(names))
-    boxes, labels = boxes_and_labels(fig)
-    assert len(labels) >= 18
-    for i, (n, rect, _p) in enumerate(labels):
-        assert rect[0] >= 0 and rect[2] <= 440 and rect[1] >= 0 and rect[3] <= 440
-        assert all(not overlap(rect, other) for _m, other, _q in labels[i + 1:])
 
 
 # ------------------------------------------------------------ the confirmation says one part
@@ -1646,64 +1363,158 @@ def confirm_screen(mr_bot, fake_telegram, number="16"):
     return last_answer(fake_telegram)["sc"]
 
 
-def test_the_confirmation_names_one_part_not_the_model(mr_bot, fake_telegram):
-    sc = confirm_screen(mr_bot, fake_telegram)
-    assert sc["t"] == "❌ Убрать деталь №16 из печати?"
-    assert "Остальные 26 деталей этой модели продолжат печататься." in sc["x"]   # 28 - gone - this
-    assert "Напечатанная часть останется на столе, вернуть нельзя." in sc["x"]
-    assert not any("модел" in line and "Убрать" in line for line in [sc["t"]] + sc["x"])
-    # no line is cut with an ellipsis by the card (the limit is 60 characters)
-    assert all(len(line) <= widget.LINE_WIDTH for line in sc["x"]), sc["x"]
-    yes = next(b for r in sc["k"] for b in r if b[1].startswith("c:do:exclude:"))
-    assert yes[0] == "✅ Да, убрать деталь 16"
-    # the cancel button returns to the numbers of that very model, not to the card
-    cancel = next(b for r in sc["k"] for b in r if b[0].endswith("Отмена"))
-    assert cancel[1].startswith("c:objgrp:")
-    back = pages_of(mr_bot, fake_telegram, cancel[1])
-    assert back[0]["t"] == "✂️ АЛЬФА" and "g" in back[0]
+# ------------------------------------------------------------ the objects: the map picture, a grid of numbers
+
+def grid_pages(mr_bot, fake_telegram):
+    """Tap "Убрать объект" on the card; the picture goes in above, the card comes
+    back under it already showing the numbers: all pages of that screen."""
+    handlers.handle_widget_query(mr_bot, widget_query("c:objects", qid="obj"))
+    assert "выше" in last_answer(fake_telegram)["m"]               # answered first
+    data = card_of(fake_telegram.widgets[-1]["chat_data"])
+    assert data["go"]                                              # the new card opens the screen
+    return pages_of(mr_bot, fake_telegram, "pg:%s:0" % data["go"]), data
 
 
-def test_the_wording_agrees_with_the_count_and_the_result_says_part(mr_bot, fake_telegram):
-    names, shapes, state = copies_job(mr_bot, [("МОДЕЛЬ", 3), ("ДРУГАЯ", 2)], current=5)
-    sc = None
-    first = pages_of(mr_bot, fake_telegram, "c:objects")
-    group = next(b[1] for r in first[0]["k"] for b in r if b[0].startswith("МОДЕЛЬ"))
-    grid = pages_of(mr_bot, fake_telegram, group)
-    cell = next(b for r in grid[0]["k"] for b in r if b[0] == "1")
-    handlers.handle_widget_query(mr_bot, widget_query(cell[1], qid="a"))
+def grid_numbers(pages):
+    return [int("".join(ch for ch in b[0] if ch.isdigit()))
+            for sc in pages for row in sc["k"] for b in row if b[1].startswith("c:xo:")]
+
+
+def assert_pages_fit(pages):
+    for sc in pages:
+        for width in (320, 430):
+            assert widget.estimate_height(sc, width) <= widget.MAX_HEIGHT_PX
+        assert len(json.dumps({"sc": sc}, ensure_ascii=False,
+                              separators=(",", ":")).encode("utf-8")) <= widget.ANSWER_LIMIT
+
+
+def test_objects_post_the_map_picture_above_a_card_that_shows_the_numbers(mr_bot, fake_telegram):
+    names, shapes, state = copies_job(mr_bot, [("МОДЕЛЬ А", 28), ("МОДЕЛЬ Б", 28)],
+                                      excluded=(3, 12), current=10)
+    old_card = storage.message_id()
+    pages, data = grid_pages(mr_bot, fake_telegram)
+    # the picture is a message of its own, a PNG, and the card was sent after it
+    [(chat, caption, keyboard, has_photo)] = fake_telegram.sent
+    assert has_photo and keyboard is None and "Номера деталей" in caption
+    assert storage.message_id() > storage.load_state()["snapshot_message"][0]
+    assert (OWNER, old_card) in fake_telegram.deleted and fake_telegram.widgets[-1]["silent"] is True
+    assert mr_bot.picture_kind == "objects"
+    # the grid: the numbers of the picture, 8 to a row, the printing one marked, the gone omitted
+    first = pages[0]
+    assert first["t"] == "✂️ Убрать объект" and first["x"][0] == "Осталось 54 из 56 · номера как на картинке"
+    numbers = grid_numbers(pages)
+    assert sorted(numbers) == [n for n in range(1, 57) if n not in (3, 12)]
+    assert len(numbers) == len(set(numbers))
+    assert [b[0] for sc in pages for r in sc["k"] for b in r if b[0].startswith("▶")] == ["▶ 10"]
+    assert max(len(r) for sc in pages for r in sc["k"]) <= 8
+    assert_pages_fit(pages)
+    assert numeric_lists({"sc": first}) == []
+    assert not any("g" in sc for sc in pages)                     # no canvas drawing any more
+
+
+def test_the_grid_is_exactly_the_numbers_the_picture_draws(mr_bot, fake_telegram):
+    names, shapes, state = copies_job(mr_bot, [("МОДЕЛЬ А", 28), ("МОДЕЛЬ Б", 28)],
+                                      excluded=(3, 12), current=10)
+    drawn = {number for number, _name, _shape in objectmap.numbered(names, shapes)}
+    pages, _data = grid_pages(mr_bot, fake_telegram)
+    assert set(grid_numbers(pages)) == drawn - {3, 12}            # the picture shows the gone too
+    # a part without an outline has no number on the picture
+    shapes.pop(names[0])
+    assert 1 not in {n for n, _x, _y in objectmap.numbered(names, shapes)}
+
+
+def test_the_grid_matches_the_picture_on_live_job_data(mr_bot, fake_telegram):
+    """A local check on a real job's data, if it is at hand; not kept in the repo."""
+    import os
+    live = os.environ.get("CENTAURI_LIVE_OBJECTS")
+    if not live or not os.path.exists(live):
+        pytest.skip("no local live data")
+    state = json.load(open(live, encoding="utf-8"))
+    mr_bot.moonraker.exclude_object_state = lambda: state
+    drawn = {n for n, _name, _shape in objectmap.numbered(state["Objects"], state["Shapes"])}
+    pages, _data = grid_pages(mr_bot, fake_telegram)
+    assert set(grid_numbers(pages)) == drawn - {i for i, name in enumerate(state["Objects"], 1)
+                                                if name in state["ExcludedObjects"]}
+    assert_pages_fit(pages)
+
+
+def test_a_number_asks_which_part_and_cancel_goes_back_to_the_numbers(mr_bot, fake_telegram):
+    copies_job(mr_bot, [("МОДЕЛЬ А", 10), ("МОДЕЛЬ Б", 6)], current=2)
+    pages, _data = grid_pages(mr_bot, fake_telegram)
+    cell = next(b for r in pages[0]["k"] for b in r if b[0] == "7")
+    pictures = len(fake_telegram.sent)
+    handlers.handle_widget_query(mr_bot, widget_query(cell[1], qid="ask"))
     sc = last_answer(fake_telegram)["sc"]
-    assert "Остальные 2 детали этой модели продолжат печататься." in sc["x"]
-    # outside the card mode it is the same single part, the same words
-    mr_bot.cfg["status_widget"] = False
-    handlers.show_objects(mr_bot, OWNER, force_new=True)
-    keyboard = fake_telegram.sent[-1][2]
-    ask = next(b["callback_data"] for r in keyboard for b in r
-               if b["callback_data"].startswith("ask:exclude:"))
-    query = {"id": "cb", "data": ask, "from": {"id": OWNER, "is_bot": False},
-             "message": {"message_id": 7, "chat": {"id": OWNER}}}
-    handlers.handle_callback(mr_bot, query)
-    text, kb = fake_telegram.edited[-1][2], fake_telegram.edited[-1][3]
-    assert text.startswith("❌ <b>Убрать деталь №") and "Отмена" in kb[0][1]["text"]
-    assert kb[0][1]["callback_data"] == "refresh" and "убрать деталь" in kb[0][0]["text"]
-    assert handlers.ui.plural(21, "деталь", "детали", "деталей") == "деталь"
+    assert sc["t"] == "❌ Убрать деталь №7 из печати?"
+    yes = next(b for r in sc["k"] for b in r if b[1].startswith("c:do:exclude:"))
+    assert yes[0] == "✅ Да, убрать деталь 7"
+    cancel = next(b for r in sc["k"] for b in r if b[0].endswith("Отмена"))
+    assert cancel[1] == "c:objgrid"
+    handlers.handle_widget_query(mr_bot, widget_query(cancel[1], qid="back"))
+    back = last_answer(fake_telegram)["sc"]
+    assert back["t"] == "✂️ Убрать объект" and back["x"][0].startswith("Осталось 16 из 16")
+    assert len(fake_telegram.sent) == pictures                     # the picture was not posted again
+    assert mr_bot.picture_kind == "objects"
 
 
-def test_the_confirmation_map_is_the_level_two_window_with_the_part_and_its_neighbours(
-        mr_bot, fake_telegram):
-    names, shapes, state = live_like_job(mr_bot)
-    first = pages_of(mr_bot, fake_telegram, "c:objects")
-    group = next(b[1] for sc in first for r in sc["k"] for b in r
-                 if b[1].startswith("c:objgrp:") and b[0].startswith("АЛЬФА"))
-    level2 = pages_of(mr_bot, fake_telegram, group)[0]["g"]
-    confirm = confirm_screen(mr_bot, fake_telegram, "3")["g"]
-    assert confirm["b"] == level2["b"]                      # the very same window and boxes
-    assert confirm["s"].count("4") == 1 and confirm["s"].count("0") >= 40
-    assert confirm["n"].count("0") == len(confirm["n"]) - 1  # one label: the chosen part
+def test_the_picture_goes_when_the_owner_leaves_or_confirms(mr_bot, fake_telegram):
+    copies_job(mr_bot, [("МОДЕЛЬ А", 10), ("МОДЕЛЬ Б", 6)])
+    grid_pages(mr_bot, fake_telegram)
+    picture = storage.load_state()["snapshot_message"][0]
+    handlers.handle_widget_query(mr_bot, widget_query("lv", qid="lv"))   # the card's "back"
+    assert (OWNER, picture) in fake_telegram.deleted and mr_bot.picture_kind is None
+    assert storage.load_state()["snapshot_message"] is None
+    # another screen's button also takes it down
+    grid_pages(mr_bot, fake_telegram)
+    picture = storage.load_state()["snapshot_message"][0]
+    handlers.handle_widget_query(mr_bot, widget_query("c:files", qid="f"))
+    assert (OWNER, picture) in fake_telegram.deleted
+    # and a confirmed exclusion
+    grid_pages(mr_bot, fake_telegram)
+    picture = storage.load_state()["snapshot_message"][0]
+    pages = pages_of(mr_bot, fake_telegram, "pg:%s:0" % card_of(
+        fake_telegram.widgets[-1]["chat_data"])["go"])
+    cell = next(b for r in pages[0]["k"] for b in r if b[0] == "3")
+    mr_bot.status = printing(ExcludeObject={"Objects": [], "ExcludedObjects": []})
+    handlers.handle_widget_query(mr_bot, widget_query(cell[1], qid="ask"))
+    yes = next(b for r in last_answer(fake_telegram)["sc"]["k"] for b in r
+               if b[1].startswith("c:do:exclude:"))
+    mr_bot.perform = lambda action, value=None: (True, "ok")
+    handlers.handle_widget_query(mr_bot, widget_query(yes[1], qid="yes"))
+    assert (OWNER, picture) in fake_telegram.deleted
 
 
-def test_dimmed_boxes_are_drawn_with_a_visible_outline():
-    """Dimmed parts were invisible (outline at .35). The canvas constants are
-    state 0..4: fill alpha, then stroke alpha."""
+def test_a_camera_frame_is_not_taken_down_by_leaving_a_screen(mr_bot, fake_telegram):
+    mr_bot.cfg["send_photo"] = True
+    mr_bot.grab = lambda max_age=0: bytes([255, 216]) + b"frame"
+    handlers.handle_widget_query(mr_bot, widget_query("snap", qid="s"))
+    frame = storage.load_state()["snapshot_message"][0]
+    handlers.handle_widget_query(mr_bot, widget_query("c:files", qid="f"))
+    handlers.handle_widget_query(mr_bot, widget_query("lv", qid="lv"))
+    assert (OWNER, frame) not in fake_telegram.deleted
+
+
+def test_the_bed_mesh_is_a_picture_above_the_card_with_its_text_on_it(mr_bot, fake_telegram):
+    handlers.handle_widget_query(mr_bot, widget_query("c:mesh", qid="m"))
+    assert "выше" in last_answer(fake_telegram)["m"]
+    [(_chat, caption, _kb, has_photo)] = fake_telegram.sent
+    assert has_photo and "Карта стола" in caption and mr_bot.picture_kind == "mesh"
+    data = card_of(fake_telegram.widgets[-1]["chat_data"])
+    sc = pages_of(mr_bot, fake_telegram, "pg:%s:0" % data["go"])[0]
+    assert sc["t"] == "🗺 Карта высот стола" and len(sc["x"]) == 2 and "g" not in sc
+
+
+def test_the_widget_has_no_canvas_any_more():
     html = widget.HTML
-    assert "[.12,.25,.85,0,.4][s]" in html and "[.6,.6,1,1,1][s]" in html
+    assert "<canvas" not in html and "getContext" not in html and "fillRect" not in html
+    assert "ALPHABET" not in html and "objectmap" not in dir(widget)
+    assert numeric_lists({"sc": widget.screen("<b>T</b>", [])}) == []
 
+
+def test_the_height_model_counts_wrapped_lines_and_wrapped_rows():
+    plain = {"t": "T", "x": [], "k": []}
+    assert widget.estimate_height(plain) == widget.PAGE_BASE_PX
+    long_line = dict(plain, x=["ж" * 45])                # wraps at 320 px, not at 430
+    assert widget.estimate_height(long_line, 320) > widget.estimate_height(long_line, 430)
+    speeds = dict(plain, k=[[[l, "c:x", ""] for l in ("50%", "75%", "100%", "125%", "150%")]])
+    assert widget.estimate_height(speeds, 320) >= widget.PAGE_BASE_PX + widget.ROW_PX

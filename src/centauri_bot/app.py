@@ -51,7 +51,7 @@ class ScreenCapture(object):
         self.keyboard = None
         self.toast = None
         self.close = False      # the handler went back to the status
-        self.figure = None      # a drawing for the card's canvas, if the screen has one
+        self.reopen = None      # a picture to post and a screen for the card under it
         self.panel = {}         # bot.keyboard() once per tap: {detailed: keyboard}
 
     def screen(self, text, keyboard):
@@ -188,6 +188,7 @@ class Bot(object):
         self.widget_sent_at = 0.0
         self.widget_retry_at = 0.0
         self.snapshot_checked_at = 0.0
+        self.picture_kind = None   # what the picture slot holds: frame, objects, mesh
         self.card_upgraded = False  # an outdated card is replaced once per process
         # Screens the card shows by token (see widget.paginate): the answer to
         # a tap too big for one answer, and what the bot shows by itself.
@@ -451,13 +452,6 @@ class Bot(object):
     def resolve_object_choice(self, token):
         return self.object_tokens.consume("exclude-choice", token)
 
-    def prepare_object_groups(self, labels):
-        """Short tokens for the model groups of the objects screen."""
-        return [self.object_tokens.issue("exclude-group", label) for label in labels]
-
-    def resolve_object_group(self, token):
-        return self.object_tokens.consume("exclude-group", token)
-
     def issue_object_confirmation(self, value):
         return self.object_tokens.issue("exclude-object", value)
 
@@ -692,7 +686,7 @@ class Bot(object):
     # -------------------------------------------------- the single message
 
     def refresh_main(self, force_new=False, text=None, photo=None, keyboard=None,
-                     header="", quiet=False, figure=None):
+                     header="", quiet=False):
         """Keep exactly one status message in the chat.
 
         Edits in place; with force_new it is recreated as the last message in
@@ -723,8 +717,7 @@ class Bot(object):
         too: ``text`` and ``keyboard`` are stored under a token, the card's
         state carries it as "go", and the card asks for the screen by itself
         and draws it. Its caption is the screen's first line, which is what
-        notifications and the chat list show. ``figure`` is a drawing for the
-        screen (see widget.screen).
+        notifications and the chat list show.
         """
         cap = self.capturing()
         if cap is not None:
@@ -737,7 +730,6 @@ class Bot(object):
                 if photo:
                     self.post_picture(photo)
                 cap.screen(text, keyboard)
-                cap.figure = figure
             return cap.mid
         with self.main_lock:
             mid = storage.message_id()
@@ -754,7 +746,7 @@ class Bot(object):
             promote = bool(live and mid and kind != widget.KIND and not force_new)
             cache = {}
             if as_screen:
-                self.go = self.store_screen(widget.screen(text, keyboard, figure=figure))
+                self.go = self.store_screen(widget.screen(text, keyboard))
 
             def body():
                 if "body" not in cache:
@@ -915,10 +907,12 @@ class Bot(object):
             log.warning("status did not move under the frame: %r", e)
         return True
 
-    def post_picture(self, photo, title="🖼"):
+    def post_picture(self, photo, title="🖼", kind="frame"):
         """A picture beside the card: the camera frame, or a screen that is a
         picture (the bed map, the objects). A widget cannot show one. Only the
-        newest stays, and it goes away after SNAPSHOT_TTL_SEC."""
+        newest stays, and it goes away after SNAPSHOT_TTL_SEC. ``kind`` says
+        what it is: "frame", or "objects" / "mesh", which also go away when the
+        owner leaves the screen they belong to (drop_picture)."""
         answer = self.api._api.send_message(
             self.owner, "%s · уберу через %d мин" % (title, self.SNAPSHOT_TTL_SEC // 60),
             photo=photo)
@@ -927,10 +921,34 @@ class Bot(object):
         old = storage.load_state().get("snapshot_message")
         storage.update_state(snapshot_message=[answer["result"]["message_id"],
                                                self.clock() + self.SNAPSHOT_TTL_SEC])
+        self.picture_kind = kind
         if old:
             self.api._api.delete_message(self.owner, old[0])
         return True
 
+    def drop_picture(self):
+        """Take down the picture of a screen the owner has left (the bed map
+        of the objects, the mesh). A camera frame is not touched: it stays for
+        its few minutes."""
+        if self.picture_kind not in ("objects", "mesh"):
+            return
+        self.picture_kind = None
+        snap = storage.load_state().get("snapshot_message")
+        if snap:
+            storage.update_state(snapshot_message=None)
+            self.api.delete_message(self.owner, snap[0])
+
+    def open_picture_screen(self, photo, title, kind, text, keyboard):
+        """A screen that has a picture: the picture goes in first, then the
+        card is sent again under it (quietly) already showing the screen, so
+        the picture is on top and the buttons are under the thumb. Without a
+        picture (it could not be drawn) only the screen is shown."""
+        if photo:
+            self.post_picture(photo, title, kind)
+        try:
+            self.refresh_main(force_new=True, quiet=True, text=text, keyboard=keyboard)
+        except Exception as e:
+            log.warning("screen with a picture did not open: %r", e)
     def run_screen(self, handler):
         """Run an ordinary button's handler for a tap on the card, and return
         what it would have shown as a ScreenCapture."""
@@ -955,6 +973,7 @@ class Bot(object):
         if not snap or self.clock() < float(snap[1]):
             return
         storage.update_state(snapshot_message=None)
+        self.picture_kind = None
         self.api.delete_message(self.owner, snap[0])
 
     def _send_widget(self, kb, header, silent=False, caption=None):

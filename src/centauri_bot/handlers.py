@@ -128,15 +128,10 @@ def _frame(bot, on_card, max_age=5):
     return bot.grab(max_age=max_age)
 
 
-def _show_readonly(bot, chat, mid, is_photo, force_new, text, keyboard, photo=None,
-                   figure=None):
+def _show_readonly(bot, chat, mid, is_photo, force_new, text, keyboard, photo=None):
     if force_new:
-        bot.refresh_main(force_new=True, text=text, keyboard=keyboard, photo=photo,
-                         figure=figure)
+        bot.refresh_main(force_new=True, text=text, keyboard=keyboard, photo=photo)
     elif mid:
-        cap = bot.capturing()
-        if cap is not None:
-            cap.figure = figure
         # ``picture``: the photo is the screen itself (bed map, objects), not
         # a camera frame, so it must be shown even if that replaces the card.
         bot.edit_main_from_callback(mid, text, keyboard=keyboard, photo=photo,
@@ -158,18 +153,16 @@ def show_mesh(bot, chat, mid=None, is_photo=False, force_new=False):
         _show_readonly(bot, chat, mid, is_photo, force_new,
                        "⚠️ Карту стола получить не вышло: %s" % result, ui.kb_back())
         return
-    photo = figure = None
+    on_card = _figures(bot, force_new)
     try:
-        if _figures(bot, force_new):
-            figure = heightmap.figure(result["points"])
-            text = ui.height_map_text(result, compact=True)
-        else:
-            photo = heightmap.render(result["points"])
-            text = ui.height_map_text(result)
+        photo = heightmap.render(result["points"])
+        text = ui.height_map_text(result, compact=on_card)
     except (KeyError, TypeError, ValueError) as e:
-        photo, figure, text = None, None, "⚠️ Сохранённая сетка стола некорректна: %s" % e
-    _show_readonly(bot, chat, mid, is_photo, force_new, text, ui.kb_back(), photo=photo,
-                   figure=figure)
+        photo, on_card, text = None, False, "⚠️ Сохранённая сетка стола некорректна: %s" % e
+    if on_card:
+        _open_with_picture(bot, photo, "🗺 Карта стола", "mesh", text, ui.kb_back())
+        return
+    _show_readonly(bot, chat, mid, is_photo, force_new, text, ui.kb_back(), photo=photo)
 
 
 def show_macros(bot, chat, mid=None, is_photo=False, force_new=False):
@@ -211,77 +204,39 @@ def show_bed_calibration(bot, chat, mid=None, is_photo=False, force_new=False):
 GRID_PER_ROW = 8
 
 
-def _objects_on_card(bot, state, names, excluded, group):
-    """The objects screen for the live card: (text, rows, figure).
+def _open_with_picture(bot, photo, title, kind, text, keyboard):
+    """A screen on the card that goes with a picture. The picture is a message
+    of its own and must end up above the card, so the card is sent again below
+    it. During a tap that waits for its answer nothing is sent: the screen is
+    kept for _card_screen, which answers first and then does it."""
+    cap = bot.capturing()
+    args = dict(photo=photo, title=title, kind=kind, text=text, keyboard=keyboard)
+    if cap is not None:
+        cap.reopen = args
+    else:
+        bot.open_picture_screen(**args)
 
-    Parts of one model are many copies with the same name. Level one lists the
-    models ("<name> ×28 · осталось 27"); a tap opens level two, whose title is
-    the model, whose map highlights its copies with their numbers, and whose
-    buttons are a grid of those numbers. With a single model level two comes
-    at once. The exclusion itself is the confirmation flow it always was: one
-    token for the exact part, then a second one for the exact action.
-    """
-    shapes = state.get("Shapes") or {}
+
+def _objects_grid(bot, state, names, excluded):
+    """The card's objects screen: (text, rows). A button for every remaining
+    part, carrying its place in the job's list of objects: the number on the
+    map picture. The part printing now is marked, the excluded ones are gone.
+    Each button is the confirmation flow it always was."""
     current = state.get("CurrentObject") or ""
     labels = ui.object_labels(names)
-    groups = {}
-    for name in names:
-        groups.setdefault(ui.object_label(name), []).append(name)
-    live = [label for label, members in groups.items()
-            if any(member not in excluded for member in members)]
-    left = sum(1 for name in names if name not in excluded)
-    if group not in live:
-        group = live[0] if len(live) == 1 else None
-    back = ui.kb_back()
-    if group is None:
-        refs = bot.prepare_object_groups(live)
-        rows = [[{"text": "%s ×%d · осталось %d" % (
-                    label, len(groups[label]),
-                    sum(1 for n in groups[label] if n not in excluded)),
-                  "callback_data": "objgrp:" + ref}]
-                for label, ref in zip(live, refs)]
-        text = ("<b>✂️ Убрать объект</b>\nОсталось %d из %d · моделей %d"
-                % (left, len(names), len(live)))
-        # No map here: a square of dimmed boxes above a list told nothing.
-        return text, rows + back, None
-    members = groups[group]
-    mine = [name for name in members if name not in excluded]
-    number = {name: i for i, name in enumerate(names, 1)}
+    active = [name for name in names if name not in excluded]
     refs = bot.prepare_object_choices(
         [{"name": name, "filename": state.get("Filename") or "", "label": labels[name]}
-         for name in mine])
-    per_row = GRID_PER_ROW if len(names) < 100 else 6
+         for name in active])
+    number = {name: i for i, name in enumerate(names, 1)}
     cells = [{"text": ("▶ %d" if name == current else "%d") % number[name],
-              "callback_data": "xo:" + ref} for name, ref in zip(mine, refs)]
+              "callback_data": "xo:" + ref} for name, ref in zip(active, refs)]
+    per_row = GRID_PER_ROW if len(names) < 100 else 6
     rows = [cells[i:i + per_row] for i in range(0, len(cells), per_row)]
-    if len(live) > 1:
-        rows.append([{"text": "‹ К группам", "callback_data": "objects"}])
-    text = ("<b>✂️ %s</b>\nОсталось %d из %d"
-            % (escape(group), len(mine), len(members)))
-    return text, rows + back, _figure(names, shapes, excluded, current, set(mine))
-
-
-def _figure(names, shapes, excluded, current, highlight, zoom=None):
-    try:
-        return objectmap.figure(names, shapes, excluded, current, highlight, zoom)
-    except (KeyError, TypeError, ValueError) as e:
-        log.info("object map not drawn: %s", e)
-        return None
-
-
-def _confirm_figure(bot, value):
-    """The picture under "Убрать №16?": the model's window with only that part
-    highlighted (and numbered), so it is clear which one goes even when its
-    number was not drawn on the grid's map."""
-    ok, state = bot.exclude_objects()
-    names = list(state.get("Objects") or []) if ok else []
-    name = value.get("name")
-    if name not in names:
-        return None
-    model = ui.object_label(name)
-    return _figure(names, state.get("Shapes") or {}, set(state.get("ExcludedObjects") or []),
-                   state.get("CurrentObject") or "", {name},
-                   {other for other in names if ui.object_label(other) == model})
+    # a short title (the "Назад" button shares its row on a 320 px bubble), the count below
+    text = ("<b>✂️ Убрать объект</b>" + chr(10) + "Осталось %d из %d · номера как на картинке"
+            % (len(active), len(names)))
+    return text, rows + ui.kb_back()
 
 
 def _exclusion_question(bot, value):
@@ -309,7 +264,7 @@ def _exclusion_question(bot, value):
     return "\n".join(lines), number
 
 
-def show_objects(bot, chat, mid=None, is_photo=False, force_new=False, group=None):
+def show_objects(bot, chat, mid=None, is_photo=False, force_new=False, picture=True):
     ok, state = bot.exclude_objects()
     if not ok:
         _show_readonly(bot, chat, mid, is_photo, force_new,
@@ -318,7 +273,7 @@ def show_objects(bot, chat, mid=None, is_photo=False, force_new=False, group=Non
     names = list(state.get("Objects") or [])
     excluded = set(state.get("ExcludedObjects") or [])
     active = [name for name in names if name not in excluded]
-    photo = figure = None
+    photo = None
     if state.get("PrintState") not in ("printing", "paused"):
         text = "✂️ Сейчас нет активной печати с отдельными объектами."
         rows = ui.kb_back()
@@ -327,7 +282,18 @@ def show_objects(bot, chat, mid=None, is_photo=False, force_new=False, group=Non
                 "объектов или остался только один.")
         rows = ui.kb_back()
     elif _figures(bot, force_new):
-        text, rows, figure = _objects_on_card(bot, state, names, excluded, group)
+        text, rows = _objects_grid(bot, state, names, excluded)
+        if picture:
+            # the picture of the bed, numbered: above the card, which comes back under it
+            try:
+                photo = objectmap.render(names, state.get("Shapes") or {},
+                                         excluded, state.get("CurrentObject") or "")
+            except (KeyError, TypeError, ValueError) as e:
+                log.info("object map not drawn: %s", e)
+                photo = None
+            _open_with_picture(bot, photo, "✂️ Номера деталей", "objects", text, rows)
+            return
+        photo = None
     else:
         labels = ui.object_labels(names)
         values = [{"name": name, "filename": state.get("Filename") or "",
@@ -346,8 +312,7 @@ def show_objects(bot, chat, mid=None, is_photo=False, force_new=False, group=Non
                     "Номера на кнопках — те же, что на схеме стола."
                     % (len(active), len(names)))
         rows = ui.kb_objects(active, refs, state.get("CurrentObject") or "", names)
-    _show_readonly(bot, chat, mid, is_photo, force_new, text, rows, photo=photo,
-                   figure=figure)
+    _show_readonly(bot, chat, mid, is_photo, force_new, text, rows, photo=photo)
 
 
 def handle_callback(bot, query):
@@ -501,13 +466,10 @@ def handle_callback(bot, query):
         show_objects(bot, chat, mid, is_photo)
         return
 
-    if data.startswith("objgrp:"):
-        label = bot.resolve_object_group(data.split(":", 1)[1])
-        if not label:
-            bot.api.answer_callback(query["id"], "Список устарел. Открой объекты заново.")
-            return
+    if data == "objgrid":
+        # back from a confirmation to the numbers: the picture is still there
         bot.api.answer_callback(query["id"])
-        show_objects(bot, chat, mid, is_photo, group=label)
+        show_objects(bot, chat, mid, is_photo, picture=False)
         return
 
     if data.startswith("menu:"):
@@ -713,15 +675,12 @@ def _ask_confirmation(bot, chat, mid, query, what, is_photo):
         token = bot.issue_object_confirmation(value)
         bot.api.answer_callback(query["id"])
         cap = bot.capturing()
-        if cap is not None:
-            cap.figure = _confirm_figure(bot, value)      # a tap on the card: show the part
         text, number = _exclusion_question(bot, value)
         keyboard = ui.kb_confirm("exclude:%s" % token,
                                  "убрать деталь %s" % number if number else "убрать деталь")
         if cap is not None:
-            # "Отмена" goes back to that model's numbers, not to the main card
-            back = bot.prepare_object_groups([ui.object_label(value["name"])])[0]
-            keyboard[0][1] = {"text": "↩️ Отмена", "callback_data": "objgrp:" + back}
+            # "Отмена" goes back to the numbers, not to the main card
+            keyboard[0][1] = {"text": "↩️ Отмена", "callback_data": "objgrid"}
         bot.api.edit_message(chat, mid, text, keyboard=keyboard, is_photo=is_photo)
         return
     if what.startswith("macro:"):
@@ -964,9 +923,16 @@ def handle_widget_query(bot, query):
         log.info("widget query from a foreign chat was refused")
         return
 
-    if data == "ic":
-        # The card's icon table, asked for once after its first draw.
-        raw(widget.icons_answer())
+    if data == "lv":
+        # the card's own "back" was pressed: a picture that went with the screen goes
+        bot.defer(bot.drop_picture)
+        reply()
+        return
+
+    if data == "ic" or data.startswith("ic:"):
+        # The card's icon table, in pieces, asked for once after its first draw.
+        tail = data[3:]
+        raw(widget.icons_answer(int(tail) if tail.isdigit() else 0))
         return
 
     if data.startswith("ask:"):
@@ -1085,6 +1051,13 @@ def _card_screen(bot, query, target, reply):
     if panel is None and cap.keyboard:
         panel = bot.keyboard()
 
+    # A screen with a picture: answer now, then post the picture and send the
+    # card again under it, showing the screen (the picture ends up above it).
+    if cap.reopen is not None:
+        reply(m="Картинка выше, номера — на карточке ниже")
+        bot.defer(lambda: bot.open_picture_screen(**cap.reopen))
+        return
+
     # Back to the card: the handler redrew the status, or a screen with no
     # buttons of its own (an action's result), or the usual panel again.
     if cap.close or cap.text is None or not cap.keyboard or cap.keyboard == panel:
@@ -1093,7 +1066,7 @@ def _card_screen(bot, query, target, reply):
         reply(close=1, m=note)
     else:
         title = next((t for prefix, t in SCREEN_TITLES if target.startswith(prefix)), None)
-        sc = widget.screen(cap.text, cap.keyboard, title=title, figure=cap.figure)
+        sc = widget.screen(cap.text, cap.keyboard, title=title)
         # "Читаю список…" was said while the screen was prepared; under the
         # finished screen it would only stay behind. Results are kept (above).
         pages = widget.paginate(sc, lambda: bot.store_screen(sc))
@@ -1101,7 +1074,11 @@ def _card_screen(bot, query, target, reply):
             reply.raw(pages[0])
         else:
             reply(m="Экран не поместился")
-    # After the answer, never before it: bring the card's numbers up to date.
+    # After the answer, never before it: bring the card's numbers up to date,
+    # and take down the picture of a screen the owner has left (a confirmed
+    # exclusion included; a cancelled one goes back to the numbers).
+    if not target.startswith(("objects", "objgrid", "xo:", "ask:exclude:")):
+        bot.defer(bot.drop_picture)
     try:
         bot.push_widget()
     except Exception as e:

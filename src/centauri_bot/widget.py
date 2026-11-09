@@ -31,16 +31,13 @@ Telegram refuses it. That is app.py, which falls back to the ordinary message.
 import datetime
 import html as _html
 import json
-import logging
 import re
 import zlib
 
 from . import printer_state as ps
 
 
-log = logging.getLogger(__name__)
-
-VERSION = 13
+VERSION = 14
 
 # storage.message_kind() of a card sent with this very HTML. A sent widget's
 # HTML can never be replaced, so a card from an older version is not ours to
@@ -92,51 +89,54 @@ HTML = r"""<style>
 :root{--g:light-dark(rgba(0,0,0,.05),rgba(255,255,255,.07));--l:light-dark(rgba(0,0,0,.12),rgba(255,255,255,.14));--b:light-dark(rgba(255,255,255,.7),rgba(255,255,255,.1));--ac:var(--tg-theme-button-color)}
 [hidden]{display:none!important}
 body{font-variant-numeric:tabular-nums;margin:0;padding:8px;color:var(--tg-theme-text-color)}
-.cd{border-radius:18px;padding:12px;border:1px solid var(--l);background:light-dark(rgba(60,120,255,.08),rgba(90,150,255,.14))}
+.cd{border-radius:18px;padding:12px;border:1px solid var(--l);background:linear-gradient(140deg,light-dark(rgba(60,120,255,.12),rgba(90,150,255,.2)),var(--g) 65%)}
 .k-w{--ac:#e5a50a}.k-x{--ac:var(--tg-theme-destructive-text-color)}.k-i{--ac:var(--tg-theme-hint-color)}
-.top,.rg b,.hd,.a,.rw,.ht,.tl{display:flex}.top,.rg b,.hd,.tl{align-items:center}
-.rg b{justify-content:center}.top{gap:12px}
-.rg{position:relative;width:70px;height:70px;flex:none;color:var(--ac)}
+.rg b,.hd,.a,.rw,.tl{display:flex}.rg b,.hd,.tl{align-items:center}
+.rg b,.tl{justify-content:center}.tl{flex-direction:column;gap:4px}
+.ht{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,90px);justify-content:center;gap:8px}
+.rg{position:relative;width:76px;height:76px;color:var(--ac)}
 .rg>svg,.rg b{position:absolute;inset:0;width:100%;height:100%}
-.rg>svg{stroke-width:3.6}.rg b{color:var(--tg-theme-text-color);font-size:1.2em}
-.tl{gap:8px;flex:1}.tl .rg{width:38px;height:38px}.ht{gap:10px;margin-top:10px}
-svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8}
+.rg>svg{stroke-width:3.6}.rg b{color:var(--tg-theme-text-color);font-size:1.05em}
+.tl span{font-size:.82em}
+svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 button svg{width:16px;height:16px;margin-right:5px}
-@media(prefers-reduced-motion:no-preference){.hot .rg,.re{animation:pu 2s infinite}@keyframes pu{50%{opacity:.45}}}
-.k-i #rg{display:none}
-.mn{flex:1;min-width:0}
+@media(prefers-reduced-motion:no-preference){.hot .rg,.re{animation:pu 2s infinite}.fa1{animation:sp 1.5s linear infinite}@keyframes pu{50%{opacity:.45}}@keyframes sp{to{transform:rotate(1turn)}}}
+.k-i #tp{display:none}
+.mn{margin-top:8px;text-align:center}
 .s{font-size:1.15em;font-weight:700;color:var(--ac)}
-.f,.h,.u,.n,button:disabled{color:var(--tg-theme-hint-color)}
+.f,.h,.u,.n,.tl span,button:disabled{color:var(--tg-theme-hint-color)}
 .f{font-size:.88em}
 .l{margin-top:4px}.h{font-size:.85em}
-.cp{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.cp{display:flex;flex-wrap:wrap;justify-content:center;gap:6px;margin-top:10px}
 .cp span{padding:4px 10px;border-radius:99px;background:var(--g);border:1px solid var(--l);font-size:.85em}
 .a,.rw{gap:6px;margin-top:8px}.a button,.rw button{flex:1}
 .g{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}.g .y{grid-column:1/-1}
 .f,.hd b,button{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 button{background:var(--b);border:1px solid var(--l);color:inherit;border-radius:12px;padding:9px 6px;font:inherit;font-size:.9em;min-width:0}
+button:active{background:var(--l)}
 .rw .k:not(:only-child){flex:none;padding:9px 14px}
 .rw button:disabled{flex:2;padding:9px 6px 0}
 .a,.wr{flex-wrap:wrap}.a button,.wr button{min-width:max-content;padding-inline:4px}
 @media(max-width:399px){.a button{flex:1 1 40%}}
-#cz{width:220px;max-width:100%;height:auto;display:block;margin:8px auto 0;border-radius:12px;background:var(--g)}
 button.k{color:var(--tg-theme-destructive-text-color)}
 button.y{background:var(--tg-theme-button-color);color:var(--tg-theme-button-text-color);border-color:transparent}
 button:disabled{background:none;border-color:transparent;padding:4px 6px 0}
 .hd{gap:8px}.hd button{flex:none}
 .hd b{flex:1;min-width:0;font-size:1.08em}
-.tx{margin-top:8px;font-size:.92em;line-height:1.4}
+.tx{margin-top:8px;font-size:.92em;line-height:1.4}.tx div{min-height:.6em}
 .n{font-size:.84em;margin-top:6px}
 </style>
-<div id=c class=cd><div id=cv><div class=top><div class=rg id=rg><b id=p></b></div>
-<div class=mn><div class=s><span id=s></span></div><div class=f id=f></div>
-<div class=l><span id=l></span> <span id=t></span></div><div class=h id=e></div></div></div>
-<div class=ht><div class=tl id=tn><i class=rg id=rn><b><svg viewBox="0 0 24 24"><path d="M8 4h8v6l-4 9-4-9z"/></svg></b></i><span id=xn></span></div>
-<div class=tl id=tb><i class=rg id=rb><b><svg viewBox="0 0 24 24"><path d="M3 11h18v4H3zM6 15v5M18 15v5"/></svg></b></i><span id=xb></span></div></div><div class=cp id=m></div><div class=a id=a></div><div class=g id=g hidden></div></div>
-<div id=v hidden><div class=hd><button id=bk>‹ Назад</button><b id=vt></b></div><canvas id=cz width=440 height=440 hidden></canvas><div class=tx id=vx></div><div id=vk></div></div>
+<div id=c class=cd><div id=cv><div class=ht>
+<div class=tl id=tp><div class=rg id=rg><b id=p></b></div><span>печать</span></div>
+<div class=tl id=tn><div class=rg id=rn><b id=vn></b></div><span id=xn></span></div>
+<div class=tl id=tb><div class=rg id=rb><b id=vb></b></div><span id=xb></span></div></div>
+<div class=mn><div class=s id=s></div><div class=f id=f></div>
+<div class=l><span id=l></span> <span id=t></span></div><div class=h id=e></div></div>
+<div class=cp id=m></div><div class=a id=a></div><div class=g id=g hidden></div></div>
+<div id=v hidden><div class=hd><button id=bk>‹ Назад</button><b id=vt></b></div><div class=tx id=vx></div><div id=vk></div></div>
 <div class=n id=n></div></div>
 <script>(function(){
-var W=window.TelegramWidget,d=null,ask=null,busy=0,mnu=0,sc=null,ln='',IC={};try{IC=JSON.parse(localStorage.getItem('ic11'))||{}}catch(e){}
+var W=window.TelegramWidget,d=null,ask=null,busy=0,mnu=0,sc=null,ln='',IC={};try{IC=JSON.parse(localStorage.getItem('ic2'))||{}}catch(e){}
 function $(i){return document.getElementById(i)}
 function x(i,v){$(i).textContent=v}
 function er(e){x('n','ошибка: '+String(e).slice(0,120))}
@@ -146,17 +146,17 @@ function S(t,a){var o=document.createElementNS('http://www.w3.org/2000/svg',t);f
 function rr(i,f,c){var e=$(i),s=S('svg',{viewBox:'0 0 36 36'}),o={cx:18,cy:18,r:16,pathLength:100,transform:'rotate(-90 18 18)',style:'stroke:var(--l)'};
 if(c)e.style.color=c;if(e.r)e.removeChild(e.r);s.appendChild(S('circle',o));
 if(f>0){o.style='';o['stroke-dasharray']=f+' 100';o['stroke-linecap']='round';s.appendChild(S('circle',o))}e.insertBefore(e.r=s,e.firstChild)}
-function tm(k,v){var a=v?v.split('|'):[0,0,0,210,0],h=+a[4];$('t'+k).className='tl'+(h?' hot':'');rr('r'+k,+a[2],'hsl('+a[3]+',80%,50%)');x('x'+k,a[0]+'°'+(h?' → '+a[1]+'°':''))}
+function tm(k,v,c){var a=v?v.split('|'):[0,0,0,210,0],h=+a[4];$('t'+k).className='tl'+(h?' hot':'');rr('r'+k,+a[2],'hsl('+a[3]+',80%,50%)');x('v'+k,a[0]+'°');x('x'+k,h?'→ '+a[1]+'°':c)}
 function mk(p,t,c,f,n){var e=el(p,'button',t),P=n&&IC[n.slice(0,2)];e.className=c;if(f)e.onclick=f;else e.disabled=true;
 if(P)try{var s=S('svg',{viewBox:'0 0 24 24','class':n});s.appendChild(S('path',{d:P}));e.insertBefore(s,e.firstChild)}catch(r){}
 return e}
-function ic(){if(IC.pa)return;
-W.request('ic').then(function(r){try{IC=JSON.parse(r.result).ic;try{localStorage.setItem('ic11',JSON.stringify(IC))}catch(e){}show()}catch(e){}},function(){setTimeout(ic,3e4)})}
+function ic(i){i=i||0;if(IC.bk)return;if(busy)return setTimeout(ic,5e3,i);
+W.request('ic:'+i).then(function(r){try{var a=JSON.parse(r.result);if(a.v==2){for(var k in a.ic)IC[k]=a.ic[k];if(a.n>i+1)ic(i+1);else{try{localStorage.setItem('ic2',JSON.stringify(IC))}catch(e){}show()}}}catch(e){}},function(){setTimeout(ic,3e4,i)})}
 function go(q){if(busy)return;busy=1;mnu=0;x('n','Отправляю…');
 W.request(q).then(null,function(){return{result:'{"m":"Не дошло, ещё раз"}'}}).then(function(r){busy=0;try{var a=JSON.parse(r.result);
 ask=a.t?a:null;if(a.sc)sc=a.sc;if(a.close||ask)sc=null;
 x('n',ask?ask.q:a.m||'');show()}catch(e){er(e)}})}
-function tap(c){if(c=='b'){sc=null;x('n','');show()}else if(c.slice(0,2)=='u:'){var u=c.slice(2);
+function tap(c){if(c=='b'){sc=null;x('n','');show();W.request('lv').catch(function(){})}else if(c.slice(0,2)=='u:'){var u=c.slice(2);
 try{if(/^https:\/\/t\.me\//.test(u))W.openTelegramLink(u);else W.openLink(u)}catch(e){}}else go(c)}
 function btns(){var a=clr('a'),g=clr('g');g.hidden=!mnu;
 if(!d||!W.request||W.isForward)return;
@@ -166,19 +166,7 @@ var mn=d.mn||[];
 var t=function(){mnu=!mnu;x('n','');show()};
 if(mn.length)mk(a,IC.mo?'Ещё':'⚙️ Ещё','',t,'mo');
 if(mnu){mn.forEach(function(i){mk(g,i[0],'',function(){go('c:'+i[1])},i[2])});mk(g,'‹ Назад в главное','y',t)}}
-function cv(n){return getComputedStyle(document.documentElement).getPropertyValue(n)}
-function fig(g){var c=$('cz'),o=g&&g.s,m=g&&g.m,t,B=428,K=B/63,i,j,f,n,s,a,x,y,w,h,z,u,v,p,A='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';c.hidden=!(o||m);if(c.hidden)return;
-c.width=440;t=c.getContext('2d');
-if(m){for(i=0;i<m.h;i++)for(j=0;j<m.w;j++){u=+m.z.substr(2*(i*m.w+j),2)/99;
-t.fillStyle='hsl('+(u<.5?210:5)+',65%,'+(95-110*Math.abs(u-.5))+'%)';t.fillRect(6+j*B/m.w,6+i*B/m.h,B/m.w+.5,B/m.h+.5)}return}
-f=cv('--tg-theme-text-color');t.globalAlpha=.2;t.strokeStyle=f;t.lineWidth=3;t.strokeRect(6,6,B,B);
-for(n=0;n<o.length;n++){s=+o[n];if(s==3)continue;
-a=g.b.substr(4*n,4).split('').map(function(k){return A.indexOf(k)*K});x=6+a[0];y=6+a[1];w=a[2]-a[0];h=a[3]-a[1];
-t.fillStyle=t.strokeStyle=cv(s==1?'--tg-theme-destructive-text-color':'--tg-theme-button-color');
-t.globalAlpha=[.12,.25,.85,0,.4][s];t.fillRect(x,y,w,h);t.globalAlpha=[.6,.6,1,1,1][s];t.strokeRect(x,y,w,h);
-v=parseInt(g.n[n],36);if(v){z=20+8*((v-1)/5|0);p=(v-1)%5;t.fillStyle=s==2&&!p?'#fff':f;t.font='600 '+z+'px sans-serif';
-t.textAlign='center';t.textBaseline='middle';t.fillText(n+1,x+w/2+[0,0,1,-1,0][p]*(w/2+3+.3*z*String(n+1).length),y+h/2+[0,-1,0,0,1][p]*(h/2+3+.4*z))}}}
-function drawScreen(){try{x('vt',sc.t||'');fig(sc.g);var t=clr('vx');(sc.x||[]).forEach(function(s){el(t,'div',s)});
+function drawScreen(){try{x('vt',sc.t||'');var t=clr('vx');(sc.x||[]).forEach(function(s){el(t,'div',s)});
 var k=clr('vk');(sc.k||[]).forEach(function(r){var w=el(k,'div','');
 w.className='rw'+(r.length>2?' wr':'');
 r.forEach(function(b){mk(w,b[0],b[2],b[1]?function(){tap(b[1])}:null,b[3])})})}catch(e){er(e)}}
@@ -187,7 +175,7 @@ function draw(){try{d=null;try{d=JSON.parse(W.chatData)}catch(e){}
 var ok=!!(d&&d.v);$('c').hidden=!ok;if(!ok)return;
 $('c').className='cd k-'+d.k;x('s',d.s);x('f',d.f||'');
 var p=Math.max(0,Math.min(100,+d.p||0));x('p',Math.floor(p)+'%');
-rr('rg',p);tm('n',d.tn);tm('b',d.tb);
+rr('rg',p);tm('n',d.tn,'сопло');tm('b',d.tb,'стол');
 x('l',d.l||'');var m=clr('m');if(d.ti)el(m,'span',d.ti);
 if(!busy)show();x('t',d.et||'');x('e',d.ef||'');
 if(d.n&&d.n!=ln&&!busy&&!ask){ln=d.n;x('n',d.n)}if(!d.n)ln='';
@@ -201,7 +189,7 @@ if(W){W.onEvent('chatDataChanged',draw);draw();if(W.ready)W.ready();if(W.request
 # First 12 hex digits of sha256 of HTML. A card that is already in the chat
 # keeps the HTML it was sent with, so any change of HTML must bump VERSION; a
 # test compares this with the real hash and fails until both are updated.
-HTML_SHA = "4e36c24f5a3a"
+HTML_SHA = "64cc3e23cfa6"
 
 
 def html_fits(html=HTML):
@@ -323,27 +311,29 @@ ON_THE_CARD = {"refresh", "brief", "ask:pause", "ask:resume", "ask:stop", "snap"
 # it asks for this table once ("ic") and keeps it. Every button the bot sends
 # carries an icon id as its last field; a client that cannot draw it still has
 # the label, which loses its leading emoji only when an id is attached.
+ICON_SET = 2        # bump it when a path changes: the card keeps the set under this version
+
 ICONS = {
-    "pa": "M8 5v14M16 5v14",
-    "re": "M7 4l13 8-13 8z",
-    "st": "M6 6h12v12H6z",
-    "ca": "M3 8h4l2-3h6l2 3h4v11H3zM12 10a3.5 3.5 0 1 0 .01 0",
-    "mo": "M4 7h10M18 7h2M4 17h2M10 17h10M14 5v4M8 15v4",
-    "fi": "M3 6h6l2 2h10v11H3z",
+    "pa": "M9 5v14M15 5v14",
+    "re": "M8 5l11 7-11 7z",
+    "st": "M7 7h10v10H7z",
+    "ca": "M4 8h3l1.5-2h7L17 8h3v11H4zM15.5 13.5a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0z",
+    "mo": "M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4",
+    "fi": "M3 6.5h6l2 2.5h10V19H3z",
     "pr": "M7 9V4h10v5M7 17H4v-7h16v7h-3M7 14h10v6H7z",
-    "de": "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13",
-    "cl": "M12 4a8 8 0 1 0 .01 0M12 8v4l3 2",
-    "cu": "M6 6a2.5 2.5 0 1 0 .01 0M6 18a2.5 2.5 0 1 0 .01 0M8 8l12 10M8 16L20 6",
-    "fa": "M12 12C10 7 12 3 15 4s2 5-3 8M12 12c5 0 8 2 7 5s-5 2-7-5M12 12c-2 5-6 6-8 4s1-6 8-4",
-    "sp": "M4 16a8 8 0 1 1 16 0M12 16l4-5",
-    "he": "M12 3c1 4 5 5 5 10a5 5 0 0 1-10 0c0-2 1-3 2-4 0 2 1 3 2 3 1-3 0-6 1-9",
-    "li": "M9 18h6M10 21h4M12 3a6 6 0 0 0-3 11v2h6v-2a6 6 0 0 0-3-11",
+    "de": "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
+    "cl": "M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17zM12 8v4.5l3 1.5",
+    "cu": "M9 6a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM20 4L8.1 15.9M14.5 14.5L20 20M8.1 8.1L12 12",
+    "fa": "M12 10.8C10.2 8.6 10.6 5 13 3.5C15.6 3.5 16.4 8 12 10.8zM13 12.6C15.8 12.1 18.8 14.3 18.9 17.1C17.6 19.4 13.3 17.8 13 12.6zM11 12.6C10 15.3 6.6 16.7 4.1 15.4C2.8 13.1 6.3 10.2 11 12.6z",
+    "sp": "M4.5 17a8.5 8.5 0 1 1 15 0M12 16.5l4-5.5",
+    "he": "M12 3c1 3.5 5.5 5 5.5 10a5.5 5.5 0 0 1-11 0c0-2.5 1.2-4 2.5-5.2.2 1.7 1 2.7 2 3 .7-2.5.4-5.3 1-7.8z",
+    "li": "M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.8c.7.6 1 1.2 1 2.2h5c0-1 .3-1.6 1-2.2A6 6 0 0 0 12 3z",
     "be": "M3 17l9-5 9 5-9 5zM3 12l9-5 9 5",
-    "hi": "M4 12a8 8 0 1 0 3-6.2M4 4v4h4M12 8v4l3 2",
-    "ma": "M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M6 18l2.5-2.5M15.5 8.5L18 6",
-    "di": "M3 12h4l2-5 4 10 2-5h6",
-    "hp": "M9 9a3 3 0 1 1 4 2.8c-.7.4-1 1-1 2M12 17h.01",
-    "in": "M12 8h.01M11 12h1v5h1",
+    "hi": "M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4 4v4h4M12 8v4.5l3 1.5",
+    "ma": "M12 3v5M12 16v5M3 12h5M16 12h5M6 6l3.2 3.2M14.8 14.8L18 18M6 18l3.2-3.2M14.8 9.2L18 6",
+    "di": "M3 12h4l2.5-6 4 12 2.5-6H21",
+    "hp": "M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17zM9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 1-1 1.7M12 17h.01",
+    "in": "M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17zM12 11v5.5M12 7.8h.01",
     "bk": "M15 5l-7 7 7 7",
 }
 
@@ -357,7 +347,6 @@ ICON_PREFIXES = (
     ("menu:fans", "fa"), ("menu:speed", "sp"), ("menu:temp", "he"), ("light", "li"),
     ("mesh", "be"), ("history", "hi"), ("macros", "ma"), ("ask:macro:", "ma"),
     ("bedcalib", "ma"), ("diag", "di"), ("help", "hp"), ("details", "in"),
-    ("objgrp:", "cu"),
 )
 
 
@@ -385,9 +374,24 @@ def plain(label):
     return text[start:] or text
 
 
-def icons_answer():
-    """The answer to the card's "ic" request."""
-    return _dump({"ic": ICONS})
+def icon_chunks(limit=900):
+    """ICONS cut into pieces that each fit one answer (the whole set does not):
+    a list of dicts, in order."""
+    chunks, current = [], {}
+    for key, path in ICONS.items():
+        if current and len(_dump(current)) + len(key) + len(path) + 6 > limit:
+            chunks.append(current)
+            current = {}
+        current[key] = path
+    return chunks + [current]
+
+
+def icons_answer(index=0):
+    """The answer to the card's "ic:<index>" request: the icon set's version, the
+    number of pieces, and this piece. The card asks until it has them all."""
+    chunks = icon_chunks()
+    index = max(0, min(index, len(chunks) - 1))
+    return _dump({"v": ICON_SET, "i": index, "n": len(chunks), "ic": chunks[index]})
 
 
 def menu(keyboard, fans_on=False):
@@ -559,11 +563,10 @@ def _style(label):
     return ""
 
 
-def screen(text, keyboard, title=None, figure=None):
+def screen(text, keyboard, title=None):
     """A bot screen as the card draws it. ``title`` replaces the text, for
     the submenus whose text is only the status the card already shows.
-    ``figure`` is a drawing for the card's canvas (objectmap.figure,
-    heightmap.figure), put under the key "g"."""
+    """
     body = lines(text)
     if title:
         head, body = title, []
@@ -593,8 +596,6 @@ def screen(text, keyboard, title=None, figure=None):
         if out:
             rows.append(out)
     out = {"t": head, "x": body, "k": rows}
-    if figure:
-        out["g"] = figure
     return out
 
 
@@ -645,35 +646,22 @@ MAX_ROWS = 9
 LINE_WIDTH = 60
 # An estimate of how tall a page draws, in px, from what a bubble shows:
 # everything but the content (back button, paddings, the note and update
-# lines), a figure (170 px and its margin), a line of text, a row of buttons.
+# lines), a line of text, a row of buttons.
 # The bubble is 600 px at most and clips; a page stays under MAX_HEIGHT_PX at
 # the narrowest bubble, where lines wrap most.
 PAGE_BASE_PX = 118
-FIGURE_PX = 228
 LINE_PX = 20
 ROW_PX = 44
 MAX_HEIGHT_PX = 560
 CHAR_PX = 7.2          # a character of text; of a button label 7.5 and 20 around it
-FIGURE_ON_EVERY_PAGE = 150     # bytes: only a drawing this small is repeated on each page
-
-
-def thin_figure(figure):
-    """The objects drawing without the excluded objects (state "1"), cut at
-    the last object that is still drawn. None if it holds no states."""
-    states = figure.get("s") if isinstance(figure, dict) else None
-    if not states:
-        return None
-    thin = states.replace("1", "3").rstrip("3")
-    return {"b": figure["b"][:4 * len(thin)], "s": thin,
-            "n": (figure.get("n") or "")[:len(thin)]} if thin else None
 
 
 def estimate_height(sc, width=320):
-    """How many px the screen ``sc`` (title, lines "x", rows "k", figure "g")
+    """How many px the screen ``sc`` (title, lines "x", rows "k")
     takes in a bubble ``width`` px wide, by the constants above."""
     inner = max(120, width - 42)
     per_line = max(10, int(inner / CHAR_PX))
-    height = PAGE_BASE_PX + (FIGURE_PX if sc.get("g") else 0)
+    height = PAGE_BASE_PX
     for line in sc.get("x") or ():
         height += LINE_PX * max(1, -(-len(line) // per_line))
     for row in sc.get("k") or ():
@@ -732,8 +720,7 @@ def paginate(sc, tok, note=""):
     sc["x"] = [line if len(line) <= LINE_WIDTH else line[:LINE_WIDTH - 1] + "…"
                for line in sc["x"]]
     sc["k"] = [[list(b) for b in row] for row in sc["k"]]
-    figure = sc.pop("g", None)
-    whole = dict(sc, g=figure) if figure else sc
+    whole = sc
     # The note never changes where the pages break (a later request for the
     # same page carries none): it rides on page 0 when there is room.
     one = _answer_text(whole)
@@ -741,14 +728,10 @@ def paginate(sc, tok, note=""):
             and estimate_height(whole) <= MAX_HEIGHT_PX):
         return [_with_note(whole, note)]
     tok = tok() if callable(tok) else tok
-    on_every = bool(figure) and len(_dump(figure)) <= FIGURE_ON_EVERY_PAGE
     worst = nav_row(tok, 10, 99)      # the longest nav row any page can have
 
     def build(x, k, first):
-        page = {"t": sc["t"], "x": x, "k": k + [worst]}
-        if figure and (first or on_every):
-            page["g"] = figure
-        return page
+        return {"t": sc["t"], "x": x, "k": k + [worst]}
 
     def fits(x, k, first):
         # the worst nav row is counted in the rows
@@ -758,14 +741,6 @@ def paginate(sc, tok, note=""):
         return (estimate_height(page) <= MAX_HEIGHT_PX
                 and _small_answer(_answer_text(page)))
 
-    if figure and not fits([], sc["k"][:1], True):
-        # No room for the drawing and one button: try it without the objects
-        # that are already gone, and only then give it up, loudly.
-        thin = thin_figure(figure)
-        figure = thin if thin and fits([], sc["k"][:1], True) else None
-        if figure is None:
-            log.info("screen drawing dropped: it does not fit an answer")
-        on_every = bool(figure) and len(_dump(figure)) <= FIGURE_ON_EVERY_PAGE
     units = [("x", line) for line in sc["x"]] + [("k", row) for row in sc["k"]]
     pages = [([], [])]
     for kind, unit in units:
@@ -790,8 +765,6 @@ def paginate(sc, tok, note=""):
     for n, (x, k) in enumerate(pages):
         rows = k + ([nav_row(tok, n, len(pages))] if len(pages) > 1 else [])
         page = {"t": sc["t"], "x": x, "k": rows}
-        if figure and (n == 0 or on_every):
-            page["g"] = figure
         text = _with_note(page, note if n == 0 else "")
         if not _small_answer(text):
             return []

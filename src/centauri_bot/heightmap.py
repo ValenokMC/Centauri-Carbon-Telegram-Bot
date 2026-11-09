@@ -54,28 +54,3 @@ def render(points, cell=42):
                    for y in range(height))
     return (b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
             + _chunk(b"IDAT", zlib.compress(raw, 9)) + _chunk(b"IEND", b""))
-
-
-def figure(points):
-    """The mesh as data for the live card's canvas.
-
-    {"m": {"w": columns, "h": rows, "z": "..."}} with ``z`` the heights as
-    two digits each, 00..99 of the spread between the lowest and the highest
-    point, row by row from the top of the picture, in one string (no list of
-    numbers: see widget._pipe). Klipper lists rows from the
-    front edge, so they are turned over exactly as render() does: the door ends
-    up at the bottom. The exact millimetres are in the screen's text. Raises
-    ValueError for a malformed mesh.
-    """
-    rows = [[float(value) for value in row] for row in (points or [])]
-    if not rows or not rows[0] or len(rows) > 30 or len(rows[0]) > 30:
-        raise ValueError("пустая или слишком большая сетка")
-    cols = len(rows[0])
-    if any(len(row) != cols for row in rows):
-        raise ValueError("неровная сетка")
-    rows = rows[::-1]
-    low = min(v for row in rows for v in row)
-    spread = (max(v for row in rows for v in row) - low) or 1.0
-    return {"m": {"w": cols, "h": len(rows),
-                  "z": "".join("%02d" % int(round((v - low) / spread * 99))
-                               for row in rows for v in row)}}

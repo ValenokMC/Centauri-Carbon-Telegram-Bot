@@ -112,10 +112,17 @@ def _badge(canvas, centre, text, size):
                     canvas.rect(left, top, left + cell, top + cell, DIGIT)
 
 
+def numbered(names, shapes):
+    """[(number, name, shape)] of the parts the map draws: the number is the
+    part's place in the job's list of objects, counting from one, and the same
+    number is on its button on the card. A part without an outline is not drawn."""
+    return [(number, name, shapes[name]) for number, name in enumerate(names, 1)
+            if name in shapes and len(shapes[name].get("polygon") or ()) >= 3]
+
+
 def render(names, shapes, excluded=(), current=""):
     """PNG bytes, numbering ``names`` from one. Raises ValueError without shapes."""
-    drawn = [(number, name, shapes[name]) for number, name in enumerate(names, 1)
-             if name in shapes and len(shapes[name].get("polygon") or ()) >= 3]
+    drawn = numbered(names, shapes)
     if not drawn:
         raise ValueError("в задании нет контуров объектов")
     xs = [p[0] for _n, _name, shape in drawn for p in shape["polygon"]]
@@ -163,156 +170,3 @@ def render(names, shapes, excluded=(), current=""):
         size = 5 if room >= 60 else 4 if room >= 45 else 3 if room >= 30 else 2
         _badge(canvas, px(centre), str(number), size)
     return canvas.png()
-
-
-# The figure's coordinates are single characters of this alphabet, 0..63.
-# Keep it equal to the one in the widget's script (a test compares them).
-ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-CELLS = 63
-
-# The card's canvas is always this big (and shown 220 px wide, so half): the
-# labels can be placed here, once, and the card's script only draws them.
-CANVAS, MARGIN, SPAN = 440, 6, 428
-FONTS = (20, 28, 40)        # canvas px: 10, 14 and 20 css px
-PLACES = 5                  # centred, above, right, left, below
-CODES = "0123456789abcdefghijklmnopqrstuvwxyz"
-
-
-def _px(cell):
-    return MARGIN + cell * SPAN / float(CELLS)
-
-
-def _rect(box, number, code):
-    """The text rectangle (x0, y0, x1, y1) of label ``code`` (1..15) for
-    ``box`` = (x, y, w, h) in canvas px. The card's script computes the same
-    centre by the same formulas (a test keeps them equal)."""
-    x, y, w, h = box
-    size = FONTS[(code - 1) // PLACES]
-    place = (code - 1) % PLACES
-    half = 0.3 * size * len(str(number))
-    cx = x + w / 2.0 + (0, 0, 1, -1, 0)[place] * (w / 2.0 + 3 + half)
-    cy = y + h / 2.0 + (0, -1, 0, 0, 1)[place] * (h / 2.0 + 3 + 0.4 * size)
-    return (cx - half, cy - 0.4 * size, cx + half, cy + 0.4 * size)
-
-
-def _hit(a, b):
-    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
-
-
-def _labels(items):
-    """One character per object: "0" no label, else a code 1..15 (size and
-    place, base 36), chosen so that no label overlaps another label or leaves
-    the canvas. Boxes are not an obstacle: the thin, slanted parts of a real
-    job have bounding boxes that overlap heavily, and a number is drawn on top
-    of them anyway.
-
-    ``items`` is a list of (number, selected, box). A selected part gets its
-    number centred in its box, in the largest size that fits inside the box;
-    one that fits in no size gets the smallest size centred all the same (it
-    may spill over the box's edge); and one whose centre is taken gets the
-    small number just outside its box (above, right, below, left).
-    """
-    placed = [None] * len(items)
-    taken = []
-
-    def free(rect):
-        if rect[0] < 2 or rect[1] < 2 or rect[2] > CANVAS - 2 or rect[3] > CANVAS - 2:
-            return False
-        return not any(_hit(rect, other) for other in taken)
-
-    def put(index, code, number, box):
-        rect = _rect(box, number, code)
-        if not free(rect):
-            return False
-        placed[index] = code
-        taken.append(rect)
-        return True
-
-    wanted = [(i, n, box) for i, (n, selected, box) in enumerate(items) if selected]
-    for index, number, box in wanted:                    # centred, inside its box
-        inner = (box[0], box[1], box[0] + box[2], box[1] + box[3])
-        for size in (2, 1, 0):
-            rect = _rect(box, number, size * PLACES + 1)
-            if (rect[0] >= inner[0] and rect[2] <= inner[2] and rect[1] >= inner[1]
-                    and rect[3] <= inner[3] and put(index, size * PLACES + 1, number, box)):
-                break
-    for index, number, box in wanted:                    # centred, spilling over
-        if not placed[index]:
-            put(index, 1, number, box)
-    for index, number, box in wanted:                    # beside the box
-        if not placed[index]:
-            for place in (1, 2, 4, 3):                   # above, right, below, left
-                if put(index, place + 1, number, box):
-                    break
-    return "".join(CODES[c or 0] for c in placed)
-
-
-def figure(names, shapes, excluded=(), current="", highlight=None, zoom=None):
-    """The same picture as data, for the live card to draw on a canvas.
-
-    {"b": boxes, "s": states, "n": labels}: for the n-th object of ``names``
-    (the number on its button, counting from one) four characters of ALPHABET
-    in ``b``, the corners x0 y0 x1 y1 of its bounding box in cells of the
-    picture (63 across), y counted from the top of the picture (the back
-    wall), the way a canvas wants it; one character in ``s``: "1" excluded,
-    "2" printing now, "3" not drawn (it has no outline, or lies outside the
-    picture: its button still carries the number), "4" a part of the selected
-    group, "0" any other part still to print (drawn dimmed, without a number);
-    and one character in ``n``, the label's code (see _labels).
-
-    ``highlight`` is the set of names of the selected group; None selects
-    every part still to print and shows the whole bed. With a group the
-    picture is zoomed: its window is the bounding box of the group's parts
-    plus a margin of 8 %, square so that boxes keep their shape, kept within
-    the bed. Other parts that reach into the window are drawn dimmed.
-    ``zoom``, a set of names, sets the window instead of ``highlight``: the
-    picture of one part among its model's copies.
-    A job of 56 parts is about 360 bytes, and a screen answer holds 1024.
-    Raises ValueError when no object has an outline, like render().
-    """
-    excluded = set(excluded or ())
-    polygons = {name: (shapes.get(name) or {}).get("polygon") or () for name in names}
-    wx = wy = 0.0
-    size = BED_MM
-    if zoom or highlight:
-        pts = [p for name in (zoom or highlight) for p in polygons.get(name, ())]
-        if pts:
-            lo_x, hi_x = min(p[0] for p in pts), max(p[0] for p in pts)
-            lo_y, hi_y = min(p[1] for p in pts), max(p[1] for p in pts)
-            size = min(BED_MM, max(40.0, 1.16 * max(hi_x - lo_x, hi_y - lo_y)))
-            wx = min(max((lo_x + hi_x) / 2.0 - size / 2.0, 0.0), BED_MM - size)
-            wy = min(max((lo_y + hi_y) / 2.0 - size / 2.0, 0.0), BED_MM - size)
-
-    def cells(low, high, origin):
-        lo = max(0, min(CELLS - 1, int((low - origin) * CELLS / size)))
-        hi = max(lo + 1, min(CELLS, -int(-(high - origin) * CELLS // size)))
-        return lo, hi
-
-    boxes, states, items = [], [], []
-    for number, name in enumerate(names, 1):
-        points = polygons[name]
-        inside = len(points) >= 3 and (
-            max(p[0] for p in points) > wx and min(p[0] for p in points) < wx + size
-            and max(p[1] for p in points) > wy and min(p[1] for p in points) < wy + size)
-        if not inside:
-            boxes.append(ALPHABET[0] * 4)
-            states.append("3")
-            items.append((number, False, None))
-            continue
-        x0, x1 = cells(min(p[0] for p in points), max(p[0] for p in points), wx)
-        y0, y1 = cells(min(p[1] for p in points), max(p[1] for p in points), wy)
-        cell = (x0, CELLS - y1, x1, CELLS - y0)
-        boxes.append("".join(ALPHABET[v] for v in cell))
-        selected = highlight is None or name in highlight
-        state = ("1" if name in excluded else
-                 ("2" if name == current else "4") if selected else "0")
-        states.append(state)
-        items.append((number, state in "24",
-                      (_px(cell[0]), _px(cell[1]), _px(cell[2]) - _px(cell[0]),
-                       _px(cell[3]) - _px(cell[1]))))
-    if all(state == "3" for state in states):
-        raise ValueError("в задании нет контуров объектов")
-    drawn = [item for item in items if item[2] is not None]
-    codes = iter(_labels(drawn))
-    labels = "".join(next(codes) if item[2] is not None else "0" for item in items)
-    return {"b": "".join(boxes), "s": "".join(states), "n": labels}
