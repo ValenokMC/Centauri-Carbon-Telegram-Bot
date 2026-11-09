@@ -924,8 +924,9 @@ def handle_widget_query(bot, query):
         return
 
     if data == "lv":
-        # the card's own "back" was pressed: a picture that went with the screen goes
-        bot.defer(bot.drop_picture)
+        # the card's own "back" was pressed: a picture that went with the screen
+        # goes, and the caption returns to the status
+        bot.defer(bot.leave_screen)
         reply()
         return
 
@@ -1078,7 +1079,7 @@ def _card_screen(bot, query, target, reply):
     # and take down the picture of a screen the owner has left (a confirmed
     # exclusion included; a cancelled one goes back to the numbers).
     if not target.startswith(("objects", "objgrid", "xo:", "ask:exclude:")):
-        bot.defer(bot.drop_picture)
+        bot.defer(bot.leave_screen)
     try:
         bot.push_widget()
     except Exception as e:

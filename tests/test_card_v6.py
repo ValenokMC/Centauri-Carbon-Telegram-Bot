@@ -721,7 +721,7 @@ def test_html_changes_must_come_with_a_new_version():
     import hashlib
     digest = hashlib.sha256(widget.HTML.encode("utf-8")).hexdigest()[:12]
     assert digest == widget.HTML_SHA, "HTML changed: bump VERSION and update HTML_SHA"
-    assert widget.KIND == "widget-%d" % widget.VERSION == "widget-14"
+    assert widget.KIND == "widget-%d" % widget.VERSION == "widget-15"
 
 
 # ------------------------------------------------------------ round 6
@@ -1005,7 +1005,10 @@ def test_the_rings_and_their_motion_are_in_the_html():
     assert html.index("id=tp") < html.index("id=tn") < html.index("id=tb") < html.index("id=s>")
     assert "<span>печать</span>" in html and "'сопло'" in html and "'стол'" in html
     assert ".rg{position:relative;width:76px;height:76px;" in html     # the same size for all
-    assert "grid-auto-flow:column" in html and "justify-content:center" in html
+    # Telegram Desktop's widget engine does not honour grid auto-flow / auto-columns: the
+    # rings are a flex row (the same HTML was a column there). A single row, never wrapped.
+    assert ".ht{display:flex;justify-content:center;gap:8px}" in html
+    assert ".tl{flex:0 1 90px;min-width:0}" in html and "flex-wrap" not in html.split(".ht{")[1].split("}")[0]
     assert "→ '+a[1]" in html                                          # heating: the target
     assert ".k-i #tp{display:none}" in html                            # idle: nozzle and bed only
     # crisp rings: vector circles with a path length of 100, a dash per percent, a muted
@@ -1017,7 +1020,7 @@ def test_the_rings_and_their_motion_are_in_the_html():
     assert ".rg b,.tl{justify-content:center}" in html or ".rg b{justify-content:center}" in html
     assert "<svg viewBox" not in html                          # no glyphs in the rings any more
     # the state, the file, the layer line and the finish time are centred under them
-    assert ".mn{margin-top:8px;text-align:center}" in html and ".cp{display:flex;flex-wrap:wrap;justify-content:center" in html
+    assert ".mn{margin-top:8px;text-align:center}" in html and "class=cp" not in html
     # the pulse only runs when the viewer has not asked for less motion
     assert re.search(r"@media\(prefers-reduced-motion:no-preference\)\{\.hot \.rg,\.re\{animation", html)
     assert "innerHTML" not in html
@@ -1031,7 +1034,7 @@ def test_the_fullest_card_state_with_rings_still_fits(card_bot):
                              TempTargetHotbed=70)
     data = card_bot._card()
     assert data["tn"].split("|")[4] == "1" and data["tb"].split("|")[4] == "1"
-    assert data["ti"] == "внутри 30°" and data["ab"]
+    assert "внутри 30°" in data["l"] and data["ab"]
     data.update(n="ж" * 300, go="abcdefgh")
     text = widget.encode(data)
     assert len(text.encode("utf-8")) <= widget.DATA_LIMIT
@@ -1290,7 +1293,7 @@ def test_the_heating_rings_and_the_air_arrive_as_strings(card_bot):
                                TempTargetHotbed=70)
     data = card_bot._card()
     assert data["tn"] == "245|245|100|0|0" and data["tb"] == "70|70|100|20|0"
-    assert isinstance(data["ti"], str) and data["ti"] == "внутри 30°"
+    assert data["l"].endswith("внутри 30°") and "ti" not in data
     assert numeric_lists(data) == []
 
 
@@ -1518,3 +1521,77 @@ def test_the_height_model_counts_wrapped_lines_and_wrapped_rows():
     assert widget.estimate_height(long_line, 320) > widget.estimate_height(long_line, 430)
     speeds = dict(plain, k=[[[l, "c:x", ""] for l in ("50%", "75%", "100%", "125%", "150%")]])
     assert widget.estimate_height(speeds, 320) >= widget.PAGE_BASE_PX + widget.ROW_PX
+
+
+# ------------------------------------------------------------ round 10: flex rings, a menu that fits
+
+def test_the_html_uses_no_grid_the_desktop_widget_engine_ignores():
+    """Telegram Desktop's widget engine does not honour grid auto-flow, auto
+    columns or minmax(): the three rings became a column there. Plain flexbox
+    for the rings; a grid only with explicit template columns (the menu, which
+    did work there)."""
+    html = widget.HTML
+    for word in ("grid-auto-flow", "grid-auto-columns", "minmax(", "subgrid", "grid-template-rows"):
+        assert word not in html, word
+    for rule in re.findall(r"display:grid[^}]*", html):
+        assert "grid-template-columns" in rule or "grid-template-columns" in html
+
+
+def test_the_menu_gives_way_to_the_status_and_is_three_columns_when_wide():
+    html = widget.HTML
+    assert "@media(min-width:400px){.g{grid-template-columns:1fr 1fr 1fr}}" in html
+    assert ".g button{padding:6px 4px}" in html                  # shorter buttons in the grid
+    # an open menu hides the rings and the status lines and shows one compact line
+    assert "$('sb').hidden=!!mnu;$('cm').hidden=!mnu" in html and "id=cm hidden" in html
+    assert "x('cm',d.s+(d.k=='i'?'':' · '+Math.floor(+d.p)+'%'))" in html
+
+
+def fullest_card(bot):
+    fullest_keyboard(bot)
+    bot.cfg["send_photo"] = True
+    bot.status = status(13, "Очень_длинное_имя_файла_" * 10 + ".gcode", progress=68, layer=12,
+                        total_layer=300, ticks=600, total_ticks=7800,
+                        TempOfNozzle=180, TempTargetNozzle=245, TempOfHotbed=40,
+                        TempTargetHotbed=70,
+                        CurrentFanSpeed={"ModelFan": 80, "BoxFan": 0, "AuxiliaryFan": 0})
+    bot.status["PrintInfo"]["PrintSpeedPct"] = 125
+    return bot._card()
+
+
+@pytest.mark.parametrize("width", [320, 430])
+def test_the_main_card_fits_the_bubble_closed_and_with_the_fullest_menu_open(card_bot, width):
+    data = fullest_card(card_bot)
+    assert len(data["mn"]) >= 10 and len(data["ab"]) == 3
+    closed = widget.estimate_card_height(data, width)
+    opened = widget.estimate_card_height(data, width, menu_open=True)
+    assert closed <= widget.MAX_HEIGHT_PX, closed
+    assert opened <= widget.MAX_HEIGHT_PX, opened
+    # the model is not toothless: with the status block kept, the open menu would not fit a phone
+    if width == 320:
+        assert opened + 100 + 3 * widget.STATUS_LINE_PX > widget.MAX_HEIGHT_PX
+    # idle and short states are smaller still
+    idle = widget.card(status(0), True, "P", NOW_FOR_RINGS, items=data["mn"], keys="C")
+    assert widget.estimate_card_height(idle, width) <= closed
+
+
+def test_leaving_a_pushed_screen_restores_the_status_caption(mr_bot, fake_telegram):
+    copies_job(mr_bot, [("МОДЕЛЬ А", 10), ("МОДЕЛЬ Б", 6)])
+    grid_pages(mr_bot, fake_telegram)
+    mid = storage.message_id()
+    assert fake_telegram.widgets[-1]["caption"].startswith("<b>✂️ Убрать объект</b>")
+    edits = len(fake_telegram.edited)
+    handlers.handle_widget_query(mr_bot, widget_query("lv", qid="lv"))      # the card's "back"
+    assert len(fake_telegram.edited) == edits + 1
+    chat, edited_mid, caption, keyboard = fake_telegram.edited[-1]
+    assert edited_mid == mid and caption == mr_bot.render("", compact=True)
+    assert "печатает" in caption and "42%" in caption
+    # going back again with nothing changed edits nothing
+    handlers.handle_widget_query(mr_bot, widget_query("lv", qid="lv2"))
+    assert len(fake_telegram.edited) == edits + 1
+
+
+def test_back_from_a_menu_screen_does_not_touch_the_caption(mr_bot, fake_telegram):
+    handlers.handle_widget_query(mr_bot, widget_query("c:files", qid="f"))
+    edits = len(fake_telegram.edited)
+    handlers.handle_widget_query(mr_bot, widget_query("lv", qid="lv"))
+    assert len(fake_telegram.edited) == edits                # the caption never changed: no call

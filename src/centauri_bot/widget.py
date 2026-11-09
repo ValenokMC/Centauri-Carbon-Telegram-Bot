@@ -37,7 +37,7 @@ import zlib
 from . import printer_state as ps
 
 
-VERSION = 14
+VERSION = 15
 
 # storage.message_kind() of a card sent with this very HTML. A sent widget's
 # HTML can never be replaced, so a card from an older version is not ours to
@@ -93,11 +93,11 @@ body{font-variant-numeric:tabular-nums;margin:0;padding:8px;color:var(--tg-theme
 .k-w{--ac:#e5a50a}.k-x{--ac:var(--tg-theme-destructive-text-color)}.k-i{--ac:var(--tg-theme-hint-color)}
 .rg b,.hd,.a,.rw,.tl{display:flex}.rg b,.hd,.tl{align-items:center}
 .rg b,.tl{justify-content:center}.tl{flex-direction:column;gap:4px}
-.ht{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,90px);justify-content:center;gap:8px}
+.ht{display:flex;justify-content:center;gap:8px}
 .rg{position:relative;width:76px;height:76px;color:var(--ac)}
 .rg>svg,.rg b{position:absolute;inset:0;width:100%;height:100%}
 .rg>svg{stroke-width:3.6}.rg b{color:var(--tg-theme-text-color);font-size:1.05em}
-.tl span{font-size:.82em}
+.tl{flex:0 1 90px;min-width:0}.tl span{font-size:.82em}
 svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 button svg{width:16px;height:16px;margin-right:5px}
 @media(prefers-reduced-motion:no-preference){.hot .rg,.re{animation:pu 2s infinite}.fa1{animation:sp 1.5s linear infinite}@keyframes pu{50%{opacity:.45}}@keyframes sp{to{transform:rotate(1turn)}}}
@@ -107,10 +107,9 @@ button svg{width:16px;height:16px;margin-right:5px}
 .f,.h,.u,.n,.tl span,button:disabled{color:var(--tg-theme-hint-color)}
 .f{font-size:.88em}
 .l{margin-top:4px}.h{font-size:.85em}
-.cp{display:flex;flex-wrap:wrap;justify-content:center;gap:6px;margin-top:10px}
-.cp span{padding:4px 10px;border-radius:99px;background:var(--g);border:1px solid var(--l);font-size:.85em}
 .a,.rw{gap:6px;margin-top:8px}.a button,.rw button{flex:1}
-.g{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}.g .y{grid-column:1/-1}
+.g{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}.g .y{grid-column:1/-1}.g button{padding:6px 4px}
+@media(min-width:400px){.g{grid-template-columns:1fr 1fr 1fr}}
 .f,.hd b,button{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 button{background:var(--b);border:1px solid var(--l);color:inherit;border-radius:12px;padding:9px 6px;font:inherit;font-size:.9em;min-width:0}
 button:active{background:var(--l)}
@@ -126,13 +125,13 @@ button:disabled{background:none;border-color:transparent;padding:4px 6px 0}
 .tx{margin-top:8px;font-size:.92em;line-height:1.4}.tx div{min-height:.6em}
 .n{font-size:.84em;margin-top:6px}
 </style>
-<div id=c class=cd><div id=cv><div class=ht>
+<div id=c class=cd><div id=cv><div id=sb><div class=ht>
 <div class=tl id=tp><div class=rg id=rg><b id=p></b></div><span>печать</span></div>
 <div class=tl id=tn><div class=rg id=rn><b id=vn></b></div><span id=xn></span></div>
 <div class=tl id=tb><div class=rg id=rb><b id=vb></b></div><span id=xb></span></div></div>
 <div class=mn><div class=s id=s></div><div class=f id=f></div>
-<div class=l><span id=l></span> <span id=t></span></div><div class=h id=e></div></div>
-<div class=cp id=m></div><div class=a id=a></div><div class=g id=g hidden></div></div>
+<div class=l><span id=l></span> <span id=t></span></div><div class=h id=e></div></div></div>
+<div class=s id=cm hidden></div><div class=a id=a></div><div class=g id=g hidden></div></div>
 <div id=v hidden><div class=hd><button id=bk>‹ Назад</button><b id=vt></b></div><div class=tx id=vx></div><div id=vk></div></div>
 <div class=n id=n></div></div>
 <script>(function(){
@@ -158,8 +157,8 @@ ask=a.t?a:null;if(a.sc)sc=a.sc;if(a.close||ask)sc=null;
 x('n',ask?ask.q:a.m||'');show()}catch(e){er(e)}})}
 function tap(c){if(c=='b'){sc=null;x('n','');show();W.request('lv').catch(function(){})}else if(c.slice(0,2)=='u:'){var u=c.slice(2);
 try{if(/^https:\/\/t\.me\//.test(u))W.openTelegramLink(u);else W.openLink(u)}catch(e){}}else go(c)}
-function btns(){var a=clr('a'),g=clr('g');g.hidden=!mnu;
-if(!d||!W.request||W.isForward)return;
+function btns(){var a=clr('a'),g=clr('g');g.hidden=!mnu;$('sb').hidden=!!mnu;$('cm').hidden=!mnu;
+if(!d||!W.request||W.isForward)return;x('cm',d.s+(d.k=='i'?'':' · '+Math.floor(+d.p)+'%'));
 if(ask){mk(a,ask.y,'y',function(){go('do:'+ask.a+':'+ask.t)});mk(a,'Отмена','',function(){ask=null;x('n','');show()});return}
 var mn=d.mn||[];
 (d.ab||[]).forEach(function(i){mk(a,i[0],i[2],function(){go(i[1])},i[3])});
@@ -176,7 +175,7 @@ var ok=!!(d&&d.v);$('c').hidden=!ok;if(!ok)return;
 $('c').className='cd k-'+d.k;x('s',d.s);x('f',d.f||'');
 var p=Math.max(0,Math.min(100,+d.p||0));x('p',Math.floor(p)+'%');
 rr('rg',p);tm('n',d.tn,'сопло');tm('b',d.tb,'стол');
-x('l',d.l||'');var m=clr('m');if(d.ti)el(m,'span',d.ti);
+x('l',d.l||'');
 if(!busy)show();x('t',d.et||'');x('e',d.ef||'');
 if(d.n&&d.n!=ln&&!busy&&!ask){ln=d.n;x('n',d.n)}if(!d.n)ln='';
 if(d.go&&!busy&&W.request&&!W.isForward){var l='';try{l=localStorage.getItem('go')}catch(e){}
@@ -189,7 +188,7 @@ if(W){W.onEvent('chatDataChanged',draw);draw();if(W.ready)W.ready();if(W.request
 # First 12 hex digits of sha256 of HTML. A card that is already in the chat
 # keeps the HTML it was sent with, so any change of HTML must bump VERSION; a
 # test compares this with the real hash and fails until both are updated.
-HTML_SHA = "64cc3e23cfa6"
+HTML_SHA = "01964d705d4f"
 
 
 def html_fits(html=HTML):
@@ -453,14 +452,16 @@ def card(status, online, printer_name, now, keys="", items=None, go="", note="",
         "tb": _pipe(heat(status.get("TempOfHotbed"), status.get("TempTargetHotbed"), BED_TOP)),
         "o": 1 if online else 0, "u": int(now),
     }
+    # Stock SDCP reports the air inside the printer; COSMOS does not, and an
+    # empty cell for it only puzzled. It rides on the layer line: a chip of its
+    # own under the finish time looked lonely.
+    if status.get("TempOfBox") is not None:
+        data["l"] = (data["l"] + " · " if data["l"] else "") + "внутри %d°" % round(
+            float(status.get("TempOfBox") or 0))
     # The time left and the finish clock, ready-made: the card's script has no
     # room for the arithmetic, and a push comes whenever the minute changes.
     if left > 0:
         data["et"] = ("· " if data["l"] else "") + "ещё " + _duration(left)
-    # Stock SDCP reports the air inside the printer; COSMOS does not, and an
-    # empty cell for it only puzzled.
-    if status.get("TempOfBox") is not None:
-        data["ti"] = "внутри %d°" % round(float(status.get("TempOfBox") or 0))
     if keys:
         data["ab"] = [list(ACTIONS[key]) for key in keys]
     if items:
@@ -670,6 +671,43 @@ def estimate_height(sc, width=320):
             + 6 * (len(row) - 1)
         # a row of three or more wraps; one or two buttons clip their label
         height += ROW_PX * (max(1, int(-(-need // inner))) if len(row) > 2 else 1)
+    return height
+
+
+# The main card, in px (the same kind of estimate as for a screen): what is
+# around the content, the rings with their captions, a line of the status block,
+# a row of buttons (a button 44 with its gap).
+CARD_BASE_PX = 68
+RINGS_PX = 100
+STATUS_LINE_PX = 20
+
+
+MENU_ROW_PX = 38           # a button of the menu grid has less padding
+
+
+def estimate_card_height(data, width=320, menu_open=False):
+    """How tall the main card draws in a bubble ``width`` px wide, from its
+    state ``data`` (what card() makes). With the menu open the status block is
+    hidden and the menu grid (two columns, then its full-width way back) takes
+    its place. The bubble clips at 600 px: this stays under MAX_HEIGHT_PX."""
+    inner = max(120, width - 42)
+    per_line = max(10, int(inner / CHAR_PX))
+    buttons = len(data.get("ab") or []) + (1 if data.get("mn") else 0)
+    rows = (buttons + 1) // 2 if width < 400 else 1        # two by two on a phone
+    height = CARD_BASE_PX + rows * ROW_PX + 8
+    if menu_open:
+        # the rings and the status lines give way to one compact line; the
+        # menu is two columns on a phone, three from 400 px
+        columns = 2 if width < 400 else 3
+        items = len(data.get("mn") or [])
+        return height + STATUS_LINE_PX + 6 + (-(-items // columns) + 1) * MENU_ROW_PX
+    height += RINGS_PX + 8 + STATUS_LINE_PX                 # the state
+    if data.get("f"):
+        height += STATUS_LINE_PX
+    line = (data.get("l") or "") + " " + (data.get("et") or "")
+    height += STATUS_LINE_PX * max(1 if line.strip() else 0, -(-len(line) // per_line))
+    if data.get("ef"):
+        height += STATUS_LINE_PX
     return height
 
 

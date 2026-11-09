@@ -75,10 +75,10 @@ def test_printing_card_carries_the_numbers_and_the_finish_time():
     data = widget.card(printing(), True, "Demo Centauri", NOW)
     assert data["k"] == "p" and data["p"] == 42
     # Ready-made strings: the card draws them as they are.
-    assert data["l"] == "слой 12 из 300"
+    assert data["l"] == "слой 12 из 300 · внутри 30°"       # the air inside rides on this line
     # Each heater as a ring: [now, target, fill %, hue, heating]; the air inside in whole degrees
     assert data["tn"] == "210|210|100|6|0" and data["tb"] == "60|60|100|28|0"   # strings, never a list
-    assert data["ti"] == "внутри 30°" and "m" not in data
+    assert "ti" not in data and "m" not in data
     # the time left and the finish clock are ready-made strings too
     assert data["et"] == "· ещё 50 мин" and data["ef"].startswith("готово ≈ ") and "r" not in data
     assert data["f"] == "Benchy_PLA.gcode" and data["u"] == int(NOW)
@@ -107,9 +107,9 @@ def test_layer_is_a_finished_string():
     now writes the line itself, and a fractional layer is cut to a whole one."""
     st = printing()
     st["PrintInfo"]["CurrentLayer"] = 19.45
-    assert widget.card(st, True, "P", NOW)["l"] == "слой 19 из 300"
+    assert widget.card(st, True, "P", NOW)["l"] == "слой 19 из 300 · внутри 30°"
     st["PrintInfo"]["TotalLayer"] = 0
-    assert widget.card(st, True, "P", NOW)["l"] == ""
+    assert widget.card(st, True, "P", NOW)["l"] == "внутри 30°"       # no layers: just the air
 
 
 def test_heating_shows_the_target():
@@ -121,7 +121,7 @@ def test_no_air_temperature_when_the_printer_has_none():
     """COSMOS sends no chamber temperature; the card must not show a dash for it."""
     st = printing()
     st.pop("TempOfBox")
-    assert "ti" not in widget.card(st, True, "P", NOW)
+    assert "внутри" not in widget.card(st, True, "P", NOW)["l"]
 
 
 @pytest.mark.parametrize("code, allowed, camera, want", [
@@ -151,7 +151,7 @@ def test_compact_caption_is_one_russian_line(live_bot):
 def test_speed_is_shown_only_when_changed():
     info = printing()
     info["PrintInfo"]["PrintSpeedPct"] = 125
-    assert widget.card(info, True, "P", NOW)["l"] == "слой 12 из 300 · ⚡125%"
+    assert widget.card(info, True, "P", NOW)["l"] == "слой 12 из 300 · внутри 30° · ⚡125%"
 
 
 @pytest.mark.parametrize("st, online, live", [
@@ -714,7 +714,7 @@ def test_idle_printer_gets_the_card_too(bot, fake_telegram):
     [sent] = fake_telegram.widgets
     data = card_of(sent["chat_data"])
     assert data["k"] == "i" and data["s"] == "Свободен"
-    assert data["l"] == "Можно ставить печать" and data["mn"]
+    assert data["l"] == "Можно ставить печать · внутри 30°" and data["mn"]
     assert "свободен" in sent["caption"]
 
 

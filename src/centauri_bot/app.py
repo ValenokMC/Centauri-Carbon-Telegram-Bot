@@ -938,6 +938,17 @@ class Bot(object):
             storage.update_state(snapshot_message=None)
             self.api.delete_message(self.owner, snap[0])
 
+    def leave_screen(self):
+        """The owner went back from a screen the bot had put on the card: a
+        picture that went with it is taken down, and the caption under the card,
+        which was the screen's first line (and is what the chat list shows),
+        returns to the status."""
+        self.drop_picture()
+        mid = storage.message_id()
+        if (mid and storage.message_kind() == widget.KIND
+                and self.caption_seen != (mid, self.render("", compact=True))):
+            self.refresh_main()
+
     def open_picture_screen(self, photo, title, kind, text, keyboard):
         """A screen that has a picture: the picture goes in first, then the
         card is sent again under it (quietly) already showing the screen, so
@@ -1124,7 +1135,7 @@ class Bot(object):
                     form = dict(photo=photo, is_photo=is_photo)
                 answer = self.api.edit_message(self.owner, target, text,
                                                keyboard=keyboard, **form)
-                if target == tracked_mid:
+                if target == tracked_mid and self.capturing() is None:
                     self.caption_seen = (None, None)   # the caption changed here
                 # Pressing Refresh on a message that already shows this is
                 # not a failure, and must not rebuild the message.
