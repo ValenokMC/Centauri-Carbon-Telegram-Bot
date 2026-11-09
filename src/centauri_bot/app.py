@@ -11,11 +11,7 @@ Only one instance of this may run at a time: Telegram allows exactly one
 long-polling consumer per token, and a second one silently steals updates from
 the first.
 """
-import copy
-import html as _html
 import logging
-import queue
-import secrets
 import threading
 import time
 
@@ -28,115 +24,23 @@ from . import sdcp
 from . import storage
 from . import support
 from . import ui
-from . import widget
 from .telegram_api import TelegramAPI
 
 
 log = logging.getLogger(__name__)
 
 
-def _whole_number(value):
-    try:
-        return int(float(value or 0))
-    except (TypeError, ValueError):
-        return 0
-
-
-class ScreenCapture(object):
-    """What one handler would have shown, taken instead of shown."""
-
-    def __init__(self, mid):
-        self.mid = mid          # the card
-        self.text = None
-        self.keyboard = None
-        self.toast = None
-        self.close = False      # the handler went back to the status
-        self.reopen = None      # a picture to post and a screen for the card under it
-        self.panel = {}         # bot.keyboard() once per tap: {detailed: keyboard}
-
-    def screen(self, text, keyboard):
-        self.text, self.keyboard = text, keyboard
-
-
-class _CapturingAPI(object):
-    """The Telegram client, plus one detour for buttons on the live card.
-
-    While a card button runs an ordinary button's handler on this thread,
-    whatever that handler would put on the card message (an edit, a new
-    screen message, a toast) is recorded instead, and the card draws it.
-    Every other call, and every call from another thread, goes straight
-    through.
-    """
-
-    def __init__(self, bot, api):
-        self._bot = bot
-        self._api = api
-
-    def __getattr__(self, name):
-        return getattr(self._api, name)
-
-    def __setattr__(self, name, value):
-        # A replaced detour method stays on the wrapper (a spy that calls the
-        # original must reach the detour, not itself); settings and other
-        # replaced methods belong to the client.
-        if name.startswith("_") or hasattr(type(self), name):
-            object.__setattr__(self, name, value)
-        else:
-            setattr(self._api, name, value)
-
-    def _cap(self):
-        return getattr(self._bot._tls, "capture", None)
-
-    def edit_message(self, chat, message_id, text, keyboard=None,
-                     photo=None, is_photo=False):
-        cap = self._cap()
-        if cap is not None and message_id == cap.mid:
-            # A photo here is the camera frame of a status redraw; a screen
-            # that is a picture goes through edit_main_from_callback.
-            cap.screen(text, keyboard)
-            return {"ok": True, "result": {"message_id": message_id}}
-        return self._api.edit_message(chat, message_id, text, keyboard=keyboard,
-                                      photo=photo, is_photo=is_photo)
-
-    def send_message(self, chat, text, keyboard=None, photo=None):
-        cap = self._cap()
-        if cap is not None and str(chat) == self._bot.owner:
-            if photo:
-                self._bot.post_picture(photo)
-            cap.screen(text, keyboard)
-            return {"ok": True, "result": {"message_id": cap.mid}}
-        return self._api.send_message(chat, text, keyboard=keyboard, photo=photo)
-
-    def delete_message(self, chat, message_id):
-        cap = self._cap()
-        if cap is not None and message_id == cap.mid:
-            return {"ok": True}         # the card stays; its screen changes
-        return self._api.delete_message(chat, message_id)
-
-    def answer_callback(self, callback_id, text=None):
-        cap = self._cap()
-        if cap is not None and not callback_id:
-            cap.toast = text or cap.toast
-            return {"ok": True}
-        return self._api.answer_callback(callback_id, text)
-
-
 class Bot(object):
 
     def __init__(self, cfg, api=None, clock=time.time):
         self.cfg = cfg
-        self._tls = threading.local()
-        self.api = _CapturingAPI(self, api or TelegramAPI(cfg["telegram_token"]))
+        self.api = api or TelegramAPI(cfg["telegram_token"])
         self.clock = clock
         self.owner = str(cfg["chat_id"])
         self.owner_user = str(cfg.get("owner_user_id") or "")
         self.host = cfg["printer_ip"]
         self.backend_name = backend.name(cfg)
         self.confirmations = backend.ConfirmationStore(clock=clock)
-        # The parts of a job are up to a hundred one-use tokens at once. They
-        # have a store of their own, so that tapping through them never pushes
-        # a pending "stop" or "pause" confirmation out of the other one.
-        self.object_tokens = backend.ConfirmationStore(clock=clock, limit=256)
         self.moonraker = None
         if self.backend_name == backend.MOONRAKER:
             base_url = cfg.get("moonraker_url") or ("http://%s" % self.host)
@@ -168,9 +72,6 @@ class Bot(object):
         self.frame_time = 0.0
         self.print_frame = None
         self.print_frame_time = 0.0
-        self.frame_job = None      # (TaskId, Filename) the kept frame belongs to
-        self.z_max = None          # highest toolhead Z seen in this job
-        self.frame_frozen = False  # the bed has started to drop: keep the frame
         # Макрос, запущенный из бота: (имя, когда, видели ли его в работе).
         # Нужен, чтобы доложить об окончании — HTTP-вызов возвращается сразу,
         # а сама калибровка идёт ещё десять минут.
@@ -180,30 +81,6 @@ class Bot(object):
         # A "type your own time" prompt waiting for the owner's answer.
         self.schedule_draft = None
         self.schedule_lock = threading.Lock()
-
-        # The live print card: what was last written into it and when, and a
-        # pause after Telegram refused a widget, so a refusal is not retried
-        # on every refresh.
-        self.widget_sent = None
-        self.widget_sent_at = 0.0
-        self.widget_retry_at = 0.0
-        self.snapshot_checked_at = 0.0
-        self.picture_kind = None   # what the picture slot holds: frame, objects, mesh
-        self.card_upgraded = False  # an outdated card is replaced once per process
-        # Screens the card shows by token (see widget.paginate): the answer to
-        # a tap too big for one answer, and what the bot shows by itself.
-        self.screens = {}          # token -> (screen, expires)
-        self.go = None             # token of a screen the card should open
-        self.note = None           # (text, expires): a result shown on the card
-        self.caption_seen = (None, None)   # (message id, caption last sent)
-        self.reads = {}            # key -> (when, value): short cache of Moonraker reads
-        # Slow follow-ups of a tap (the command itself, the pause for the
-        # printer to react, the redraw) run on a thread of their own, so the
-        # next tap is not left waiting. Not running (tests, before run()):
-        # they run in place.
-        self.work = None
-        self.stats_at = clock()
-        self.poll_ms = [0.0, 0]    # total and count of Moonraker status polls
 
         self.lifecycle = ps.PrinterLifecycle(cfg.get("progress_every_pct") or 0)
         self.maintenance = ps.MaintenanceCounter()
@@ -224,26 +101,15 @@ class Bot(object):
         days = (self.clock() - data["since"]) / 86400.0
         return ps.maintenance_status(hours, days, limit_h, limit_d)
 
-    def render(self, header="", detailed=False, compact=False):
+    def render(self, header="", detailed=False):
         status, online = self._snapshot()
         show, line, _ = self.maintenance_view()
         return ui.render(status, online, self.cfg.get("printer_name", "Centauri Carbon"),
                          header=header, detailed=detailed,
                          maintenance_line=line if show else "",
-                         now=self.clock(), tz=self.schedule_tz(), compact=compact)
+                         now=self.clock(), tz=self.schedule_tz())
 
     def keyboard(self, detailed=False):
-        # Built once per tap on the card: it reads the schedule from disk, and
-        # a handler asks for it more than once.
-        cap = self.capturing()
-        if cap is not None and detailed in cap.panel:
-            return cap.panel[detailed]
-        panel = self._build_keyboard(detailed)
-        if cap is not None:
-            cap.panel[detailed] = panel
-        return panel
-
-    def _build_keyboard(self, detailed):
         status, _ = self._snapshot()
         show, _, due = self.maintenance_view()
         scheduled = len(storage.load_schedule()) if self.schedule_available() else 0
@@ -254,116 +120,6 @@ class Bot(object):
 
     def allowed_actions(self):
         return backend.allowed_actions(self.cfg)
-
-    # ------------------------------------------ screens, notes, reads, work
-
-    def store_screen(self, sc):
-        """Keep a screen for widget.paginate / "go"; its short token."""
-        tok = secrets.token_urlsafe(6)
-        with self.lock:
-            now = self.clock()
-            for old in [t for t, (_s, until) in self.screens.items() if until <= now]:
-                del self.screens[old]
-            self.screens[tok] = (sc, now + widget.SCREEN_TTL_SEC)
-            while len(self.screens) > widget.SCREENS_KEPT:
-                del self.screens[next(iter(self.screens))]
-        return tok
-
-    def get_screen(self, tok):
-        with self.lock:
-            item = self.screens.get(tok)
-            if item and self.clock() < item[1]:
-                return item[0]
-            self.screens.pop(tok, None)
-        return None
-
-    def serve_go(self, tok):
-        """The card asked for the screen it was told to open: stop telling it."""
-        with self.lock:
-            if self.go == tok:
-                self.go = None
-
-    def set_note(self, text, ttl=30):
-        with self.lock:
-            self.note = (text, self.clock() + ttl)
-
-    def _live_note(self):
-        with self.lock:
-            if self.note and self.clock() < self.note[1]:
-                return self.note[0]
-            self.note = None
-        return ""
-
-    def _live_go(self):
-        with self.lock:
-            tok = self.go
-        if tok and self.get_screen(tok) is None:
-            self.serve_go(tok)          # expired unseen: nothing left to open
-            return ""
-        return tok or ""
-
-    # How long a read of the printer stays good. A tap on a screen that did
-    # not change asks Moonraker nothing; what may change during a print is
-    # kept for seconds only.
-    READ_TTL = {"files": 15, "history": 30, "macros": 300, "mesh": 300,
-                "diag": 30, "objects": 3}
-
-    def cached(self, key, fn):
-        """``fn()`` unless it was called less than READ_TTL[key] seconds ago.
-        A failure raises and is never remembered."""
-        with self.lock:
-            hit = self.reads.get(key)
-            if hit and self.clock() - hit[0] < self.READ_TTL[key]:
-                return copy.deepcopy(hit[1])
-        value = fn()
-        with self.lock:
-            self.reads[key] = (self.clock(), copy.deepcopy(value))
-        return value
-
-    def forget_read(self, *keys):
-        with self.lock:
-            for key in keys:
-                self.reads.pop(key, None)
-
-    def defer(self, job):
-        """Run ``job`` after the answer to a tap has gone out."""
-        if self.work is None:
-            job()
-        else:
-            self.work.put(job)
-
-    def work_loop(self):
-        while not self.stopping.is_set():
-            try:
-                job = self.work.get(timeout=1)
-            except queue.Empty:
-                continue
-            try:
-                job()
-            except Exception as e:
-                log.warning("follow-up of a tap failed: %r", e)
-
-    def note_poll(self, seconds):
-        with self.lock:
-            self.poll_ms[0] += seconds * 1000.0
-            self.poll_ms[1] += 1
-
-    STATS_EVERY_SEC = 600
-
-    def log_stats(self):
-        """One INFO line per ten minutes: what the bot asked of Telegram and
-        how long the printer takes to answer. No tokens, no text."""
-        if self.clock() - self.stats_at < self.STATS_EVERY_SEC:
-            return
-        self.stats_at = self.clock()
-        take = getattr(self.api._api, "take_counts", None)
-        counts = take() if take else {}
-        with self.lock:
-            total, n = self.poll_ms
-            self.poll_ms = [0.0, 0]
-        log.info("telegram calls in 10 min: %s; moonraker poll avg %s",
-                 " ".join("%s=%d" % (m, c) for m, c in sorted(counts.items())) or "none",
-                 "%d ms" % (total / n) if n else "n/a")
 
     def action_allowed(self, action):
         return backend.is_allowed(self.cfg, action)
@@ -445,18 +201,17 @@ class Bot(object):
 
     def prepare_object_choices(self, values):
         """Bind buttons to an exact object and the current print filename."""
-        # Four characters each: a whole job's buttons share one 1 KB answer
-        return [self.object_tokens.issue("exclude-choice", value, size=3)
+        return [self.confirmations.issue("exclude-choice", value)
                 for value in values]
 
     def resolve_object_choice(self, token):
-        return self.object_tokens.consume("exclude-choice", token)
+        return self.confirmations.consume("exclude-choice", token)
 
     def issue_object_confirmation(self, value):
-        return self.object_tokens.issue("exclude-object", value)
+        return self.confirmations.issue("exclude-object", value)
 
     def consume_object_confirmation(self, token):
-        return self.object_tokens.consume("exclude-object", token)
+        return self.confirmations.consume("exclude-object", token)
 
     # ---------------------------------------------------- scheduled starts
 
@@ -508,7 +263,6 @@ class Bot(object):
             path = self.moonraker.upload(name, data)
         except moonraker.MoonrakerError as e:
             return False, str(e), False
-        self.forget_read("files")
         self.refresh_files()
         return True, path, path in existing
 
@@ -611,82 +365,27 @@ class Bot(object):
                 self.frame, self.frame_time = shot, self.clock()
         return shot
 
-    # How far the bed must drop below the highest point of the print to count
-    # as the end-of-print drop (mm). A layer step is 0.1-0.3 mm and a Z-hop
-    # under a millimetre; the END_PRINT macro moves the bed tens of millimetres.
-    BED_DROP_MM = 2.0
-
-    def capture_print_frame(self, progress, status=None):
+    def capture_print_frame(self, progress):
         """Keep a frame taken while the print was still up.
 
         By the time the "ready" code arrives the bed is already dropping, and a
         finish photo shows the part sunk out of view. So near the end frames
         are taken more often, and the finish message uses the last one where
         the top surface is still visible.
-
-        On COSMOS that is not enough: END_PRINT, which lowers the bed, is
-        G-code inside the job, so the job stays "printing" at about 100 % while
-        the bed goes down, and every later frame would replace the good one.
-        The toolhead's Z (it grows as the bed goes down on this printer) tells
-        when that starts: a jump of BED_DROP_MM over the highest Z seen, or
-        100 %, freezes the frame until the job changes, but a jump counts only near
-        the end (95 % or the last layer). The jump itself is never counted into
-        the highest Z. The stock printer reports its finish
-        code before the bed moves, so its behaviour is the old one.
-
-        Cost: a grab is about 0.3 s over the network and runs on the printer
-        thread, so frames come every 10 s from 97 %, every 20 s from 95 %,
-        otherwise every 90 s - often enough for a recent frame at the end,
-        rare enough not to hold up the status loop.
         """
-        progress = progress or 0
-        moonraker_backend = self.backend_name == backend.MOONRAKER
-        info = (status or {}).get("PrintInfo") or {}
-        job = (info.get("TaskId"), info.get("Filename"))
+        every = 20 if (progress or 0) >= 95 else 90
         with self.lock:
-            if job != self.frame_job:
-                self.frame_job, self.z_max, self.frame_frozen = job, None, False
-            if moonraker_backend and not self.frame_frozen:
-                coord = (status or {}).get("CurrentCoord")
-                try:
-                    z = float(coord.get("Z")) if isinstance(coord, dict) else None
-                except (TypeError, ValueError):
-                    z = None
-                total = _whole_number(info.get("TotalLayer"))
-                near_end = progress >= 95 or (
-                    total > 0 and _whole_number(info.get("CurrentLayer")) >= total)
-                if info.get("Status") != ps.STATUS_PRINTING:
-                    pass            # paused or parking: the toolhead is not the print's
-                elif progress >= 100:
-                    self.frame_frozen = True
-                elif z is not None:
-                    if self.z_max is None:
-                        self.z_max = z
-                    elif z > self.z_max + self.BED_DROP_MM:
-                        # Only the end of the job counts as the bed dropping: a
-                        # lift in the middle (filament change, a park, a
-                        # purge) neither freezes nor raises the threshold.
-                        if near_end:
-                            self.frame_frozen = True
-                    else:
-                        self.z_max = max(self.z_max, z)
-            # Frozen with nothing kept yet would leave the finish without a picture.
-            if self.frame_frozen and self.print_frame:
-                return
             when = self.print_frame_time
-        every = 10 if progress >= 97 else 20 if progress >= 95 else 90
         if self.clock() - when < every:
             return
         shot = self.grab()
         if shot:
             with self.lock:
-                if not (self.frame_frozen and self.print_frame):
-                    self.print_frame, self.print_frame_time = shot, self.clock()
+                self.print_frame, self.print_frame_time = shot, self.clock()
 
     # -------------------------------------------------- the single message
 
-    def refresh_main(self, force_new=False, text=None, photo=None, keyboard=None,
-                     header="", quiet=False):
+    def refresh_main(self, force_new=False, text=None, photo=None, keyboard=None):
         """Keep exactly one status message in the chat.
 
         Edits in place; with force_new it is recreated as the last message in
@@ -706,379 +405,41 @@ class Bot(object):
         sent anyway and the old one is cut down to a one-line pointer without
         buttons. That leaves at most one such line per 48 quiet hours, since
         the new message can again be deleted for the next two days.
-
-        With ``status_widget`` on, the status of a running print is the live
-        card (widget.py): the status with ``header`` is drawn by the widget,
-        and the caption under it is the short version. Any other screen
-        (``text``) is still an ordinary message. If Telegram refuses the
-        widget, the ordinary message goes out instead, exactly as before.
-
-        In card mode (the card is wanted) every other screen is the card's
-        too: ``text`` and ``keyboard`` are stored under a token, the card's
-        state carries it as "go", and the card asks for the screen by itself
-        and draws it. Its caption is the screen's first line, which is what
-        notifications and the chat list show.
         """
-        cap = self.capturing()
-        if cap is not None:
-            # A handler run for a tap on the card: a screen becomes the
-            # card's screen, and "the status" means back to the card itself.
-            # Nothing goes to Telegram here: the answer is waiting.
-            if text is None:
-                cap.close = True
-            else:
-                if photo:
-                    self.post_picture(photo)
-                cap.screen(text, keyboard)
-            return cap.mid
         with self.main_lock:
             mid = storage.message_id()
-            kind = storage.message_kind() if mid else None
+            if photo is None:
+                photo = self.grab(max_age=10)
+            body = self.render() if text is None else text
             kb = keyboard if keyboard is not None else self.keyboard()
-            wanted = self._widget_wanted()
-            as_screen = text is not None and wanted
-            live = (text is None or as_screen) and wanted
-            # The card carries its own buttons: under it nothing, and a
-            # screen it opens brings its own.
-            card_kb = self.card_keyboard() if (text is None or as_screen) else kb
-            # A print that runs under an ordinary message gets its card on the
-            # next refresh: moved down quietly, like any status recreation.
-            promote = bool(live and mid and kind != widget.KIND and not force_new)
-            cache = {}
-            if as_screen:
-                self.go = self.store_screen(widget.screen(text, keyboard))
 
-            def body():
-                if "body" not in cache:
-                    cache["body"] = self.render(header) if text is None else text
-                return cache["body"]
-
-            def caption():
-                if as_screen:
-                    return self._first_line(text)
-                return self.render(header, compact=True) if text is None else text
-
-            def frame():
-                if "photo" not in cache:
-                    cache["photo"] = self.grab(max_age=10) if photo is None else photo
-                return cache["photo"]
-
-            def keep_old():
-                if kind == widget.KIND:
-                    return self._edit_widget(mid, caption(), card_kb)
-                if widget.is_card(kind):
-                    # a card of an older version: its caption only, never a
-                    # frame, which would turn the widget into a photo
-                    return self._edit_in_place(mid, caption(), kb, False)
-                return self._edit_in_place(mid, body(), kb, frame())
-
-            if mid and not force_new and not promote:
-                if keep_old():
+            if mid and not force_new:
+                if self._edit_in_place(mid, body, kb, photo):
                     return mid
                 # the edit failed: the message was deleted by hand, or is stale
 
-            if live:
-                new_mid = self._send_widget(card_kb, header, silent=promote or quiet,
-                                            caption=caption() if as_screen else None)
-                if new_mid:
-                    self._drop_old(mid, kind)
-                    return new_mid
-                # refused: the ordinary message below, or the old one kept
-                self.go = None
-                if promote and keep_old():
-                    return mid
-
-            answer = self.api.send_message(self.owner, body(), keyboard=kb, photo=frame())
+            answer = self.api.send_message(self.owner, body, keyboard=kb, photo=photo)
             if not answer.get("ok"):
                 # nothing new reached the chat: keep the old message working
-                if mid and keep_old():
+                if mid and self._edit_in_place(mid, body, kb, photo):
                     return mid
                 return None
             new_mid = answer["result"]["message_id"]
             storage.set_message_id(new_mid)
-            self._drop_old(mid, kind)
+            if mid and not self.api.delete_message(self.owner, mid).get("ok"):
+                self._retire(mid)
             return new_mid
-
-    @staticmethod
-    def _first_line(text):
-        """The first line of a screen, for a caption: its own markup if it is
-        short, plain text if not (a cut tag would make Telegram refuse it)."""
-        for line in str(text or "").split("\n"):
-            if line.strip():
-                if len(line) <= 300:
-                    return line.strip()
-                return _html.escape(" ".join(widget.lines(line))[:300])
-        return "🖨"
 
     RETIRED_TEXT = "⬇️ Статус — ниже"
 
-    def _drop_old(self, mid, kind):
-        if mid and not self.api.delete_message(self.owner, mid).get("ok"):
-            self._retire(mid, kind)
-
-    def _retire(self, mid, kind=None):
+    def _retire(self, mid):
         """Turn a status message Telegram no longer lets us delete into a
         pointer to the current one. Without buttons, so nothing is pressed on
-        a stale panel. A message deleted by hand simply refuses both edits.
-        A live card loses its state too, so it stops showing numbers that
-        nobody updates any more."""
-        forms = (dict(), dict(is_photo=True))
-        if widget.is_card(kind):
-            self.api.edit_widget_data(self.owner, mid, "")
-            forms = (dict(is_photo=True),)
-        for extra in forms:
+        a stale panel. A message deleted by hand simply refuses both edits."""
+        for extra in (dict(), dict(is_photo=True)):
             answer = self.api.edit_message(self.owner, mid, self.RETIRED_TEXT, **extra)
             if answer.get("ok") or "not modified" in str(answer.get("description")):
                 return
-
-    # ------------------------------------------------- the live print card
-
-    WIDGET_RETRY_SEC = 600      # after a refused widget, ordinary messages for a while
-    WIDGET_HEARTBEAT_SEC = 120  # rewrite unchanged numbers, so the card can tell it is alive
-
-    def _widget_wanted(self):
-        """A live card makes sense now: enabled, a private chat, a print on."""
-        if not self.cfg.get("status_widget"):
-            return False
-        # Production Telegram sends widgets to private chats only, and a
-        # private chat id is a user id: positive. A group gets the old message.
-        if not self.owner.isdigit():
-            return False
-        if self.clock() < self.widget_retry_at:
-            return False
-        # Not only during a print: idle, the card is the panel too. Without a
-        # connection it still is, and says "Нет связи" itself; only before the
-        # first status there is nothing to draw.
-        status, _online = self._snapshot()
-        return bool(status)
-
-    def _card(self):
-        status, online = self._snapshot()
-        keys = widget.buttons(status, online, self.allowed_actions(),
-                              camera=bool(self.cfg.get("send_photo")))
-        return widget.card(status, online,
-                           self.cfg.get("printer_name", "Centauri Carbon"), self.clock(),
-                           keys=keys, items=widget.menu(self.keyboard(), fans_on=self._fans_on()),
-                           go=self._live_go(), note=self._live_note(),
-                           tz=self.schedule_tz())
-
-    def _fans_on(self):
-        status, _ = self._snapshot()
-        fans = (status or {}).get("CurrentFanSpeed") or {}
-        try:
-            return any(float(value or 0) > 0 for value in fans.values())
-        except (TypeError, ValueError):
-            return False
-
-    FOLD_BUTTON = {"text": "▲ Свернуть меню", "callback_data": "refresh"}
-
-    def card_keyboard(self):
-        """Under the card: nothing. Every button is on the card itself; a
-        screen it opens (files, macros...) brings its own buttons, and
-        "Назад" takes them away again."""
-        return []
-
-    def card_menu_keyboard(self):
-        """The full panel under a card of version 3, which had a "Menu"
-        button outside the widget. Kept so such a card still answers."""
-        return self.keyboard() + [[dict(self.FOLD_BUTTON)]]
-
-    # ---------------------------------------------- a camera frame on request
-
-    SNAPSHOT_TTL_SEC = 300
-
-    def send_snapshot(self):
-        """A fresh frame as its own message, taken down again after a while.
-
-        The card cannot show a picture (no network in the widget, 1 KB of
-        state), so the "📷" button on it sends one beside it. Only the newest
-        frame stays; the previous one is deleted at once. The message id is
-        kept in state.json, so a restart still cleans up.
-        """
-        shot = self.grab()
-        if not shot or not self.post_picture(shot, "📷 %s" % time.strftime(
-                "%H:%M", time.localtime(self.clock()))):
-            return False
-        # The frame went in below the card; the card moves down under it, so
-        # the picture stays on top and the buttons stay under the thumb.
-        try:
-            self.refresh_main(force_new=True, quiet=True)
-        except Exception as e:
-            log.warning("status did not move under the frame: %r", e)
-        return True
-
-    def post_picture(self, photo, title="🖼", kind="frame"):
-        """A picture beside the card: the camera frame, or a screen that is a
-        picture (the bed map, the objects). A widget cannot show one. Only the
-        newest stays, and it goes away after SNAPSHOT_TTL_SEC. ``kind`` says
-        what it is: "frame", or "objects" / "mesh", which also go away when the
-        owner leaves the screen they belong to (drop_picture)."""
-        answer = self.api._api.send_message(
-            self.owner, "%s · уберу через %d мин" % (title, self.SNAPSHOT_TTL_SEC // 60),
-            photo=photo)
-        if not answer.get("ok"):
-            return False
-        old = storage.load_state().get("snapshot_message")
-        storage.update_state(snapshot_message=[answer["result"]["message_id"],
-                                               self.clock() + self.SNAPSHOT_TTL_SEC])
-        self.picture_kind = kind
-        if old:
-            self.api._api.delete_message(self.owner, old[0])
-        return True
-
-    def drop_picture(self):
-        """Take down the picture of a screen the owner has left (the bed map
-        of the objects, the mesh). A camera frame is not touched: it stays for
-        its few minutes."""
-        if self.picture_kind not in ("objects", "mesh"):
-            return
-        self.picture_kind = None
-        snap = storage.load_state().get("snapshot_message")
-        if snap:
-            storage.update_state(snapshot_message=None)
-            self.api.delete_message(self.owner, snap[0])
-
-    def leave_screen(self):
-        """The owner went back from a screen the bot had put on the card: a
-        picture that went with it is taken down, and the caption under the card,
-        which was the screen's first line (and is what the chat list shows),
-        returns to the status."""
-        self.drop_picture()
-        mid = storage.message_id()
-        if (mid and storage.message_kind() == widget.KIND
-                and self.caption_seen != (mid, self.render("", compact=True))):
-            self.refresh_main()
-
-    def open_picture_screen(self, photo, title, kind, text, keyboard):
-        """A screen that has a picture: the picture goes in first, then the
-        card is sent again under it (quietly) already showing the screen, so
-        the picture is on top and the buttons are under the thumb. Without a
-        picture (it could not be drawn) only the screen is shown."""
-        if photo:
-            self.post_picture(photo, title, kind)
-        try:
-            self.refresh_main(force_new=True, quiet=True, text=text, keyboard=keyboard)
-        except Exception as e:
-            log.warning("screen with a picture did not open: %r", e)
-    def run_screen(self, handler):
-        """Run an ordinary button's handler for a tap on the card, and return
-        what it would have shown as a ScreenCapture."""
-        cap = ScreenCapture(storage.message_id())
-        self._tls.capture = cap
-        try:
-            handler()
-        finally:
-            self._tls.capture = None
-        return cap
-
-    def capturing(self):
-        return getattr(self._tls, "capture", None)
-
-    def expire_snapshot(self):
-        """Take down a requested frame once its time is up. Looks at most
-        every 15 s: it runs on every printer status."""
-        if self.clock() - self.snapshot_checked_at < 15:
-            return
-        self.snapshot_checked_at = self.clock()
-        snap = storage.load_state().get("snapshot_message")
-        if not snap or self.clock() < float(snap[1]):
-            return
-        storage.update_state(snapshot_message=None)
-        self.picture_kind = None
-        self.api.delete_message(self.owner, snap[0])
-
-    def _send_widget(self, kb, header, silent=False, caption=None):
-        """Send the card. Its message id, or None if it did not go out."""
-        caption = caption or self.render(header, compact=True)
-        if len(caption) > widget.CAPTION_LIMIT:
-            return None
-        data = self._card()
-        answer = self.api.send_widget(self.owner, widget.HTML, caption=caption,
-                                      keyboard=kb, chat_data=widget.encode(data),
-                                      silent=silent, allow_queries=True)
-        if not answer.get("ok"):
-            self.widget_retry_at = self.clock() + self.WIDGET_RETRY_SEC
-            log.info("live card refused, sending the ordinary message: %s",
-                     answer.get("description") or "no answer")
-            return None
-        new_mid = answer["result"]["message_id"]
-        storage.set_message_id(new_mid, kind=widget.KIND)
-        self.widget_sent, self.widget_sent_at = data, self.clock()
-        self.caption_seen = (new_mid, caption)
-        return new_mid
-
-    def _edit_widget(self, mid, caption, kb):
-        """Bring the card up to date: its numbers, then the caption and buttons."""
-        self._push_widget_locked(mid, force=True)
-        # An unchanged caption is not sent again: Telegram refuses it with
-        # "message is not modified", and that was a wasted round trip per refresh.
-        if self.caption_seen == (mid, caption):
-            return True
-        answer = self.api.edit_message(self.owner, mid, caption, keyboard=kb, is_photo=True)
-        done = bool(answer.get("ok")) or "not modified" in str(answer.get("description"))
-        if done:
-            self.caption_seen = (mid, caption)
-        return done
-
-    def push_widget(self):
-        """Write fresh numbers into the card. Called on every printer status,
-        throttled to ``widget_refresh_sec``. Silent, so it can run often."""
-        if not self.cfg.get("status_widget"):
-            return
-        every = max(3.0, float(self.cfg.get("widget_refresh_sec") or 10))
-        if self.clock() - self.widget_sent_at < every:
-            return
-        # A send or an edit of the message is under way: it brings the card
-        # up to date itself, and the printer thread must not wait for it.
-        if not self.main_lock.acquire(blocking=False):
-            return
-        upgrade = False
-        try:
-            mid = storage.message_id()
-            kind = storage.message_kind() if mid else None
-            if mid and kind == widget.KIND:
-                self._push_widget_locked(mid)
-            elif (mid and widget.is_card(kind) and not self.card_upgraded
-                    and self._widget_wanted()):
-                # A card from before an update keeps its old HTML for good, and
-                # only a print used to replace it. Whatever the printer is
-                # doing: once per start, so a refused widget is not retried in
-                # a loop (_widget_wanted also waits out widget_retry_at).
-                self.card_upgraded = upgrade = True
-        finally:
-            self.main_lock.release()
-        if upgrade:
-            self.refresh_main(quiet=True)
-
-    def push_now(self):
-        """Write the card's state at once (a note that must not wait for the
-        next printer status)."""
-        with self.main_lock:
-            mid = storage.message_id()
-            if mid and storage.message_kind() == widget.KIND:
-                self._push_widget_locked(mid, force=True)
-
-    def _push_widget_locked(self, mid, force=False):
-        data = self._card()
-        if data is None:
-            return False
-        now = self.clock()
-        if (not force and widget.same_content(data, self.widget_sent)
-                and now - self.widget_sent_at < self.WIDGET_HEARTBEAT_SEC):
-            return True
-        answer = self.api.edit_widget_data(self.owner, mid, widget.encode(data))
-        # Even on failure: the next try waits for the interval, not the next status.
-        self.widget_sent_at = now
-        description = str(answer.get("description") or "")
-        if answer.get("ok") or "not modified" in description:
-            self.widget_sent = data
-            return True
-        if description and "Too Many Requests" not in description:
-            # Telegram says this is no card any more (deleted, replaced): treat
-            # it as an ordinary message; the next refresh makes a new card.
-            log.info("live card not updated: %s", description)
-            storage.set_message_id(mid, kind=None)
-        return False
 
     def _edit_in_place(self, mid, body, kb, photo):
         """Edit the status message whatever it currently is.
@@ -1099,7 +460,7 @@ class Bot(object):
         return False
 
     def edit_main_from_callback(self, clicked_mid, text, keyboard=None,
-                                photo=None, is_photo=False, picture=False):
+                                photo=None, is_photo=False):
         """Edit the one tracked UI message after a button press.
 
         Telegram keeps old inline keyboards usable.  A user can therefore
@@ -1111,43 +472,19 @@ class Bot(object):
         """
         with self.main_lock:
             tracked_mid = storage.message_id()
-            tracked_kind = storage.message_kind() if tracked_mid else None
-
-            def edit(target):
-                if target == tracked_mid and widget.is_card(tracked_kind):
-                    # The live card: its text is the caption. A screen that
-                    # is a picture (the bed map, the objects) cannot be drawn
-                    # on a widget: it replaces the card as an ordinary photo
-                    # message, and "Назад" brings the card back. The camera
-                    # frame of a plain refresh simply stays out.
-                    capturing = self.capturing() is not None
-                    if photo and picture and not capturing:
-                        return False
-                    # While a tap waits for its answer nothing goes to Telegram
-                    # first; the card is brought up to date after the answer.
-                    if tracked_kind == widget.KIND and not capturing:
-                        self._push_widget_locked(target, force=True)
-                    # On the card itself the picture goes beside it.
-                    if photo and picture and capturing:
-                        self.post_picture(photo)
-                    form = dict(photo=None, is_photo=True)
-                else:
-                    form = dict(photo=photo, is_photo=is_photo)
-                answer = self.api.edit_message(self.owner, target, text,
-                                               keyboard=keyboard, **form)
-                if target == tracked_mid and self.capturing() is None:
-                    self.caption_seen = (None, None)   # the caption changed here
-                # Pressing Refresh on a message that already shows this is
-                # not a failure, and must not rebuild the message.
-                return bool(answer.get("ok")) or \
-                    "not modified" in str(answer.get("description"))
 
             if tracked_mid and tracked_mid != clicked_mid:
-                if edit(tracked_mid):
+                answer = self.api.edit_message(
+                    self.owner, tracked_mid, text, keyboard=keyboard,
+                    photo=photo, is_photo=is_photo)
+                if answer.get("ok"):
                     self.api.delete_message(self.owner, clicked_mid)
                     return tracked_mid
 
-            if not edit(clicked_mid):
+            answer = self.api.edit_message(
+                self.owner, clicked_mid, text, keyboard=keyboard,
+                photo=photo, is_photo=is_photo)
+            if not answer.get("ok"):
                 for stale_mid in {tracked_mid, clicked_mid}:
                     if stale_mid:
                         self.api.delete_message(self.owner, stale_mid)
@@ -1162,9 +499,7 @@ class Bot(object):
 
             if tracked_mid and tracked_mid != clicked_mid:
                 self.api.delete_message(self.owner, tracked_mid)
-                storage.set_message_id(clicked_mid)
-            else:
-                storage.set_message_id(clicked_mid, kind=tracked_kind)
+            storage.set_message_id(clicked_mid)
             return clicked_mid
 
     # ------------------------------------------------------------- commands
@@ -1194,7 +529,7 @@ class Bot(object):
             return False, "список файлов недоступен"
         if self.backend_name == backend.MOONRAKER:
             try:
-                records = self.cached("files", self.moonraker.list_file_records)
+                records = self.moonraker.list_file_records()
             except moonraker.MoonrakerError as e:
                 return False, str(e)
             with self.lock:
@@ -1273,10 +608,6 @@ class Bot(object):
                 return False, "эта команда не поддерживается Moonraker-режимом"
             try:
                 method()
-                if action in (backend.DELETE, backend.START):
-                    self.forget_read("files")
-                if action == backend.EXCLUDE_OBJECT:
-                    self.forget_read("objects")
                 if action == backend.RUN_MACRO:
                     with self.lock:
                         self.macro_watch = (value, self.clock(), False)
@@ -1322,7 +653,7 @@ class Bot(object):
         if self.backend_name != backend.MOONRAKER:
             return False, "диагностика COSMOS доступна только через Moonraker"
         try:
-            return True, self.cached("diag", self.moonraker.diagnostics)
+            return True, self.moonraker.diagnostics()
         except moonraker.MoonrakerError as e:
             return False, str(e)
 
@@ -1332,7 +663,7 @@ class Bot(object):
                 or self.backend_name != backend.MOONRAKER):
             return False, "исключение объектов доступно только через Moonraker"
         try:
-            return True, self.cached("objects", self.moonraker.exclude_object_state)
+            return True, self.moonraker.exclude_object_state()
         except moonraker.MoonrakerError as e:
             return False, str(e)
 
@@ -1340,7 +671,7 @@ class Bot(object):
         if not self.action_allowed(backend.HISTORY) or self.backend_name != backend.MOONRAKER:
             return False, "история доступна только через Moonraker"
         try:
-            return True, self.cached("history", self.moonraker.history)
+            return True, self.moonraker.history()
         except moonraker.MoonrakerError as e:
             return False, str(e)
 
@@ -1348,7 +679,7 @@ class Bot(object):
         if not self.action_allowed(backend.HEIGHT_MAP) or self.backend_name != backend.MOONRAKER:
             return False, "карта доступна только через Moonraker"
         try:
-            return True, self.cached("mesh", self.moonraker.bed_mesh)
+            return True, self.moonraker.bed_mesh()
         except moonraker.MoonrakerError as e:
             return False, str(e)
 
@@ -1356,7 +687,7 @@ class Bot(object):
         if not self.action_allowed(backend.MACROS) or self.backend_name != backend.MOONRAKER:
             return False, "макросы доступны только через Moonraker"
         try:
-            return True, self.cached("macros", self.moonraker.list_macros)
+            return True, self.moonraker.list_macros()
         except moonraker.MoonrakerError as e:
             return False, str(e)
 
@@ -1411,24 +742,20 @@ class Bot(object):
         note_appended = False
         photo = None
         keyboard = None
-        # The status events pass a header, not finished text: refresh_main
-        # draws them as the live card or as the usual message.
-        text = None
-        header = ""
 
         if event.kind == ps.STARTED:
-            header = "🖨 <b>Печать началась</b>\n"
+            text = self.render("🖨 <b>Печать началась</b>\n")
         elif event.kind == ps.RESUMED:
-            header = "▶️ <b>Печать продолжилась</b>\n"
+            text = self.render("▶️ <b>Печать продолжилась</b>\n")
         elif event.kind == ps.PAUSED:
-            header = "⏸ <b>Печать на паузе</b>\nПродолжить — кнопкой ниже.\n"
+            text = self.render("⏸ <b>Печать на паузе</b>\nПродолжить — кнопкой ниже.\n")
         elif event.kind == ps.STALLED:
             # The status object carries Klipper's own reason for the stop;
             # ui.stall_header prefers it over the bare numeric code.
             status, _ = self._snapshot()
-            header = ui.stall_header(status, event.code)
+            text = self.render(ui.stall_header(status, event.code))
         elif event.kind == ps.PROGRESS:
-            header = "📊 <b>Идёт печать</b>\n"
+            text = self.render("📊 <b>Идёт печать</b>\n")
         elif event.kind == ps.FINISHED:
             text = ui.done_text(event.snapshot) + self.light_off_if_night()
             # The one place an unprompted support note is allowed: a print that
@@ -1445,22 +772,9 @@ class Bot(object):
         else:
             return
 
-        finished = event.kind in (ps.FINISHED, ps.CANCELLED)
-        finish_frame = photo           # the cooldown notice repeats it
-        if finished and self._widget_wanted():
-            # In card mode the frame goes out as the picture beside the card,
-            # with the finish text as its caption and no buttons; the card
-            # then comes to the bottom under it. With the support note the
-            # text (note and link included) is a screen the card opens.
-            head = self._first_line(text)
-            if photo:
-                self.post_picture(photo, text if len(text) <= 700 else head)
-            if keyboard is None:
-                text, header = None, head + "\n"
-            photo = None
         try:
             mid = self.refresh_main(force_new=True, text=text, photo=photo,
-                                    keyboard=keyboard, header=header)
+                                    keyboard=keyboard)
         except Exception as e:
             log.warning("notification did not go out: %r", e)
             return
@@ -1475,7 +789,7 @@ class Bot(object):
             # By the time the nozzle has cooled the bed has long dropped, and a
             # fresh frame shows the part sunk out of view. The cooled notice
             # repeats the finish frame; "Refresh" still shows the live camera.
-            self.cooldown_photo = finish_frame if self.cooldown_pending else None
+            self.cooldown_photo = photo if self.cooldown_pending else None
 
     def _watch_macro(self):
         """Report when a macro started from the bot has finished.
@@ -1568,18 +882,14 @@ class Bot(object):
     def _take_print_frame(self):
         with self.lock:
             shot, self.print_frame, self.print_frame_time = self.print_frame, None, 0.0
-            self.frame_job, self.z_max, self.frame_frozen = None, None, False
         return shot
 
     def show_connection_lost(self, elapsed):
         """Replace the main panel with an offline view, without a stale photo."""
-        header = ("⚠️ <b>Связь с принтером потеряна</b>\n"
-                  "Нет ответа уже %d с, продолжаю переподключаться.\n" % elapsed)
+        text = self.render(
+            "⚠️ <b>Связь с принтером потеряна</b>\n"
+            "Нет ответа уже %d с, продолжаю переподключаться.\n" % elapsed)
         try:
-            if self._widget_wanted():
-                # The card says "Нет связи" itself; the news is its caption.
-                return self.refresh_main(force_new=True, header=header)
-            text = self.render(header)
             return self.refresh_main(force_new=True, text=text, photo=False)
         except Exception as e:
             log.warning("connection-loss panel did not go out: %r", e)
@@ -1587,9 +897,9 @@ class Bot(object):
 
     def show_connection_restored(self):
         """Put the live main panel back at the bottom after reconnection."""
+        text = self.render("🔌 <b>Связь с принтером восстановлена</b>\n")
         try:
-            return self.refresh_main(
-                force_new=True, header="🔌 <b>Связь с принтером восстановлена</b>\n")
+            return self.refresh_main(force_new=True, text=text)
         except Exception as e:
             log.warning("connection-restored panel did not go out: %r", e)
             return None
@@ -1615,9 +925,7 @@ class Bot(object):
         while not self.stopping.is_set():
             self._maybe_report_connection_loss()
             try:
-                polled = time.monotonic()
                 status = self.moonraker.status()
-                self.note_poll(time.monotonic() - polled)
                 with self.lock:
                     was_online = self.online
                     self.online = True
@@ -1699,7 +1007,7 @@ class Bot(object):
 
         if code == ps.STATUS_PRINTING and print_info.get("Filename"):
             try:
-                self.capture_print_frame(print_info.get("Progress", 0) or 0, status)
+                self.capture_print_frame(print_info.get("Progress", 0) or 0)
             except Exception as e:
                 log.debug("print frame not taken: %r", e)
             try:
@@ -1716,15 +1024,6 @@ class Bot(object):
         for event in self.lifecycle.observe(status):
             self.announce(event)
         self._maybe_notify_cooldown(status)
-        try:
-            self.push_widget()
-        except Exception as e:
-            log.debug("live card not updated: %r", e)
-        try:
-            self.expire_snapshot()
-        except Exception as e:
-            log.debug("camera frame not taken down: %r", e)
-        self.log_stats()
 
     def keepalive_loop(self):
         """The printer closes the websocket if the client stays silent.
@@ -1767,12 +1066,8 @@ class Bot(object):
             except Exception as e:
                 log.warning("status not refreshed: %r", e)
 
-    # Named outright: taps on the live card arrive as widget_query, which a
-    # default subscription is not promised to include.
-    UPDATES = ["message", "callback_query", "widget_query"]
-
     def telegram_loop(self):
-        from .handlers import handle_callback, handle_message, handle_widget_query
+        from .handlers import handle_callback, handle_message
         offset = None
         self.api.set_my_commands([
             {"command": "status", "description": "состояние принтера"},
@@ -1787,15 +1082,12 @@ class Bot(object):
         ])
         while not self.stopping.is_set():
             try:
-                answer = self.api.get_updates(offset=offset, timeout=25,
-                                              allowed=self.UPDATES)
+                answer = self.api.get_updates(offset=offset, timeout=25)
                 for update in answer.get("result", []):
                     offset = update["update_id"] + 1
                     try:
                         if "callback_query" in update:
                             handle_callback(self, update["callback_query"])
-                        elif "widget_query" in update:
-                            handle_widget_query(self, update["widget_query"])
                         elif "message" in update:
                             handle_message(self, update["message"])
                     except Exception as e:
@@ -1810,9 +1102,8 @@ class Bot(object):
             storage.forget_statistics()
         except OSError as e:  # housekeeping must never stop the bot starting
             log.debug("could not tidy state.json: %r", e)
-        self.work = queue.Queue()
         targets = [self.printer_loop, self.keepalive_loop, self.refresh_loop,
-                   self.schedule_loop, self.work_loop]
+                   self.schedule_loop]
         for target in targets:
             threading.Thread(target=target, daemon=True).start()
         try:
