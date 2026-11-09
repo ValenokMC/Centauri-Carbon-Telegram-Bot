@@ -40,7 +40,7 @@ from . import printer_state as ps
 
 log = logging.getLogger(__name__)
 
-VERSION = 12
+VERSION = 13
 
 # storage.message_kind() of a card sent with this very HTML. A sent widget's
 # HTML can never be replaced, so a card from an older version is not ours to
@@ -175,7 +175,7 @@ f=cv('--tg-theme-text-color');t.globalAlpha=.2;t.strokeStyle=f;t.lineWidth=3;t.s
 for(n=0;n<o.length;n++){s=+o[n];if(s==3)continue;
 a=g.b.substr(4*n,4).split('').map(function(k){return A.indexOf(k)*K});x=6+a[0];y=6+a[1];w=a[2]-a[0];h=a[3]-a[1];
 t.fillStyle=t.strokeStyle=cv(s==1?'--tg-theme-destructive-text-color':'--tg-theme-button-color');
-t.globalAlpha=[.05,.25,.85,0,.4][s];t.fillRect(x,y,w,h);t.globalAlpha=[.35,.6,1,1,1][s];t.strokeRect(x,y,w,h);
+t.globalAlpha=[.12,.25,.85,0,.4][s];t.fillRect(x,y,w,h);t.globalAlpha=[.6,.6,1,1,1][s];t.strokeRect(x,y,w,h);
 v=parseInt(g.n[n],36);if(v){z=20+8*((v-1)/5|0);p=(v-1)%5;t.fillStyle=s==2&&!p?'#fff':f;t.font='600 '+z+'px sans-serif';
 t.textAlign='center';t.textBaseline='middle';t.fillText(n+1,x+w/2+[0,0,1,-1,0][p]*(w/2+3+.3*z*String(n+1).length),y+h/2+[0,-1,0,0,1][p]*(h/2+3+.4*z))}}}
 function drawScreen(){try{x('vt',sc.t||'');fig(sc.g);var t=clr('vx');(sc.x||[]).forEach(function(s){el(t,'div',s)});
@@ -201,7 +201,7 @@ if(W){W.onEvent('chatDataChanged',draw);draw();if(W.ready)W.ready();if(W.request
 # First 12 hex digits of sha256 of HTML. A card that is already in the chat
 # keeps the HTML it was sent with, so any change of HTML must bump VERSION; a
 # test compares this with the real hash and fails until both are updated.
-HTML_SHA = "63ef194c1a9e"
+HTML_SHA = "4e36c24f5a3a"
 
 
 def html_fits(html=HTML):

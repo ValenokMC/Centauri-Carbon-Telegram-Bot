@@ -284,6 +284,31 @@ def _confirm_figure(bot, value):
                    {other for other in names if ui.object_label(other) == model})
 
 
+def _exclusion_question(bot, value):
+    """The confirmation text for ONE part (a Klipper object is one copy: the
+    model's file name may say "28 ШТ", that is not what goes), and the number
+    on its button."""
+    label = value.get("label") or ui.object_label(value["name"])
+    number = label.split(" · ", 1)[0]
+    number = number if number.isdigit() else ""
+    lines = ["❌ <b>Убрать деталь%s из печати?</b>" % (" №" + number if number else ""),
+             escape(label)]
+    ok, state = bot.exclude_objects()
+    if ok:
+        model = ui.object_label(value["name"])
+        excluded = set(state.get("ExcludedObjects") or [])
+        rest = sum(1 for name in state.get("Objects") or []
+                   if ui.object_label(name) == model and name not in excluded
+                   and name != value["name"])
+        if rest % 10 == 1 and rest % 100 != 11:
+            lines.append("Остальная %d деталь этой модели продолжит печататься." % rest)
+        elif rest:
+            lines.append("Остальные %d %s этой модели продолжат печататься." % (
+                rest, ui.plural(rest, "деталь", "детали", "деталей")))
+    lines.append("Напечатанная часть останется на столе, вернуть нельзя.")
+    return "\n".join(lines), number
+
+
 def show_objects(bot, chat, mid=None, is_photo=False, force_new=False, group=None):
     ok, state = bot.exclude_objects()
     if not ok:
@@ -690,14 +715,14 @@ def _ask_confirmation(bot, chat, mid, query, what, is_photo):
         cap = bot.capturing()
         if cap is not None:
             cap.figure = _confirm_figure(bot, value)      # a tap on the card: show the part
-        bot.api.edit_message(
-            chat, mid,
-            "❌ <b>Убрать модель из текущей печати?</b>\n%s\n\n"
-            "Klipper пропустит все оставшиеся движения этой модели. "
-            "Уже напечатанная часть останется на столе; вернуть её в это задание нельзя."
-            % escape(value.get("label") or ui.object_label(value["name"])),
-            keyboard=ui.kb_confirm("exclude:%s" % token, "убрать модель"),
-            is_photo=is_photo)
+        text, number = _exclusion_question(bot, value)
+        keyboard = ui.kb_confirm("exclude:%s" % token,
+                                 "убрать деталь %s" % number if number else "убрать деталь")
+        if cap is not None:
+            # "Отмена" goes back to that model's numbers, not to the main card
+            back = bot.prepare_object_groups([ui.object_label(value["name"])])[0]
+            keyboard[0][1] = {"text": "↩️ Отмена", "callback_data": "objgrp:" + back}
+        bot.api.edit_message(chat, mid, text, keyboard=keyboard, is_photo=is_photo)
         return
     if what.startswith("macro:"):
         choice = what.split(":", 1)[1]
@@ -840,9 +865,9 @@ def _do_action(bot, chat, mid, query, what):
             note = "⚠️ Подтверждение устарело. Открой объекты заново.\n\n"
         else:
             ok, info = bot.perform(backend.EXCLUDE_OBJECT, value)
-            note = ("✂️ Модель <b>%s</b> убрана из текущей печати.\n\n"
+            note = ("✂️ Деталь <b>%s</b> убрана из текущей печати.\n\n"
                     % escape(value.get("label") or ui.object_label(value["name"]))) if ok \
-                else "⚠️ Убрать модель не вышло (%s).\n\n" % escape(info)
+                else "⚠️ Убрать деталь не вышло (%s).\n\n" % escape(info)
     elif what.startswith("prompt:"):
         # Подтверждённая кнопка подсказки, помеченной принтером как опасная.
         gcode = bot.resolve_prompt_choice(what.split(":", 1)[1])

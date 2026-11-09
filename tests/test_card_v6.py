@@ -791,7 +791,7 @@ def test_html_changes_must_come_with_a_new_version():
     import hashlib
     digest = hashlib.sha256(widget.HTML.encode("utf-8")).hexdigest()[:12]
     assert digest == widget.HTML_SHA, "HTML changed: bump VERSION and update HTML_SHA"
-    assert widget.KIND == "widget-%d" % widget.VERSION == "widget-12"
+    assert widget.KIND == "widget-%d" % widget.VERSION == "widget-13"
 
 
 # ------------------------------------------------------------ round 6
@@ -1328,7 +1328,7 @@ def test_two_models_of_28_copies_list_the_models_then_a_grid(mr_bot, fake_telegr
     code = next(b[1] for row in second[0]["k"] for b in row if b[1].startswith("c:xo:"))
     handlers.handle_widget_query(mr_bot, widget_query(code, qid="wq-x"))
     ask = last_answer(fake_telegram)["sc"]
-    assert "Убрать модель" in ask["t"]
+    assert ask["t"] == "❌ Убрать деталь №1 из печати?"
     assert any(b[2] == "y" and b[1].startswith("c:do:exclude:") for row in ask["k"] for b in row)
 
 
@@ -1596,7 +1596,7 @@ def test_the_exclusion_confirmation_shows_only_the_chosen_part(mr_bot, fake_tele
     answer = last_answer(fake_telegram)
     assert len(fake_telegram.widget_answers[-1][1].encode("utf-8")) <= widget.ANSWER_LIMIT
     sc = answer["sc"]
-    assert "Убрать модель" in sc["t"] and "16" in " ".join(sc["x"])
+    assert sc["t"] == "❌ Убрать деталь №16 из печати?" and "16" in " ".join(sc["x"])
     fig = sc["g"]
     # only the chosen part (number 16) is highlighted and labelled; the others are dimmed
     boxes, labels = boxes_and_labels(fig)
@@ -1630,3 +1630,80 @@ def test_labels_ignore_boxes_but_never_overlap_each_other():
     for i, (n, rect, _p) in enumerate(labels):
         assert rect[0] >= 0 and rect[2] <= 440 and rect[1] >= 0 and rect[3] <= 440
         assert all(not overlap(rect, other) for _m, other, _q in labels[i + 1:])
+
+
+# ------------------------------------------------------------ the confirmation says one part
+
+def confirm_screen(mr_bot, fake_telegram, number="16"):
+    live_like_job(mr_bot)
+    first = pages_of(mr_bot, fake_telegram, "c:objects")
+    group = next(b[1] for sc in first for r in sc["k"] for b in r
+                 if b[1].startswith("c:objgrp:") and b[0].startswith("АЛЬФА"))
+    grid = pages_of(mr_bot, fake_telegram, group)
+    cell = next(b for sc in grid for r in sc["k"] for b in r
+                if b[1].startswith("c:xo:") and b[0] in (number, "▶ " + number))
+    handlers.handle_widget_query(mr_bot, widget_query(cell[1], qid="wq-c"))
+    return last_answer(fake_telegram)["sc"]
+
+
+def test_the_confirmation_names_one_part_not_the_model(mr_bot, fake_telegram):
+    sc = confirm_screen(mr_bot, fake_telegram)
+    assert sc["t"] == "❌ Убрать деталь №16 из печати?"
+    assert "Остальные 26 деталей этой модели продолжат печататься." in sc["x"]   # 28 - gone - this
+    assert "Напечатанная часть останется на столе, вернуть нельзя." in sc["x"]
+    assert not any("модел" in line and "Убрать" in line for line in [sc["t"]] + sc["x"])
+    # no line is cut with an ellipsis by the card (the limit is 60 characters)
+    assert all(len(line) <= widget.LINE_WIDTH for line in sc["x"]), sc["x"]
+    yes = next(b for r in sc["k"] for b in r if b[1].startswith("c:do:exclude:"))
+    assert yes[0] == "✅ Да, убрать деталь 16"
+    # the cancel button returns to the numbers of that very model, not to the card
+    cancel = next(b for r in sc["k"] for b in r if b[0].endswith("Отмена"))
+    assert cancel[1].startswith("c:objgrp:")
+    back = pages_of(mr_bot, fake_telegram, cancel[1])
+    assert back[0]["t"] == "✂️ АЛЬФА" and "g" in back[0]
+
+
+def test_the_wording_agrees_with_the_count_and_the_result_says_part(mr_bot, fake_telegram):
+    names, shapes, state = copies_job(mr_bot, [("МОДЕЛЬ", 3), ("ДРУГАЯ", 2)], current=5)
+    sc = None
+    first = pages_of(mr_bot, fake_telegram, "c:objects")
+    group = next(b[1] for r in first[0]["k"] for b in r if b[0].startswith("МОДЕЛЬ"))
+    grid = pages_of(mr_bot, fake_telegram, group)
+    cell = next(b for r in grid[0]["k"] for b in r if b[0] == "1")
+    handlers.handle_widget_query(mr_bot, widget_query(cell[1], qid="a"))
+    sc = last_answer(fake_telegram)["sc"]
+    assert "Остальные 2 детали этой модели продолжат печататься." in sc["x"]
+    # outside the card mode it is the same single part, the same words
+    mr_bot.cfg["status_widget"] = False
+    handlers.show_objects(mr_bot, OWNER, force_new=True)
+    keyboard = fake_telegram.sent[-1][2]
+    ask = next(b["callback_data"] for r in keyboard for b in r
+               if b["callback_data"].startswith("ask:exclude:"))
+    query = {"id": "cb", "data": ask, "from": {"id": OWNER, "is_bot": False},
+             "message": {"message_id": 7, "chat": {"id": OWNER}}}
+    handlers.handle_callback(mr_bot, query)
+    text, kb = fake_telegram.edited[-1][2], fake_telegram.edited[-1][3]
+    assert text.startswith("❌ <b>Убрать деталь №") and "Отмена" in kb[0][1]["text"]
+    assert kb[0][1]["callback_data"] == "refresh" and "убрать деталь" in kb[0][0]["text"]
+    assert handlers.ui.plural(21, "деталь", "детали", "деталей") == "деталь"
+
+
+def test_the_confirmation_map_is_the_level_two_window_with_the_part_and_its_neighbours(
+        mr_bot, fake_telegram):
+    names, shapes, state = live_like_job(mr_bot)
+    first = pages_of(mr_bot, fake_telegram, "c:objects")
+    group = next(b[1] for sc in first for r in sc["k"] for b in r
+                 if b[1].startswith("c:objgrp:") and b[0].startswith("АЛЬФА"))
+    level2 = pages_of(mr_bot, fake_telegram, group)[0]["g"]
+    confirm = confirm_screen(mr_bot, fake_telegram, "3")["g"]
+    assert confirm["b"] == level2["b"]                      # the very same window and boxes
+    assert confirm["s"].count("4") == 1 and confirm["s"].count("0") >= 40
+    assert confirm["n"].count("0") == len(confirm["n"]) - 1  # one label: the chosen part
+
+
+def test_dimmed_boxes_are_drawn_with_a_visible_outline():
+    """Dimmed parts were invisible (outline at .35). The canvas constants are
+    state 0..4: fill alpha, then stroke alpha."""
+    html = widget.HTML
+    assert "[.12,.25,.85,0,.4][s]" in html and "[.6,.6,1,1,1][s]" in html
+
