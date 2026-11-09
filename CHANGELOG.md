@@ -7,11 +7,7 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Changed
-
-- The "Support the author" button now opens CloudTips instead of Tribute: a
-  lower fee, and it takes SBP and any Russian bank card. Tribute stays in the
-  README and the GitHub Sponsor button for paying with a foreign card.
+## [1.2.0] — 2026-11-09
 
 ### Added
 
@@ -38,13 +34,11 @@ this project uses [Semantic Versioning](https://semver.org/).
   the list as it was shown, so a file uploaded meanwhile is kept; the file being
   printed is always kept, and planned starts that would lose their file are
   counted in the question.
-
 - Firmware auto-detection. The setup wizard now asks the printer which firmware
   it runs instead of making the user pick, and `backend: "auto"` repeats that
   probe on every start. Moonraker answering `/printer/info` is positive proof of
   OpenCentauri/COSMOS; the stock SDCP port is only consulted when it stays
   silent, and an unanswered printer is reported rather than guessed at.
-
 - OpenCentauri/COSMOS support through a dependency-free Moonraker polling
   backend for status, files, webcam snapshots and explicitly enabled job
   controls.
@@ -53,7 +47,6 @@ this project uses [Semantic Versioning](https://semver.org/).
 - A confirmed "exclude object" control for multi-object COSMOS prints. The bot
   binds the confirmation to the exact object and print file, then rechecks both
   against Moonraker immediately before sending the fixed Klipper command.
-
 - A finish time next to the time left on COSMOS ("done ≈ tomorrow at 01:26").
   The time left now comes from the job's own G-code: the slicer's per-minute
   `M73` marks and the `EXCLUDE_OBJECT` markers give the slicer time still ahead
@@ -67,6 +60,19 @@ this project uses [Semantic Versioning](https://semver.org/).
   copies of one model can be told apart. The model being printed is outlined in
   blue, removed ones are hatched red. Drawn without third-party libraries.
 
+### Changed
+
+- The "Support the author" button now opens CloudTips instead of Tribute: a
+  lower fee, and it takes SBP and any Russian bank card. Tribute stays in the
+  README and the GitHub Sponsor button for paying with a foreign card.
+- Object removal has its own ✂️ icon instead of sharing 🧩 with macros.
+- The "printer cooled down" notice repeats the frame taken when the print
+  ended, with the bed still up, instead of a fresh frame of the lowered bed.
+  "Refresh" still shows the live camera.
+- The five owner-approved COSMOS macros now use clear Russian action names in
+  Telegram. The macro screen and confirmation explain what each action does;
+  the original Klipper name remains visible only as a technical identifier.
+
 ### Fixed
 
 - Object removal was never offered for models whose names are not in Latin
@@ -77,16 +83,10 @@ this project uses [Semantic Versioning](https://semver.org/).
   in the confirmation message, which the refresh loop does not track: it froze
   while the loop kept editing the older one. The result now goes into the one
   tracked status message and the confirmation is removed.
-
-### Changed
-
-- Object removal has its own ✂️ icon instead of sharing 🧩 with macros.
-- The "printer cooled down" notice repeats the frame taken when the print
-  ended, with the bed still up, instead of a fresh frame of the lowered bed.
-  "Refresh" still shows the live camera.
-- The five owner-approved COSMOS macros now use clear Russian action names in
-  Telegram. The macro screen and confirmation explain what each action does;
-  the original Klipper name remains visible only as a technical identifier.
+- The status message stays one message and stays at the bottom of the chat
+  after Telegram's 48-hour limit on deleting a bot's messages. The new status
+  goes out at the bottom anyway, and the old one, which can no longer be
+  deleted, shrinks to a buttonless "⬇️ Статус — ниже".
 
 ### Security
 
@@ -194,7 +194,8 @@ personal is baked into the code.
 - `config.json` cannot reach the repository: it is not there, it is gitignored,
   and `tools/check_public_safety.py` fails the build if one appears.
 
-[Unreleased]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.3...HEAD
+[Unreleased]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.3...v1.2.0
 [1.1.3]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.0...v1.1.1
