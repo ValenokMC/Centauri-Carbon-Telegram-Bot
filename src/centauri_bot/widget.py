@@ -34,7 +34,7 @@ import zlib
 from . import printer_state as ps
 
 
-VERSION = 3
+VERSION = 4
 
 # storage.message_kind() of a card sent with this very HTML. A sent widget's
 # HTML can never be replaced, so a card from an older version is not ours to
@@ -68,6 +68,9 @@ PAUSE, RESUME, STOP, CAMERA = "P", "R", "S", "C"
 #   r  seconds left            e  finish, epoch seconds (printing only)
 #   sp speed, % (only if not 100)                      o  1 online, 0 not
 #   b  the buttons to draw, letters from above
+#   mn the rest of the panel behind "⚙️ Ещё": [[label, callback_data], ...],
+#      taken from the very keyboard the bot would put under a message, so
+#      the owner's permissions decide here exactly as there
 #   u  when the bot wrote this, epoch seconds
 #
 # The card's state classes are "p", "w" and "x": no other rule may use those
@@ -86,19 +89,20 @@ body{margin:0;padding:10px 12px 8px}
 .b{height:7px;border-radius:4px;background:var(--tg-theme-secondary-bg-color);overflow:hidden;margin:8px 0 6px}
 .b i{display:block;height:100%;width:0;background:var(--tg-theme-button-color);transition:width .6s}
 .w .b i{background:#e5a50a}.x .b i{background:var(--tg-theme-destructive-text-color)}
-.a{display:flex;gap:6px;margin-top:8px}.a button{flex:1;font-size:.95em}
+.a{display:flex;gap:6px;margin-top:8px}.a button{flex:1;font-size:.95em;padding-left:2px;padding-right:2px}
 .a .k{color:var(--tg-theme-destructive-text-color)}
+.g{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}.g button{font-size:.92em}
 .z{color:var(--tg-theme-destructive-text-color)}
 </style>
 <div id=c><div class=r><span class=s id=s></span><span class=pc id=p></span></div>
 <div class=f id=f></div><div class=b><i id=b></i></div>
 <div class="r big"><span id=l></span><span id=t></span></div>
 <div class="r h"><span id=m></span><span id=e></span></div>
-<div class=a id=a></div><div class=n id=n></div>
+<div class=a id=a></div><div class=g id=g hidden></div><div class=n id=n></div>
 <div class=u id=u></div></div>
 <p id=q hidden>⬇️ Статус — ниже</p>
 <script>
-var W=window.TelegramWidget,d=null,ask=null,busy=0;
+var W=window.TelegramWidget,d=null,ask=null,busy=0,menu=0;
 function $(i){return document.getElementById(i)}
 function x(i,v){$(i).textContent=v}
 function dur(s){var m=Math.max(1,Math.round(s/60)),h=Math.floor(m/60);m%=60;
@@ -110,20 +114,23 @@ x('t',left>0?'ещё '+dur(left):'');
 x('e',d.e&&left>0?'готово ≈ '+clock(d.e):'');
 var age=now-d.u;$('u').className=age>600?'u z':'u';
 x('u',(d.sp?'скорость '+d.sp+'% · ':'')+(age>600?'нет обновлений '+dur(age):'обновлено '+clock(d.u)))}
-function mk(t,c,f){var e=document.createElement('button');e.textContent=t;if(c)e.className=c;e.onclick=f;$('a').appendChild(e)}
-function go(q){if(busy)return;busy=1;x('n','Отправляю…');
+function mk(t,c,f,p){var e=document.createElement('button');e.textContent=t;if(c)e.className=c;e.onclick=f;$(p||'a').appendChild(e)}
+function clr(i){var a=$(i);while(a.firstChild)a.removeChild(a.firstChild)}
+function go(q){if(busy)return;busy=1;menu=0;x('n','Отправляю…');
 W.request(q).then(function(r){busy=0;var a=null;try{a=JSON.parse(r.result)}catch(e){}
 ask=a&&a.t?a:null;x('n',ask?ask.q:(a&&a.m)||'');keys()},
 function(e){busy=0;ask=null;x('n',e&&e.code=='RATE_LIMITED'?'Слишком часто, подожди немного':'Не дошло до бота, попробуй ещё раз');keys()})}
-function keys(){var a=$('a');while(a.firstChild)a.removeChild(a.firstChild);
+function keys(){clr('a');clr('g');$('g').hidden=!menu;
 if(!d||!W.request||W.isForward)return;
 if(ask){mk(ask.y,'k',function(){go('do:'+ask.a+':'+ask.t)});
 mk('Отмена','',function(){ask=null;x('n','');keys()});return}
-var b=d.b||'';
+var b=d.b||'',mn=d.mn||[];
 if(b.indexOf('P')>=0)mk('⏸ Пауза','',function(){go('ask:pause')});
-if(b.indexOf('R')>=0)mk('▶️ Продолжить','',function(){go('ask:resume')});
+if(b.indexOf('R')>=0)mk('▶️ Дальше','',function(){go('ask:resume')});
 if(b.indexOf('S')>=0)mk('⏹ Стоп','k',function(){go('ask:stop')});
-if(b.indexOf('C')>=0)mk('📷 Кадр','',function(){go('snap')})}
+if(b.indexOf('C')>=0)mk('📷 Кадр','',function(){go('snap')});
+if(mn.length)mk(menu?'✕ Скрыть':'⚙️ Ещё','',function(){menu=!menu;x('n','');keys()});
+if(menu)mn.forEach(function(i){mk(i[0],'',function(){go('open:'+i[1])},'g')})}
 function draw(){d=null;try{d=JSON.parse(W.chatData)}catch(e){}
 var ok=!!(d&&d.v);$('c').hidden=!ok;$('q').hidden=ok;if(!ok)return;
 $('c').className=d.k;x('s',d.s);x('f',d.f||'');
@@ -205,11 +212,36 @@ def buttons(status, online, allowed, camera):
     return out
 
 
-def card(status, online, printer_name, now, keys=""):
+# Buttons of the usual panel the card already has in its own row, or that
+# would only redraw what the card shows anyway.
+ON_THE_CARD = {"refresh", "brief", "ask:pause", "ask:resume", "ask:stop", "snap"}
+
+
+def menu(keyboard):
+    """The "⚙️ Ещё" items: the usual panel's buttons, minus those on the card.
+
+    The panel is built by ui.kb_main from the owner's settings, so a button
+    the owner has not allowed is not in it, and so not here either.
+    """
+    items = []
+    for row in keyboard or []:
+        for button in row:
+            data = button.get("callback_data")
+            if data and data not in ON_THE_CARD:
+                items.append([str(button.get("text") or ""), data])
+    return items
+
+
+def menu_allows(keyboard, data):
+    """A request "open:<data>" names a button the panel really has."""
+    return any(item[1] == data for item in menu(keyboard))
+
+
+def card(status, online, printer_name, now, keys="", items=None):
     """The widget's state as a dict, or None when there is no status yet.
 
     ``printer_name`` stays in the caption under the card, not on it.
-    ``keys`` is what buttons() returned."""
+    ``keys`` is what buttons() returned, ``items`` what menu() did."""
     if not status:
         return None
     info = status.get("PrintInfo") or {}
@@ -237,6 +269,8 @@ def card(status, online, printer_name, now, keys=""):
         "m": temps,
         "r": left, "o": 1 if online else 0, "b": keys, "u": int(now),
     }
+    if items:
+        data["mn"] = items
     # Only while it prints: on a pause the finish moves with every minute.
     if kind == "p" and online and left > 0:
         data["e"] = int(now + left)

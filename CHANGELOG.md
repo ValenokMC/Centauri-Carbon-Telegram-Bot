@@ -18,9 +18,12 @@ this project uses [Semantic Versioning](https://semver.org/).
   down on the phone between updates. Pause or resume, Stop and a camera frame
   are buttons on the card itself: Pause and Stop ask for confirmation on the
   card with a one-use token, and the frame arrives as its own message that is
-  taken down after five minutes. Everything else opens from one "⚙️ Menu"
-  button under the card. A refused widget, a group chat or a screen too long
-  for a caption falls back to the ordinary message. New settings:
+  taken down after five minutes, with the card moving down under it. The
+  rest of the panel opens on the card too, behind "⚙️ Ещё", so there are no
+  buttons under the message at all; a screen that is a picture (the bed map,
+  the objects) takes the card's place and "Назад" brings the card back. A
+  refused widget, a group chat or a screen too long for a caption falls back
+  to the ordinary message. New settings:
   `status_widget`, `widget_refresh_sec`.
 - Delayed print start on COSMOS. A `.gcode` sent into the chat is uploaded to
   the printer and offered for printing now or at a set time: quick choices

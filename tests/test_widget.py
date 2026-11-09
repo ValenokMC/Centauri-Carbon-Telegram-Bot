@@ -594,3 +594,79 @@ def test_widget_queries_reach_the_handler(card_bot, fake_telegram):
     card_bot.telegram_loop()
     assert fake_telegram.widget_answers and "t" in last_answer(fake_telegram)
     assert "widget_query" in card_bot.UPDATES
+
+
+# ------------------------------------------------------------ the whole panel on the card
+
+def test_menu_is_the_panel_minus_the_card_buttons(card_bot):
+    items = widget.menu(card_bot.keyboard())
+    datas = [d for _, d in items]
+    assert "files" in datas and "help" in datas
+    assert not set(datas) & widget.ON_THE_CARD
+    assert card_of(widget.encode(card_bot._card()))["mn"] == items
+
+
+def test_nothing_under_the_card(card_bot, fake_telegram):
+    assert fake_telegram.widgets[-1]["keyboard"] == []
+
+
+def test_card_state_with_menu_and_a_long_name_fits(card_bot):
+    card_bot.cfg["send_photo"] = True
+    card_bot.status = status(13, "Очень_длинное_имя_файла_" * 10 + ".gcode", progress=5)
+    text = widget.encode(card_bot._card())
+    assert len(text.encode("utf-8")) <= widget.DATA_LIMIT
+    assert card_of(text)["mn"]                         # the menu survived
+
+
+def test_menu_item_opens_its_screen_under_the_card(card_bot, fake_telegram):
+    mid = storage.message_id()
+    card_bot.refresh_files = lambda: (True, "")
+    card_bot.files = ["/local/a.gcode"]
+    handlers.handle_widget_query(card_bot, widget_query("open:files"))
+    assert last_answer(fake_telegram) == {"m": ""}
+    _, edited_mid, text, keyboard = fake_telegram.edited[-1]
+    assert edited_mid == mid and "a.gcode" in text
+    assert fake_telegram.edit_forms[-1] == (mid, "caption")
+    labels = [b["text"] for row in keyboard for b in row]
+    assert any("Назад" in l for l in labels)
+    # no stray answerCallbackQuery for a tap that had no callback
+    assert all(cid is None for cid, _ in fake_telegram.answers)
+
+
+def test_menu_refuses_what_the_panel_does_not_have(card_bot, fake_telegram):
+    card_bot.cfg["allow_control"] = False
+    handlers.handle_widget_query(card_bot, widget_query("open:menu:temp"))
+    handlers.handle_widget_query(card_bot, widget_query("open:do:job:cancel:x"))
+    assert all("нет" in json.loads(d)["m"] for _, d in fake_telegram.widget_answers)
+    assert fake_telegram.edited == []
+
+
+def test_frame_goes_on_top_and_the_card_moves_under_it(card_bot, fake_telegram):
+    card_bot.cfg["send_photo"] = True
+    card_bot.grab = lambda max_age=0: b"\xff\xd8frame"
+    old_card = storage.message_id()
+    handlers.handle_widget_query(card_bot, widget_query("snap"))
+    [(_, _, _, has_photo)] = fake_telegram.sent
+    assert has_photo
+    new_card = storage.message_id()
+    assert new_card != old_card and storage.message_kind() == widget.KIND
+    assert new_card > storage.load_state()["snapshot_message"][0]   # below the frame
+    assert fake_telegram.widgets[-1]["silent"] is True
+    assert (card_bot.owner, old_card) in fake_telegram.deleted
+
+
+def test_picture_screen_replaces_the_card_and_back_restores_it(card_bot, fake_telegram):
+    card_bot.bed_mesh = lambda: (True, {"points": [[0.0, 0.1], [0.2, 0.0]]})
+    card_bot.backend_name = "moonraker"
+    card_mid = storage.message_id()
+    handlers.show_mesh(card_bot, card_bot.owner, card_mid, is_photo=True)
+    assert (card_bot.owner, card_mid) in fake_telegram.deleted
+    assert fake_telegram.sent[-1][3] is True              # the map went out as a photo
+    assert storage.message_kind() is None
+    photo_mid = storage.message_id()
+
+    msg = {"message_id": photo_mid, "chat": {"id": card_bot.owner}, "photo": [{}]}
+    handlers.handle_callback(card_bot, {"id": "cb", "data": "refresh", "message": msg,
+                                        "from": {"id": card_bot.owner}})
+    assert storage.message_kind() == widget.KIND
+    assert (card_bot.owner, photo_mid) in fake_telegram.deleted

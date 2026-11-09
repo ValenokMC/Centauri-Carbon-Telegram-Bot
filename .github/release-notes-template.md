@@ -20,10 +20,11 @@ starts, and an optional live print card that redraws itself in the chat.
 - **Live print card** (opt-in, `"status_widget": true`). While a print runs,
   the status is a Telegram Bot API 10.4 widget with the state, progress,
   layer, temperatures and time left. It updates itself silently, with no
-  "edited" mark. Pause, Stop and 📷 are buttons on the card (Pause and Stop
-  confirm on the card first); everything else is behind one ⚙️ Menu button.
-  Needs a current Telegram app; an older one shows the short caption and the
-  Menu button. If Telegram refuses the widget, the usual message goes out.
+  "edited" mark. Every button is on the card: Pause, Stop and 📷 in a row
+  (Pause and Stop confirm on the card first), the rest behind ⚙️ Ещё. Needs a
+  current Telegram app; an older one shows only the short caption, and
+  commands such as `/files` still work there. If Telegram refuses the widget,
+  the usual message goes out.
 
 ## Fixes
 
@@ -46,8 +47,8 @@ starts, and an optional live print card that redraws itself in the chat.
 - Centauri Carbon 2, macOS and Linux have not yet been verified.
 - One bot installation controls one printer.
 - The live print card works in private chats only (Telegram's rule) and
-  cannot show a picture: its 📷 button sends the frame as a separate message,
-  deleted after five minutes.
+  cannot show a picture: its 📷 button sends the frame as a separate message
+  above the card, deleted after five minutes.
 
 ## Updating from v1.1.x
 

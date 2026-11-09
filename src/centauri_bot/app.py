@@ -395,7 +395,7 @@ class Bot(object):
     # -------------------------------------------------- the single message
 
     def refresh_main(self, force_new=False, text=None, photo=None, keyboard=None,
-                     header=""):
+                     header="", quiet=False):
         """Keep exactly one status message in the chat.
 
         Edits in place; with force_new it is recreated as the last message in
@@ -463,7 +463,7 @@ class Bot(object):
                 # the edit failed: the message was deleted by hand, or is stale
 
             if live:
-                new_mid = self._send_widget(card_kb, header, silent=promote)
+                new_mid = self._send_widget(card_kb, header, silent=promote or quiet)
                 if new_mid:
                     self._drop_old(mid, kind)
                     return new_mid
@@ -527,18 +527,19 @@ class Bot(object):
                               camera=bool(self.cfg.get("send_photo")))
         return widget.card(status, online,
                            self.cfg.get("printer_name", "Centauri Carbon"), self.clock(),
-                           keys=keys)
+                           keys=keys, items=widget.menu(self.keyboard()))
 
-    MENU_BUTTON = {"text": "⚙️ Меню", "callback_data": "cardmenu"}
     FOLD_BUTTON = {"text": "▲ Свернуть меню", "callback_data": "refresh"}
 
     def card_keyboard(self):
-        """Under the card: one button. Pause, stop and the camera are on the
-        card itself; everything else opens from here."""
-        return [[dict(self.MENU_BUTTON)]]
+        """Under the card: nothing. Every button is on the card itself; a
+        screen it opens (files, macros...) brings its own buttons, and
+        "Назад" takes them away again."""
+        return []
 
     def card_menu_keyboard(self):
-        """The full panel, opened from the card, with a way back."""
+        """The full panel under a card of version 3, which had a "Menu"
+        button outside the widget. Kept so such a card still answers."""
         return self.keyboard() + [[dict(self.FOLD_BUTTON)]]
 
     # ---------------------------------------------- a camera frame on request
@@ -568,6 +569,12 @@ class Bot(object):
                                                self.clock() + self.SNAPSHOT_TTL_SEC])
         if old:
             self.api.delete_message(self.owner, old[0])
+        # The frame went in below the card; the card moves down under it, so
+        # the picture stays on top and the buttons stay under the thumb.
+        try:
+            self.refresh_main(force_new=True, quiet=True)
+        except Exception as e:
+            log.warning("status did not move under the frame: %r", e)
         return True
 
     def expire_snapshot(self):
@@ -667,7 +674,7 @@ class Bot(object):
         return False
 
     def edit_main_from_callback(self, clicked_mid, text, keyboard=None,
-                                photo=None, is_photo=False):
+                                photo=None, is_photo=False, picture=False):
         """Edit the one tracked UI message after a button press.
 
         Telegram keeps old inline keyboards usable.  A user can therefore
@@ -683,8 +690,13 @@ class Bot(object):
 
             def edit(target):
                 if target == tracked_mid and widget.is_card(tracked_kind):
-                    # The live card: its text is the caption, and a frame
-                    # would replace the widget, so the camera stays out.
+                    # The live card: its text is the caption. A screen that
+                    # is a picture (the bed map, the objects) cannot be drawn
+                    # on a widget: it replaces the card as an ordinary photo
+                    # message, and "Назад" brings the card back. The camera
+                    # frame of a plain refresh simply stays out.
+                    if photo and picture:
+                        return False
                     if tracked_kind == widget.KIND:
                         self._push_widget_locked(target, force=True)
                     form = dict(photo=None, is_photo=True)

@@ -106,8 +106,10 @@ def _show_readonly(bot, chat, mid, is_photo, force_new, text, keyboard, photo=No
     if force_new:
         bot.refresh_main(force_new=True, text=text, keyboard=keyboard, photo=photo)
     elif mid:
+        # ``picture``: the photo is the screen itself (bed map, objects), not
+        # a camera frame, so it must be shown even if that replaces the card.
         bot.edit_main_from_callback(mid, text, keyboard=keyboard, photo=photo,
-                                    is_photo=is_photo)
+                                    is_photo=is_photo, picture=bool(photo))
     else:
         bot.api.send_message(chat, text, keyboard=keyboard, photo=photo)
 
@@ -268,6 +270,11 @@ def handle_callback(bot, query):
         # the coordinates the card has no room for; Refresh and Brief fold the
         # panel back to the one "Menu" button.
         on_card = _is_widget(query.get("message", {}))
+        if data == "refresh" and not on_card and bot._widget_wanted():
+            # "Назад к статусу" from a picture screen that took the card's
+            # place: the card comes back, at the bottom, quietly.
+            bot.refresh_main(force_new=True, quiet=True)
+            return
         compact = on_card and not detailed
         bot.edit_main_from_callback(
             mid, bot.render(detailed=detailed, compact=compact),
@@ -803,6 +810,23 @@ def handle_widget_query(bot, query):
         # The card's own state is redrawn by the bot, never by the answer.
         time.sleep(SETTLE_AFTER_ACTION_SEC)
         bot.refresh_main()
+        return
+
+    if data.startswith("open:"):
+        # A "⚙️ Ещё" item: exactly what the same inline button does, so each
+        # screen keeps its own buttons and confirmations. Only a button the
+        # panel really has right now is accepted.
+        target = data[5:]
+        if not widget.menu_allows(bot.keyboard(), target):
+            reply(m="Этой кнопки сейчас нет.")
+            return
+        reply(m="")
+        message_id = query.get("message_id") or storage.message_id()
+        handle_callback(bot, {
+            "id": None, "data": target, "from": query.get("from") or {},
+            "message": {"message_id": message_id, "chat": {"id": chat},
+                        "widget": {}},
+        })
         return
 
     if data == "snap":

@@ -204,6 +204,10 @@ class TelegramAPI:
         return self.call("deleteMessage", {"chat_id": chat, "message_id": message_id})
 
     def answer_callback(self, callback_id, text=None):
+        if not callback_id:
+            # A button on the live card stands in for an inline button; its
+            # widget query is answered on its own, there is no callback.
+            return {"ok": True}
         return self.call("answerCallbackQuery",
                          {"callback_query_id": callback_id,
                           "text": text[:190] if text else None})
