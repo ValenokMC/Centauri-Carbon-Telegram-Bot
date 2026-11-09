@@ -51,6 +51,7 @@ def _write(path, data):
 
 STATE_DEFAULT = {
     "message_id": None,
+    "message_kind": None,
     "installed_at": None,
     "last_support_reminder_at": None,
 }
@@ -101,8 +102,15 @@ def message_id():
     return load_state().get("message_id")
 
 
-def set_message_id(mid):
-    update_state(message_id=mid)
+def set_message_id(mid, kind=None):
+    """``kind`` says what the message is when it matters: "widget" for the
+    live print card, None for an ordinary text or photo message. Changing
+    the message always restates it, so a stale kind cannot outlive it."""
+    update_state(message_id=mid, message_kind=kind)
+
+
+def message_kind():
+    return load_state().get("message_kind")
 
 
 def forget_statistics():

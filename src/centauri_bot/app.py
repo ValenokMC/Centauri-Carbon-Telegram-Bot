@@ -24,6 +24,7 @@ from . import sdcp
 from . import storage
 from . import support
 from . import ui
+from . import widget
 from .telegram_api import TelegramAPI
 
 
@@ -82,6 +83,13 @@ class Bot(object):
         self.schedule_draft = None
         self.schedule_lock = threading.Lock()
 
+        # The live print card: what was last written into it and when, and a
+        # pause after Telegram refused a widget, so a refusal is not retried
+        # on every refresh.
+        self.widget_sent = None
+        self.widget_sent_at = 0.0
+        self.widget_retry_at = 0.0
+
         self.lifecycle = ps.PrinterLifecycle(cfg.get("progress_every_pct") or 0)
         self.maintenance = ps.MaintenanceCounter()
         self.stopping = threading.Event()
@@ -101,13 +109,13 @@ class Bot(object):
         days = (self.clock() - data["since"]) / 86400.0
         return ps.maintenance_status(hours, days, limit_h, limit_d)
 
-    def render(self, header="", detailed=False):
+    def render(self, header="", detailed=False, compact=False):
         status, online = self._snapshot()
         show, line, _ = self.maintenance_view()
         return ui.render(status, online, self.cfg.get("printer_name", "Centauri Carbon"),
                          header=header, detailed=detailed,
                          maintenance_line=line if show else "",
-                         now=self.clock(), tz=self.schedule_tz())
+                         now=self.clock(), tz=self.schedule_tz(), compact=compact)
 
     def keyboard(self, detailed=False):
         status, _ = self._snapshot()
@@ -385,7 +393,8 @@ class Bot(object):
 
     # -------------------------------------------------- the single message
 
-    def refresh_main(self, force_new=False, text=None, photo=None, keyboard=None):
+    def refresh_main(self, force_new=False, text=None, photo=None, keyboard=None,
+                     header=""):
         """Keep exactly one status message in the chat.
 
         Edits in place; with force_new it is recreated as the last message in
@@ -405,41 +414,175 @@ class Bot(object):
         sent anyway and the old one is cut down to a one-line pointer without
         buttons. That leaves at most one such line per 48 quiet hours, since
         the new message can again be deleted for the next two days.
+
+        With ``status_widget`` on, the status of a running print is the live
+        card (widget.py): the status with ``header`` is drawn by the widget,
+        and the caption under it is the short version. Any other screen
+        (``text``) is still an ordinary message. If Telegram refuses the
+        widget, the ordinary message goes out instead, exactly as before.
         """
         with self.main_lock:
             mid = storage.message_id()
-            if photo is None:
-                photo = self.grab(max_age=10)
-            body = self.render() if text is None else text
+            kind = storage.message_kind() if mid else None
             kb = keyboard if keyboard is not None else self.keyboard()
+            live = text is None and self._widget_wanted()
+            # A print that runs under an ordinary message gets its card on the
+            # next refresh: moved down quietly, like any status recreation.
+            promote = bool(live and mid and kind != widget.KIND and not force_new)
+            cache = {}
 
-            if mid and not force_new:
-                if self._edit_in_place(mid, body, kb, photo):
+            def body():
+                if "body" not in cache:
+                    cache["body"] = self.render(header) if text is None else text
+                return cache["body"]
+
+            def caption():
+                return self.render(header, compact=True) if text is None else text
+
+            def frame():
+                if "photo" not in cache:
+                    cache["photo"] = self.grab(max_age=10) if photo is None else photo
+                return cache["photo"]
+
+            def keep_old():
+                if kind == widget.KIND:
+                    return self._edit_widget(mid, caption(), kb)
+                return self._edit_in_place(mid, body(), kb, frame())
+
+            if mid and not force_new and not promote:
+                if keep_old():
                     return mid
                 # the edit failed: the message was deleted by hand, or is stale
 
-            answer = self.api.send_message(self.owner, body, keyboard=kb, photo=photo)
+            if live:
+                new_mid = self._send_widget(kb, header, silent=promote)
+                if new_mid:
+                    self._drop_old(mid, kind)
+                    return new_mid
+                # refused: the ordinary message below, or the old one kept
+                if promote and keep_old():
+                    return mid
+
+            answer = self.api.send_message(self.owner, body(), keyboard=kb, photo=frame())
             if not answer.get("ok"):
                 # nothing new reached the chat: keep the old message working
-                if mid and self._edit_in_place(mid, body, kb, photo):
+                if mid and keep_old():
                     return mid
                 return None
             new_mid = answer["result"]["message_id"]
             storage.set_message_id(new_mid)
-            if mid and not self.api.delete_message(self.owner, mid).get("ok"):
-                self._retire(mid)
+            self._drop_old(mid, kind)
             return new_mid
 
     RETIRED_TEXT = "⬇️ Статус — ниже"
 
-    def _retire(self, mid):
+    def _drop_old(self, mid, kind):
+        if mid and not self.api.delete_message(self.owner, mid).get("ok"):
+            self._retire(mid, kind)
+
+    def _retire(self, mid, kind=None):
         """Turn a status message Telegram no longer lets us delete into a
         pointer to the current one. Without buttons, so nothing is pressed on
-        a stale panel. A message deleted by hand simply refuses both edits."""
-        for extra in (dict(), dict(is_photo=True)):
+        a stale panel. A message deleted by hand simply refuses both edits.
+        A live card loses its state too, so it stops showing numbers that
+        nobody updates any more."""
+        forms = (dict(), dict(is_photo=True))
+        if kind == widget.KIND:
+            self.api.edit_widget_data(self.owner, mid, "")
+            forms = (dict(is_photo=True),)
+        for extra in forms:
             answer = self.api.edit_message(self.owner, mid, self.RETIRED_TEXT, **extra)
             if answer.get("ok") or "not modified" in str(answer.get("description")):
                 return
+
+    # ------------------------------------------------- the live print card
+
+    WIDGET_RETRY_SEC = 600      # after a refused widget, ordinary messages for a while
+    WIDGET_HEARTBEAT_SEC = 120  # rewrite unchanged numbers, so the card can tell it is alive
+
+    def _widget_wanted(self):
+        """A live card makes sense now: enabled, a private chat, a print on."""
+        if not self.cfg.get("status_widget"):
+            return False
+        # Production Telegram sends widgets to private chats only, and a
+        # private chat id is a user id: positive. A group gets the old message.
+        if not self.owner.isdigit():
+            return False
+        if self.clock() < self.widget_retry_at:
+            return False
+        status, online = self._snapshot()
+        return widget.is_live(status, online)
+
+    def _card(self):
+        status, online = self._snapshot()
+        return widget.card(status, online,
+                           self.cfg.get("printer_name", "Centauri Carbon"), self.clock())
+
+    def _send_widget(self, kb, header, silent=False):
+        """Send the card. Its message id, or None if it did not go out."""
+        caption = self.render(header, compact=True)
+        if len(caption) > widget.CAPTION_LIMIT:
+            return None
+        data = self._card()
+        answer = self.api.send_widget(self.owner, widget.HTML, caption=caption,
+                                      keyboard=kb, chat_data=widget.encode(data),
+                                      silent=silent)
+        if not answer.get("ok"):
+            self.widget_retry_at = self.clock() + self.WIDGET_RETRY_SEC
+            log.info("live card refused, sending the ordinary message: %s",
+                     answer.get("description") or "no answer")
+            return None
+        new_mid = answer["result"]["message_id"]
+        storage.set_message_id(new_mid, kind=widget.KIND)
+        self.widget_sent, self.widget_sent_at = data, self.clock()
+        return new_mid
+
+    def _edit_widget(self, mid, caption, kb):
+        """Bring the card up to date: its numbers, then the caption and buttons."""
+        self._push_widget_locked(mid, force=True)
+        answer = self.api.edit_message(self.owner, mid, caption, keyboard=kb, is_photo=True)
+        return bool(answer.get("ok")) or "not modified" in str(answer.get("description"))
+
+    def push_widget(self):
+        """Write fresh numbers into the card. Called on every printer status,
+        throttled to ``widget_refresh_sec``. Silent, so it can run often."""
+        if not self.cfg.get("status_widget"):
+            return
+        every = max(3.0, float(self.cfg.get("widget_refresh_sec") or 10))
+        if self.clock() - self.widget_sent_at < every:
+            return
+        # A send or an edit of the message is under way: it brings the card
+        # up to date itself, and the printer thread must not wait for it.
+        if not self.main_lock.acquire(blocking=False):
+            return
+        try:
+            mid = storage.message_id()
+            if mid and storage.message_kind() == widget.KIND:
+                self._push_widget_locked(mid)
+        finally:
+            self.main_lock.release()
+
+    def _push_widget_locked(self, mid, force=False):
+        data = self._card()
+        if data is None:
+            return False
+        now = self.clock()
+        if (not force and widget.same_content(data, self.widget_sent)
+                and now - self.widget_sent_at < self.WIDGET_HEARTBEAT_SEC):
+            return True
+        answer = self.api.edit_widget_data(self.owner, mid, widget.encode(data))
+        # Even on failure: the next try waits for the interval, not the next status.
+        self.widget_sent_at = now
+        description = str(answer.get("description") or "")
+        if answer.get("ok") or "not modified" in description:
+            self.widget_sent = data
+            return True
+        if description and "Too Many Requests" not in description:
+            # Telegram says this is no card any more (deleted, replaced): treat
+            # it as an ordinary message; the next refresh makes a new card.
+            log.info("live card not updated: %s", description)
+            storage.set_message_id(mid, kind=None)
+        return False
 
     def _edit_in_place(self, mid, body, kb, photo):
         """Edit the status message whatever it currently is.
@@ -472,19 +615,29 @@ class Bot(object):
         """
         with self.main_lock:
             tracked_mid = storage.message_id()
+            tracked_kind = storage.message_kind() if tracked_mid else None
+
+            def edit(target):
+                if target == tracked_mid and tracked_kind == widget.KIND:
+                    # The live card: its text is the caption, and a frame
+                    # would replace the widget, so the camera stays out.
+                    self._push_widget_locked(target, force=True)
+                    form = dict(photo=None, is_photo=True)
+                else:
+                    form = dict(photo=photo, is_photo=is_photo)
+                answer = self.api.edit_message(self.owner, target, text,
+                                               keyboard=keyboard, **form)
+                # Pressing Refresh on a message that already shows this is
+                # not a failure, and must not rebuild the message.
+                return bool(answer.get("ok")) or \
+                    "not modified" in str(answer.get("description"))
 
             if tracked_mid and tracked_mid != clicked_mid:
-                answer = self.api.edit_message(
-                    self.owner, tracked_mid, text, keyboard=keyboard,
-                    photo=photo, is_photo=is_photo)
-                if answer.get("ok"):
+                if edit(tracked_mid):
                     self.api.delete_message(self.owner, clicked_mid)
                     return tracked_mid
 
-            answer = self.api.edit_message(
-                self.owner, clicked_mid, text, keyboard=keyboard,
-                photo=photo, is_photo=is_photo)
-            if not answer.get("ok"):
+            if not edit(clicked_mid):
                 for stale_mid in {tracked_mid, clicked_mid}:
                     if stale_mid:
                         self.api.delete_message(self.owner, stale_mid)
@@ -499,7 +652,9 @@ class Bot(object):
 
             if tracked_mid and tracked_mid != clicked_mid:
                 self.api.delete_message(self.owner, tracked_mid)
-            storage.set_message_id(clicked_mid)
+                storage.set_message_id(clicked_mid)
+            else:
+                storage.set_message_id(clicked_mid, kind=tracked_kind)
             return clicked_mid
 
     # ------------------------------------------------------------- commands
@@ -742,20 +897,24 @@ class Bot(object):
         note_appended = False
         photo = None
         keyboard = None
+        # The status events pass a header, not finished text: refresh_main
+        # draws them as the live card or as the usual message.
+        text = None
+        header = ""
 
         if event.kind == ps.STARTED:
-            text = self.render("🖨 <b>Печать началась</b>\n")
+            header = "🖨 <b>Печать началась</b>\n"
         elif event.kind == ps.RESUMED:
-            text = self.render("▶️ <b>Печать продолжилась</b>\n")
+            header = "▶️ <b>Печать продолжилась</b>\n"
         elif event.kind == ps.PAUSED:
-            text = self.render("⏸ <b>Печать на паузе</b>\nПродолжить — кнопкой ниже.\n")
+            header = "⏸ <b>Печать на паузе</b>\nПродолжить — кнопкой ниже.\n"
         elif event.kind == ps.STALLED:
             # The status object carries Klipper's own reason for the stop;
             # ui.stall_header prefers it over the bare numeric code.
             status, _ = self._snapshot()
-            text = self.render(ui.stall_header(status, event.code))
+            header = ui.stall_header(status, event.code)
         elif event.kind == ps.PROGRESS:
-            text = self.render("📊 <b>Идёт печать</b>\n")
+            header = "📊 <b>Идёт печать</b>\n"
         elif event.kind == ps.FINISHED:
             text = ui.done_text(event.snapshot) + self.light_off_if_night()
             # The one place an unprompted support note is allowed: a print that
@@ -774,7 +933,7 @@ class Bot(object):
 
         try:
             mid = self.refresh_main(force_new=True, text=text, photo=photo,
-                                    keyboard=keyboard)
+                                    keyboard=keyboard, header=header)
         except Exception as e:
             log.warning("notification did not go out: %r", e)
             return
@@ -897,9 +1056,9 @@ class Bot(object):
 
     def show_connection_restored(self):
         """Put the live main panel back at the bottom after reconnection."""
-        text = self.render("🔌 <b>Связь с принтером восстановлена</b>\n")
         try:
-            return self.refresh_main(force_new=True, text=text)
+            return self.refresh_main(
+                force_new=True, header="🔌 <b>Связь с принтером восстановлена</b>\n")
         except Exception as e:
             log.warning("connection-restored panel did not go out: %r", e)
             return None
@@ -1024,6 +1183,10 @@ class Bot(object):
         for event in self.lifecycle.observe(status):
             self.announce(event)
         self._maybe_notify_cooldown(status)
+        try:
+            self.push_widget()
+        except Exception as e:
+            log.debug("live card not updated: %r", e)
 
     def keepalive_loop(self):
         """The printer closes the websocket if the client stays silent.

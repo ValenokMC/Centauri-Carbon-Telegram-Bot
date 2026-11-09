@@ -1,0 +1,389 @@
+# -*- coding: utf-8 -*-
+"""The live print card (Bot API 10.4 widgets) and its fallback.
+
+While a print runs, the status message is an HTML widget whose numbers the bot
+rewrites silently. Every way that can fail must end in the message the bot
+sent before widgets existed: a refused widget, a group chat, a card deleted by
+hand, a caption that does not fit.
+"""
+import json
+import re
+import zlib
+
+import pytest
+
+from centauri_bot import handlers, storage, widget
+from centauri_bot.telegram_api import TelegramAPI
+
+from conftest import status
+
+
+NOW = 1_700_000_000.0
+
+
+def printing(progress=42, ticks=600, total_ticks=3600, **extra):
+    return status(13, "Benchy_PLA.gcode", progress=progress, layer=12,
+                  total_layer=300, ticks=ticks, total_ticks=total_ticks, **extra)
+
+
+@pytest.fixture
+def live_bot(bot):
+    bot.cfg["status_widget"] = True
+    bot.status = printing()
+    bot.online = True
+    return bot
+
+
+def card_of(chat_data):
+    return json.loads(chat_data)
+
+
+# ------------------------------------------------------------ the HTML itself
+
+def test_html_fits_the_sendwidget_limits():
+    raw = widget.HTML.encode("utf-8")
+    assert len(raw) <= widget.HTML_LIMIT
+    assert len(zlib.compress(raw, 9)) <= widget.HTML_COMPRESSED_LIMIT
+    assert "\x00" not in widget.HTML
+    assert widget.html_fits()
+
+
+def test_html_loads_nothing_and_never_parses_state_as_markup():
+    """The sandbox loads nothing anyway; a file name must not become HTML."""
+    assert not re.search(r"<script[^>]*\bsrc\b", widget.HTML)
+    assert "http" not in widget.HTML
+    assert "innerHTML" not in widget.HTML
+    assert "textContent" in widget.HTML
+    assert "chatDataChanged" in widget.HTML
+
+
+# ------------------------------------------------------------ the card's state
+
+def test_printing_card_carries_the_numbers_and_the_finish_time():
+    data = widget.card(printing(), True, "Demo Centauri", NOW)
+    assert data["k"] == "p" and data["p"] == 42
+    assert data["l"] == [12, 300]
+    assert data["tn"] == [210, 210] and data["tb"] == [60, 60] and data["tc"] == 30
+    assert data["r"] == 3000 and data["e"] == int(NOW) + 3000
+    assert data["f"] == "Benchy_PLA.gcode" and data["u"] == int(NOW)
+    assert "sp" not in data
+
+
+def test_paused_card_has_no_finish_time():
+    data = widget.card(status(6, "a.gcode", progress=50, ticks=100), True, "P", NOW)
+    assert data["k"] == "w" and "e" not in data
+
+
+def test_offline_card_says_so():
+    data = widget.card(printing(), False, "P", NOW)
+    assert data["o"] == 0 and data["s"] == "связь потеряна" and "e" not in data
+
+
+def test_speed_is_shown_only_when_changed():
+    info = printing()
+    info["PrintInfo"]["PrintSpeedPct"] = 125
+    assert widget.card(info, True, "P", NOW)["sp"] == 125
+
+
+@pytest.mark.parametrize("st, online, live", [
+    (printing(), True, True),
+    (status(6, "a.gcode"), True, True),        # paused
+    (printing(), False, False),                # no connection
+    (status(9, "a.gcode"), True, False),       # finished, name left behind
+    (status(8, "a.gcode"), True, False),       # cancelled
+    (status(0), True, False),                  # idle
+    (None, True, False),
+])
+def test_only_a_running_print_is_live(st, online, live):
+    assert widget.is_live(st, online) is live
+
+
+def test_long_cyrillic_file_name_still_fits_chat_data():
+    st = status(13, "Очень_длинное_имя_файла_" * 40 + ".gcode", progress=1)
+    text = widget.encode(widget.card(st, True, "Принтер " * 10, NOW))
+    assert len(text.encode("utf-8")) <= widget.DATA_LIMIT
+    assert card_of(text)["v"] == widget.VERSION
+
+
+def test_unchanged_numbers_are_the_same_content():
+    a = widget.card(printing(), True, "P", NOW)
+    b = widget.card(printing(), True, "P", NOW + 5)
+    a["u"], b["u"] = 1, 2
+    # The finish time moves with the clock while printing; compare a pause.
+    a.pop("e"), b.pop("e")
+    assert widget.same_content(a, b)
+    assert not widget.same_content(a, dict(b, p=43))
+
+
+# ------------------------------------------------------------ the API calls
+
+class Recorder(object):
+    def __init__(self):
+        self.calls = []
+
+    def call(self, method, params=None, files=None, timeout=30):
+        self.calls.append((method, params))
+        return {"ok": True, "result": {"message_id": 7}}
+
+
+def test_send_widget_is_a_plain_bot_api_call():
+    rec = Recorder()
+    TelegramAPI.send_widget(rec, "555", "<p>x</p>", caption="<b>c</b>",
+                            keyboard=[[{"text": "a", "callback_data": "b"}]],
+                            chat_data="{}", silent=True)
+    method, p = rec.calls[0]
+    assert method == "sendWidget"
+    assert p["html"] == "<p>x</p>" and p["caption"] == "<b>c</b>"
+    assert p["parse_mode"] == "HTML" and p["chat_data"] == "{}"
+    assert p["disable_notification"] is True
+    assert p["reply_markup"] == {"inline_keyboard": [[{"text": "a", "callback_data": "b"}]]}
+    assert "allow_queries" not in p        # the card never talks back
+
+
+def test_edit_widget_data_call():
+    rec = Recorder()
+    TelegramAPI.edit_widget_data(rec, "555", 9, "")
+    assert rec.calls == [("editMessageWidgetData",
+                          {"chat_id": "555", "message_id": 9, "chat_data": ""})]
+
+
+# ------------------------------------------------------------ sending the card
+
+def test_off_by_default_nothing_changes(bot, fake_telegram):
+    bot.status, bot.online = printing(), True
+    bot.refresh_main(force_new=True)
+    assert fake_telegram.widgets == [] and len(fake_telegram.sent) == 1
+
+
+def test_running_print_goes_out_as_the_card(live_bot, fake_telegram):
+    storage.set_message_id(500)
+    mid = live_bot.refresh_main(force_new=True, header="🖨 <b>Печать началась</b>\n")
+    assert fake_telegram.sent == []
+    [sent] = fake_telegram.widgets
+    assert sent["html"] == widget.HTML and sent["chat"] == live_bot.owner
+    assert sent["caption"].startswith("🖨 <b>Печать началась</b>")
+    assert "42%" in sent["caption"] and "ещё" in sent["caption"]
+    assert "сопло" not in sent["caption"]            # the card shows that
+    assert sent["keyboard"] == live_bot.keyboard()   # pause / stop stay buttons
+    assert sent["silent"] is False                   # an event still notifies
+    assert card_of(sent["chat_data"])["p"] == 42
+    assert storage.message_id() == mid and storage.message_kind() == widget.KIND
+    assert fake_telegram.deleted == [(live_bot.owner, 500)]
+
+
+def test_refused_card_falls_back_to_the_old_message(live_bot, fake_telegram):
+    fake_telegram.widget_answer = {"ok": False, "description": "Bad Request: METHOD_INVALID"}
+    mid = live_bot.refresh_main(force_new=True, header="🖨 <b>Печать началась</b>\n")
+    [(_, text, _, _)] = fake_telegram.sent
+    assert "сопло" in text                            # the full status, as before
+    assert storage.message_id() == mid and storage.message_kind() is None
+    # and it is not retried on every refresh
+    live_bot.refresh_main(force_new=True)
+    assert len(fake_telegram.widgets) == 1 and len(fake_telegram.sent) == 2
+    live_bot.clock_control.now += live_bot.WIDGET_RETRY_SEC + 1
+    live_bot.refresh_main(force_new=True)
+    assert len(fake_telegram.widgets) == 2
+
+
+def test_unreachable_telegram_also_falls_back(live_bot, fake_telegram):
+    fake_telegram.widget_answer = {"ok": False}
+    assert live_bot.refresh_main(force_new=True) is not None
+    assert len(fake_telegram.sent) == 1
+
+
+def test_group_chat_gets_the_old_message(live_bot, fake_telegram):
+    live_bot.owner = "-1001234567890"
+    live_bot.refresh_main(force_new=True)
+    assert fake_telegram.widgets == [] and len(fake_telegram.sent) == 1
+
+
+def test_other_screens_are_never_a_card(live_bot, fake_telegram):
+    live_bot.refresh_main(force_new=True, text="📂 Файлы")
+    assert fake_telegram.widgets == [] and fake_telegram.texts() == ["📂 Файлы"]
+
+
+def test_finished_print_replaces_the_card(live_bot, fake_telegram):
+    live_bot.refresh_main(force_new=True)
+    card_mid = storage.message_id()
+    live_bot.status = status(9)
+    live_bot.refresh_main(force_new=True, text="✅ <b>Печать закончена</b>")
+    assert fake_telegram.texts() == ["✅ <b>Печать закончена</b>"]
+    assert (live_bot.owner, card_mid) in fake_telegram.deleted
+    assert storage.message_kind() is None
+
+
+def test_undeletable_card_is_retired_and_emptied(live_bot, fake_telegram):
+    live_bot.refresh_main(force_new=True)
+    card_mid = storage.message_id()
+    fake_telegram.delete_message = lambda chat, mid: {
+        "ok": False, "description": "Bad Request: message can't be deleted for everyone"}
+    live_bot.status = status(9)
+    live_bot.refresh_main(force_new=True, text="готово")
+    assert (card_mid, "") in fake_telegram.widget_edits
+    assert fake_telegram.edited[-1][1:] == (card_mid, live_bot.RETIRED_TEXT, None)
+    assert (card_mid, "caption") in fake_telegram.edit_forms
+    assert (card_mid, "text") not in fake_telegram.edit_forms
+
+
+# ------------------------------------------------------------ keeping it live
+
+def test_refresh_edits_the_card_in_place(live_bot, fake_telegram):
+    live_bot.refresh_main(force_new=True)
+    mid = storage.message_id()
+    live_bot.status = printing(progress=43)
+    assert live_bot.refresh_main() == mid
+    assert card_of(fake_telegram.widget_edits[-1][1])["p"] == 43
+    assert fake_telegram.edit_forms[-1] == (mid, "caption")
+    assert "43%" in fake_telegram.edited[-1][2]
+    assert len(fake_telegram.widgets) == 1 and fake_telegram.sent == []
+
+
+def test_print_under_an_ordinary_message_gets_its_card_quietly(live_bot, fake_telegram):
+    storage.set_message_id(500)                       # a text status from before
+    mid = live_bot.refresh_main()                     # what refresh_loop calls
+    [sent] = fake_telegram.widgets
+    assert sent["silent"] is True
+    assert mid != 500 and storage.message_kind() == widget.KIND
+    assert fake_telegram.deleted == [(live_bot.owner, 500)]
+
+
+def test_refused_promotion_keeps_the_old_message(live_bot, fake_telegram):
+    fake_telegram.widget_answer = {"ok": False, "description": "Bad Request"}
+    storage.set_message_id(500)
+    assert live_bot.refresh_main() == 500
+    assert fake_telegram.sent == [] and fake_telegram.deleted == []
+    assert fake_telegram.edited[-1][1] == 500
+
+
+def test_push_is_throttled_and_skips_unchanged_numbers(live_bot, fake_telegram):
+    live_bot.cfg["widget_refresh_sec"] = 10
+    live_bot.refresh_main(force_new=True)
+    mid = storage.message_id()
+    clock = live_bot.clock_control
+
+    live_bot.push_widget()                            # same second: nothing
+    assert fake_telegram.widget_edits == []
+
+    live_bot.status = status(6, "Benchy_PLA.gcode", progress=42)   # paused
+    clock.now += 11
+    live_bot.push_widget()
+    assert [m for m, _ in fake_telegram.widget_edits] == [mid]
+    assert card_of(fake_telegram.widget_edits[-1][1])["k"] == "w"
+
+    clock.now += 11                                   # nothing moved
+    live_bot.push_widget()
+    assert len(fake_telegram.widget_edits) == 1
+
+    clock.now += live_bot.WIDGET_HEARTBEAT_SEC        # but say it is alive
+    live_bot.push_widget()
+    assert len(fake_telegram.widget_edits) == 2
+    # pushes never touch the caption, so no "edited" mark appears
+    assert fake_telegram.edited == []
+
+
+def test_push_on_every_printer_status(live_bot, fake_telegram):
+    live_bot.refresh_main(force_new=True)
+    live_bot.clock_control.now += 30
+    live_bot._handle_status(printing(progress=44))
+    assert card_of(fake_telegram.widget_edits[-1][1])["p"] == 44
+
+
+def test_card_deleted_by_hand_becomes_an_ordinary_message(live_bot, fake_telegram):
+    live_bot.refresh_main(force_new=True)
+    mid = storage.message_id()
+    fake_telegram.widget_data_answer = {"ok": False,
+                                        "description": "Bad Request: message to edit not found"}
+    live_bot.clock_control.now += 30
+    live_bot.status = printing(progress=45)
+    live_bot.push_widget()
+    assert storage.message_id() == mid and storage.message_kind() is None
+    # the next refresh makes a new card
+    fake_telegram.widget_data_answer = None
+    assert live_bot.refresh_main() != mid
+    assert len(fake_telegram.widgets) == 2
+
+
+def test_flood_wait_keeps_the_card(live_bot, fake_telegram):
+    live_bot.refresh_main(force_new=True)
+    fake_telegram.widget_data_answer = {"ok": False,
+                                        "description": "Too Many Requests: retry after 5"}
+    live_bot.clock_control.now += 30
+    live_bot.status = printing(progress=45)
+    live_bot.push_widget()
+    assert storage.message_kind() == widget.KIND
+
+
+def test_no_card_no_push(bot, fake_telegram):
+    bot.cfg["status_widget"] = True
+    bot.status, bot.online = printing(), True
+    storage.set_message_id(500)                       # ordinary message
+    bot.clock_control.now += 30
+    bot.push_widget()
+    assert fake_telegram.widget_edits == []
+
+
+# ------------------------------------------------------------ buttons on the card
+
+def card_callback(data, mid):
+    return {"id": "cb-1", "data": data,
+            "message": {"message_id": mid, "chat": {"id": "555000111"},
+                        "widget": {"html": "…"}},
+            "from": {"id": "555000111", "is_bot": False}}
+
+
+def test_refresh_button_on_the_card_edits_caption_and_numbers(live_bot, fake_telegram):
+    live_bot.cfg["send_photo"] = True
+    live_bot.grab = lambda max_age=0: b"\xff\xd8frame"
+    live_bot.refresh_main(force_new=True)
+    mid = storage.message_id()
+    handlers.handle_callback(live_bot, card_callback("refresh", mid))
+    assert fake_telegram.edit_forms[-1] == (mid, "caption")   # never a photo
+    assert "сопло" not in fake_telegram.edited[-1][2]         # short caption
+    assert fake_telegram.widget_edits and fake_telegram.widget_edits[-1][0] == mid
+    assert storage.message_id() == mid and storage.message_kind() == widget.KIND
+    assert fake_telegram.sent == [] and fake_telegram.deleted == []
+
+
+def test_details_button_opens_the_full_text(live_bot, fake_telegram):
+    live_bot.refresh_main(force_new=True)
+    mid = storage.message_id()
+    handlers.handle_callback(live_bot, card_callback("details", mid))
+    assert "сопло" in fake_telegram.edited[-1][2]
+
+
+def test_unchanged_refresh_does_not_rebuild_the_card(live_bot, fake_telegram):
+    live_bot.refresh_main(force_new=True)
+    mid = storage.message_id()
+    fake_telegram.edit_message = lambda *a, **k: {
+        "ok": False, "description": "Bad Request: message is not modified"}
+    handlers.handle_callback(live_bot, card_callback("refresh", mid))
+    assert fake_telegram.deleted == [] and fake_telegram.sent == []
+    assert storage.message_kind() == widget.KIND
+
+
+def test_stop_on_the_card_still_asks_first(live_bot, fake_telegram):
+    sent_commands = []
+    live_bot.ws = object()
+    live_bot.run_command = lambda cmd, *a, **k: (sent_commands.append(cmd), (True, "Ack=0"))[1]
+    live_bot.refresh_main(force_new=True)
+    mid = storage.message_id()
+    handlers.handle_callback(live_bot, card_callback("ask:stop", mid))
+    assert sent_commands == []
+    assert fake_telegram.edit_forms[-1] == (mid, "caption")
+    _, edited_mid, text, keyboard = fake_telegram.edited[-1]
+    assert edited_mid == mid and "Остановить печать?" in text
+    assert any("Да" in b["text"] for row in keyboard for b in row)
+
+
+def test_long_screen_on_the_card_becomes_an_ordinary_message(live_bot, fake_telegram):
+    """A caption holds 1024 characters; a longer screen replaces the card."""
+    live_bot.refresh_main(force_new=True)
+    mid = storage.message_id()
+
+    def edit(chat, message_id, text, keyboard=None, photo=None, is_photo=False):
+        return {"ok": False, "description": "Bad Request: MEDIA_CAPTION_TOO_LONG"}
+    fake_telegram.edit_message = edit
+    new_mid = live_bot.edit_main_from_callback(mid, "x" * 2000, is_photo=True)
+    assert new_mid != mid and storage.message_id() == new_mid
+    assert storage.message_kind() is None
+    assert (live_bot.owner, mid) in fake_telegram.deleted

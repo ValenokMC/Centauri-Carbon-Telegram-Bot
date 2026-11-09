@@ -42,6 +42,7 @@ parts. No inbound sockets: everything is an outgoing connection.
 | `backend.py` | Backend capabilities, fail-closed permissions, one-use confirmation tokens | no |
 | `printer_state.py` | **Pure.** Status codes → lifecycle events | no |
 | `ui.py` | **Pure.** Status text and keyboards | no |
+| `widget.py` | **Pure.** The live print card: its HTML and the state the bot writes into it | no |
 | `support.py` | **Pure.** Links and the 30-day rule | no |
 | `schedule.py` | **Pure.** Delayed starts: reading a start time, jobs, the start-or-ask decision | no |
 | `handlers.py` | What a button or a command does | via `Bot` |

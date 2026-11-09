@@ -229,7 +229,7 @@ def stall_header(status, code):
 # ------------------------------------------------------------------ status text
 
 def render(status, online, printer_name, header="", detailed=False,
-           maintenance_line="", now=None, tz=None):
+           maintenance_line="", now=None, tz=None, compact=False):
     """The single status message.
 
     The block order is deliberately inverted. On a phone the keyboard takes up
@@ -282,6 +282,15 @@ def render(status, online, printer_name, header="", detailed=False,
     if filename and online:
         summary += " · %s%%" % print_info.get("Progress", 0)
     top.append(summary)
+    if compact:
+        # The caption under the live card. The card shows the rest; this is
+        # what the chat list, notifications and apps without widgets show.
+        if filename:
+            left = (print_info.get("TotalTicks") or 0) - (print_info.get("CurrentTicks") or 0)
+            top.append("📄 <i>%s</i>" % filename)
+            if left > 0:
+                top.append("⏳ ещё %s" % hhmm(left))
+        return "\n".join(top)
     # The code alone is not actionable. Klipper says why it stopped, so that
     # line goes directly under the summary where it will be read first.
     if code == ps.STATUS_KLIPPY_ERROR:

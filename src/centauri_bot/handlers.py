@@ -51,6 +51,15 @@ def _is_owner(bot, chat, sender=None):
     return sender is not None and str(sender) == bot.owner_user
 
 
+def _is_widget(message):
+    return isinstance(message, dict) and "widget" in message
+
+
+def _has_caption(message):
+    """The message's text is a caption: a photo, or the live print card."""
+    return isinstance(message, dict) and ("photo" in message or "widget" in message)
+
+
 def show_files(bot, chat, mid=None, is_photo=False, force_new=False):
     """Show the file list without leaving a second status message behind.
 
@@ -196,7 +205,7 @@ def handle_callback(bot, query):
     chat = str(query["message"]["chat"]["id"])
     mid = query["message"]["message_id"]
     data = query.get("data", "")
-    is_photo = "photo" in query.get("message", {})
+    is_photo = _has_caption(query.get("message", {}))
 
     sender = query.get("from", {}).get("id")
     if not _is_owner(bot, chat, sender):
@@ -238,14 +247,21 @@ def handle_callback(bot, query):
         bot.api.edit_message(
             chat, mid,
             bot.render("🧰 <b>Обслуживание отмечено</b>\nСчётчик пошёл заново.\n"),
-            keyboard=bot.keyboard(), photo=bot.grab(max_age=5), is_photo=is_photo)
+            keyboard=bot.keyboard(),
+            # a frame would replace the live card with a photo
+            photo=None if _is_widget(query.get("message", {})) else bot.grab(max_age=5),
+            is_photo=is_photo)
         return
 
     if data in ("refresh", "details", "brief", "snap"):
         detailed = (data == "details")
         bot.api.answer_callback(query["id"])
+        # Under the live card the short caption is enough: the card shows the
+        # rest. "Подробно" still opens the full text, for the fan speeds and
+        # the coordinates the card has no room for.
+        compact = _is_widget(query.get("message", {})) and not detailed
         bot.edit_main_from_callback(
-            mid, bot.render(detailed=detailed),
+            mid, bot.render(detailed=detailed, compact=compact),
             keyboard=bot.keyboard(detailed), photo=bot.grab(max_age=5),
             is_photo=is_photo)
         return
@@ -439,7 +455,7 @@ def _ask_hardware(bot, chat, mid, query, action, value, label, description):
     bot.api.edit_message(chat, mid, "<b>Подтвердить?</b>\n%s\n\nДействие: %s."
                          % (escape(label), escape(description)),
                          keyboard=ui.kb_confirm("control:%s:%s" % (action, token), "выполнить"),
-                         is_photo="photo" in query.get("message", {}))
+                         is_photo=_has_caption(query.get("message", {})))
 
 
 def _ask_confirmation(bot, chat, mid, query, what, is_photo):
@@ -705,9 +721,11 @@ def _do_action(bot, chat, mid, query, what):
     # Print, schedule and delete confirmations are separate messages. Editing
     # the pressed one in place left the status in a message the refresh loop
     # does not track: it stayed frozen while the loop kept editing the old one.
-    bot.edit_main_from_callback(mid, bot.render(note), keyboard=bot.keyboard(),
+    message = query.get("message", {})
+    bot.edit_main_from_callback(mid, bot.render(note, compact=_is_widget(message)),
+                                keyboard=bot.keyboard(),
                                 photo=bot.grab(max_age=5),
-                                is_photo="photo" in query.get("message", {}))
+                                is_photo=_has_caption(message))
 
 
 # ------------------------------------------------------------------ messages

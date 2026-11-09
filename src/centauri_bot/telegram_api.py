@@ -171,6 +171,27 @@ class TelegramAPI:
         p["text"] = text
         return self.call("editMessageText", p)
 
+    # -- widgets (Bot API 10.4) --------------------------------------------
+    # Plain calls like every other method here: the bot has no Telegram
+    # library to upgrade. In production a widget goes to private chats only
+    # and cannot be forwarded; an app without widget support shows the
+    # caption instead, so the caption must make sense on its own.
+
+    def send_widget(self, chat, html, caption=None, keyboard=None,
+                    chat_data=None, silent=False):
+        p = {"chat_id": chat, "html": html, "chat_data": chat_data,
+             "caption": caption, "parse_mode": "HTML" if caption else None,
+             "disable_notification": True if silent else None}
+        if keyboard:
+            p["reply_markup"] = {"inline_keyboard": keyboard}
+        return self.call("sendWidget", p)
+
+    def edit_widget_data(self, chat, message_id, chat_data):
+        """Silent: no "edited" mark, no notification. "" clears the state."""
+        return self.call("editMessageWidgetData",
+                         {"chat_id": chat, "message_id": message_id,
+                          "chat_data": chat_data})
+
     def delete_message(self, chat, message_id):
         return self.call("deleteMessage", {"chat_id": chat, "message_id": message_id})
 
