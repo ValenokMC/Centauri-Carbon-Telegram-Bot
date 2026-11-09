@@ -812,21 +812,8 @@ def handle_widget_query(bot, query):
         bot.refresh_main()
         return
 
-    if data.startswith("open:"):
-        # A "⚙️ Ещё" item: exactly what the same inline button does, so each
-        # screen keeps its own buttons and confirmations. Only a button the
-        # panel really has right now is accepted.
-        target = data[5:]
-        if not widget.menu_allows(bot.keyboard(), target):
-            reply(m="Этой кнопки сейчас нет.")
-            return
-        reply(m="")
-        message_id = query.get("message_id") or storage.message_id()
-        handle_callback(bot, {
-            "id": None, "data": target, "from": query.get("from") or {},
-            "message": {"message_id": message_id, "chat": {"id": chat},
-                        "widget": {}},
-        })
+    if data.startswith(("c:", "open:")):
+        _card_screen(bot, query, data.split(":", 1)[1], reply)
         return
 
     if data == "snap":
@@ -840,6 +827,57 @@ def handle_widget_query(bot, query):
         return
 
     reply(m="Неизвестная кнопка.")
+
+
+# Submenus whose text is only the status the card already shows: the card
+# gets a title instead.
+SCREEN_TITLES = (
+    ("menu:speed", "⚡ Скорость печати"), ("set:speed", "⚡ Скорость печати"),
+    ("menu:temp", "🌡 Нагрев"), ("set:temp", "🌡 Нагрев"),
+    ("menu:fans", "🌀 Вентиляторы"), ("set:fan:", "🌀 Вентиляторы"),
+)
+
+
+def _card_screen(bot, query, target, reply):
+    """Any button of the bot, run for a tap on the card.
+
+    The handler is the inline button's own, with every check and confirmation
+    it has; what it would have put on the message comes back to the card as
+    a screen. The data is untrusted like any callback_data, and the handler
+    treats it so: tokens, permissions and the owner were never the button's
+    business. A screen too big for the 1 KB answer is shown the old way,
+    under the card.
+    """
+    from . import widget
+    # The tracked card, whichever card was tapped: the capture watches that
+    # message, and a handler edits "the pressed message".
+    message_id = storage.message_id() or query.get("message_id")
+    chat = str((query.get("chat") or {}).get("id") or bot.owner)
+    fake = {"id": None, "data": target, "from": query.get("from") or {},
+            "message": {"message_id": message_id, "chat": {"id": chat},
+                        "widget": {}}}
+    cap = bot.run_screen(lambda: handle_callback(bot, fake))
+    note = (cap.toast or "")[:200]
+
+    # Back to the card: the handler redrew the status, or a screen with no
+    # buttons of its own (an action's result), or the usual panel again.
+    if cap.close or cap.text is None or not cap.keyboard \
+            or cap.keyboard == bot.keyboard():
+        if not note and cap.text:
+            note = " ".join(widget.lines(cap.text)[:2])[:200]
+        reply(close=1, m=note)
+        return
+
+    title = next((t for prefix, t in SCREEN_TITLES if target.startswith(prefix)), None)
+    fitted = widget.fit(widget.screen(cap.text, cap.keyboard, title=title), note)
+    if fitted:
+        bot.api.answer_widget_query(query.get("id"), fitted)
+        return
+    reply(m="Экран большой — открыл его под карточкой")
+    answer = bot.api.edit_message(bot.owner, cap.mid, cap.text,
+                                  keyboard=cap.keyboard, is_photo=True)
+    if not answer.get("ok"):
+        bot.refresh_main(force_new=True, text=cap.text, keyboard=cap.keyboard)
 
 
 # ------------------------------------------------------------------ messages

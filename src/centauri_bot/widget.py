@@ -28,13 +28,15 @@ Pure functions only, like ui.py: the tests call them and look at the result.
 What this module does not decide: when a widget is sent, and what happens when
 Telegram refuses it. That is app.py, which falls back to the ordinary message.
 """
+import html as _html
 import json
+import re
 import zlib
 
 from . import printer_state as ps
 
 
-VERSION = 4
+VERSION = 5
 
 # storage.message_kind() of a card sent with this very HTML. A sent widget's
 # HTML can never be replaced, so a card from an older version is not ours to
@@ -76,67 +78,87 @@ PAUSE, RESUME, STOP, CAMERA = "P", "R", "S", "C"
 # The card's state classes are "p", "w" and "x": no other rule may use those
 # names, or it restyles the whole card (the big percentage once did).
 
-HTML = """<style>
-body{margin:0;padding:10px 12px 8px}
-.r{display:flex;justify-content:space-between;align-items:baseline;gap:10px;white-space:nowrap}
-.s{font-size:1.15em;font-weight:600}
-.pc{font-size:1.8em;font-weight:700;line-height:1.1}
-.r,.pc{font-variant-numeric:tabular-nums}
-.h,.f,.u,.n{color:var(--tg-theme-hint-color)}
-.f{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
-.h,.f{font-size:.92em}.u,.n{font-size:.82em}
-.big{font-size:1.08em;margin-top:2px}
-.b{height:7px;border-radius:4px;background:var(--tg-theme-secondary-bg-color);overflow:hidden;margin:8px 0 6px}
-.b i{display:block;height:100%;width:0;background:var(--tg-theme-button-color);transition:width .6s}
-.w .b i{background:#e5a50a}.x .b i{background:var(--tg-theme-destructive-text-color)}
-.a{display:flex;gap:6px;margin-top:8px}.a button{flex:1;font-size:.95em;padding-left:2px;padding-right:2px}
-.a .k{color:var(--tg-theme-destructive-text-color)}
-.g{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}.g button{font-size:.92em}
+HTML = r"""<style>
+:root{--g:light-dark(rgba(0,0,0,.05),rgba(255,255,255,.07));--l:light-dark(rgba(0,0,0,.09),rgba(255,255,255,.13));--ac:var(--tg-theme-button-color)}
+body{margin:0;padding:8px}
+.cd{border-radius:18px;padding:12px;border:1px solid var(--l);background:linear-gradient(140deg,light-dark(rgba(60,120,255,.12),rgba(90,150,255,.2)),light-dark(rgba(255,255,255,.45),rgba(255,255,255,.03)) 65%)}
+.k-w{--ac:#e5a50a}.k-x{--ac:var(--tg-theme-destructive-text-color)}.k-i{--ac:var(--tg-theme-hint-color)}
+.top{display:flex;gap:12px;align-items:center}
+.rg{width:70px;height:70px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center}
+.rg b{width:56px;height:56px;border-radius:50%;background:var(--tg-theme-bg-color);display:flex;align-items:center;justify-content:center;font-size:1.2em;font-variant-numeric:tabular-nums}
+.k-i .rg{display:none}
+.mn{flex:1;min-width:0}
+.s{font-size:1.15em;font-weight:700}
+.dt{width:8px;height:8px;border-radius:50%;background:var(--ac);display:inline-block;margin-right:7px;vertical-align:middle}
+.f,.h,.u,.n{color:var(--tg-theme-hint-color)}
+.f{font-size:.88em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+.l{margin-top:4px;font-variant-numeric:tabular-nums}.h{font-size:.85em;margin-top:1px}
+.cp{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.cp span{padding:4px 10px;border-radius:99px;background:var(--g);border:1px solid var(--l);font-size:.85em;font-variant-numeric:tabular-nums}
+.a,.rw{display:flex;gap:6px;margin-top:8px}.a button,.rw button{flex:1}
+.g{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}
+button{background:var(--g);border:1px solid var(--l);color:inherit;border-radius:12px;padding:9px 6px;font:inherit;font-size:.9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+button:active{background:var(--l)}
+button.k{color:var(--tg-theme-destructive-text-color)}
+button.y{background:var(--tg-theme-button-color);color:var(--tg-theme-button-text-color);border-color:transparent}
+button:disabled{color:var(--tg-theme-hint-color);background:none;border-color:transparent;padding:4px 6px 0}
+.hd{display:flex;align-items:center;gap:8px}.hd button{flex:none;padding:6px 12px}
+.hd b{font-size:1.08em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tx{margin-top:8px;font-size:.92em;line-height:1.4}.tx div{min-height:.6em}
+.n{font-size:.84em;margin-top:6px}.u{font-size:.75em;margin-top:6px;text-align:right}
 .z{color:var(--tg-theme-destructive-text-color)}
 </style>
-<div id=c><div class=r><span class=s id=s></span><span class=pc id=p></span></div>
-<div class=f id=f></div><div class=b><i id=b></i></div>
-<div class="r big"><span id=l></span><span id=t></span></div>
-<div class="r h"><span id=m></span><span id=e></span></div>
-<div class=a id=a></div><div class=g id=g hidden></div><div class=n id=n></div>
-<div class=u id=u></div></div>
+<div id=c class=cd><div id=cv><div class=top><div class=rg id=rg><b id=p></b></div>
+<div class=mn><div class=s><i class=dt></i><span id=s></span></div><div class=f id=f></div>
+<div class=l><span id=l></span> <span id=t></span></div><div class=h id=e></div></div></div>
+<div class=cp id=m></div><div class=a id=a></div><div class=g id=g hidden></div></div>
+<div id=v hidden><div class=hd><button id=bk>‹ Назад</button><b id=vt></b></div><div class=tx id=vx></div><div id=vk></div></div>
+<div class=n id=n></div><div class=u id=u></div></div>
 <p id=q hidden>⬇️ Статус — ниже</p>
 <script>
-var W=window.TelegramWidget,d=null,ask=null,busy=0,menu=0;
+var W=window.TelegramWidget,d=null,ask=null,busy=0,menu=0,sc=null;
 function $(i){return document.getElementById(i)}
 function x(i,v){$(i).textContent=v}
+function clr(i){var a=$(i);while(a.firstChild)a.removeChild(a.firstChild);return a}
+function el(p,t,v){var e=document.createElement(t);e.textContent=v;p.appendChild(e);return e}
 function dur(s){var m=Math.max(1,Math.round(s/60)),h=Math.floor(m/60);m%=60;
 return h?(m?h+' ч '+m+' мин':h+' ч'):m+' мин'}
 function clock(e){return new Date(e*1e3).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}
-function tick(){if(!d)return;var now=Date.now()/1e3,
-left=d.e?Math.max(0,d.e-now):d.r;
-x('t',left>0?'ещё '+dur(left):'');
+function tick(){if(!d)return;var now=Date.now()/1e3,left=d.e?Math.max(0,d.e-now):d.r;
+x('t',left>0?(d.l?'· ':'')+'ещё '+dur(left):'');
 x('e',d.e&&left>0?'готово ≈ '+clock(d.e):'');
 var age=now-d.u;$('u').className=age>600?'u z':'u';
 x('u',(d.sp?'скорость '+d.sp+'% · ':'')+(age>600?'нет обновлений '+dur(age):'обновлено '+clock(d.u)))}
-function mk(t,c,f,p){var e=document.createElement('button');e.textContent=t;if(c)e.className=c;e.onclick=f;$(p||'a').appendChild(e)}
-function clr(i){var a=$(i);while(a.firstChild)a.removeChild(a.firstChild)}
+function mk(p,t,c,f){var e=el(p,'button',t);if(c)e.className=c;if(f)e.onclick=f;else e.disabled=true;return e}
 function go(q){if(busy)return;busy=1;menu=0;x('n','Отправляю…');
-W.request(q).then(function(r){busy=0;var a=null;try{a=JSON.parse(r.result)}catch(e){}
-ask=a&&a.t?a:null;x('n',ask?ask.q:(a&&a.m)||'');keys()},
-function(e){busy=0;ask=null;x('n',e&&e.code=='RATE_LIMITED'?'Слишком часто, подожди немного':'Не дошло до бота, попробуй ещё раз');keys()})}
-function keys(){clr('a');clr('g');$('g').hidden=!menu;
+W.request(q).then(function(r){busy=0;var a=null;try{a=JSON.parse(r.result)}catch(e){}a=a||{};
+ask=a.t?a:null;if(a.sc)sc=a.sc;if(a.close||ask)sc=null;
+x('n',ask?ask.q:a.m||'');show()},
+function(e){busy=0;ask=null;x('n',e&&e.code=='RATE_LIMITED'?'Слишком часто, подожди немного':'Не дошло до бота, попробуй ещё раз');show()})}
+function tap(c){if(c=='b'){sc=null;x('n','');show()}else if(c.slice(0,2)=='u:'){var u=c.slice(2);
+try{if(/^https:\/\/t\.me\//.test(u))W.openTelegramLink(u);else W.openLink(u)}catch(e){}}else go(c)}
+function keys(){var a=clr('a'),g=clr('g');g.hidden=!menu;
 if(!d||!W.request||W.isForward)return;
-if(ask){mk(ask.y,'k',function(){go('do:'+ask.a+':'+ask.t)});
-mk('Отмена','',function(){ask=null;x('n','');keys()});return}
+if(ask){mk(a,ask.y,'y',function(){go('do:'+ask.a+':'+ask.t)});mk(a,'Отмена','',function(){ask=null;x('n','');show()});return}
 var b=d.b||'',mn=d.mn||[];
-if(b.indexOf('P')>=0)mk('⏸ Пауза','',function(){go('ask:pause')});
-if(b.indexOf('R')>=0)mk('▶️ Дальше','',function(){go('ask:resume')});
-if(b.indexOf('S')>=0)mk('⏹ Стоп','k',function(){go('ask:stop')});
-if(b.indexOf('C')>=0)mk('📷 Кадр','',function(){go('snap')});
-if(mn.length)mk(menu?'✕ Скрыть':'⚙️ Ещё','',function(){menu=!menu;x('n','');keys()});
-if(menu)mn.forEach(function(i){mk(i[0],'',function(){go('open:'+i[1])},'g')})}
+if(b.indexOf('P')>=0)mk(a,'⏸ Пауза','',function(){go('ask:pause')});
+if(b.indexOf('R')>=0)mk(a,'▶️ Дальше','',function(){go('ask:resume')});
+if(b.indexOf('S')>=0)mk(a,'⏹ Стоп','k',function(){go('ask:stop')});
+if(b.indexOf('C')>=0)mk(a,'📷 Кадр','',function(){go('snap')});
+if(mn.length)mk(a,menu?'✕ Скрыть':'⚙️ Ещё','',function(){menu=!menu;x('n','');show()});
+if(menu)mn.forEach(function(i){mk(g,i[0],'',function(){go('c:'+i[1])})})}
+function screen(){x('vt',sc.t||'');var t=clr('vx');(sc.x||[]).forEach(function(s){el(t,'div',s)});
+var k=clr('vk');(sc.k||[]).forEach(function(r){var w=el(k,'div','');w.className='rw';
+r.forEach(function(b){mk(w,b[0],b[2],b[1]?function(){tap(b[1])}:null)})})}
+function show(){$('cv').hidden=!!sc;$('v').hidden=!sc;if(sc)screen();else keys()}
 function draw(){d=null;try{d=JSON.parse(W.chatData)}catch(e){}
 var ok=!!(d&&d.v);$('c').hidden=!ok;$('q').hidden=ok;if(!ok)return;
-$('c').className=d.k;x('s',d.s);x('f',d.f||'');
+$('c').className='cd k-'+d.k;x('s',d.s);x('f',d.f||'');
 var p=Math.max(0,Math.min(100,+d.p||0));x('p',Math.floor(p)+'%');
-$('b').style.width=p+'%';x('l',d.l||'');x('m',d.m||'');
-if(!busy)keys();tick()}
+$('rg').style.background='conic-gradient(var(--ac) '+p+'%,var(--l) 0)';
+x('l',d.l||'');var m=clr('m');(d.m||'').split(' · ').forEach(function(s){if(s)el(m,'span',s)});
+if(!busy)show();tick()}
+$('bk').onclick=function(){sc=null;x('n','');show()};
 if(W){W.onEvent('chatDataChanged',draw);draw();setInterval(tick,15e3);if(W.ready)W.ready()}
 </script>"""
 
@@ -166,7 +188,7 @@ def is_live(status, online):
 # The card speaks Russian like the rest of the interface. printer_state keeps
 # its English code names: they are what status-codes.txt and the logs use.
 STATE_RU = {
-    1: "Парковка", 5: "Ставлю на паузу", 6: "Пауза", 7: "Останавливается",
+    0: "Свободен", 1: "Парковка", 5: "Ставлю на паузу", 6: "Пауза", 7: "Останавливается",
     8: "Остановлена", 9: "Готово", 12: "Продолжается", 13: "Печатает",
     16: "Нагрев", 18: "Подготовка", 21: "Калибровка",
     ps.STATUS_KLIPPY_ERROR: "Аварийная остановка",
@@ -246,14 +268,18 @@ def card(status, online, printer_name, now, keys="", items=None):
         return None
     info = status.get("PrintInfo") or {}
     code = info.get("Status")
-    if code == ps.STATUS_PRINTING:
+    live = is_live(status, online)
+    if not live:
+        kind = "i"          # no job: idle, finished, or no connection
+    elif code == ps.STATUS_PRINTING:
         kind = "p"
     elif code in ps.STATUS_PAUSED:
         kind = "w"
     else:
-        kind = "x"
-    left = max(0, int((info.get("TotalTicks") or 0) - (info.get("CurrentTicks") or 0)))
-    total = _whole(info.get("TotalLayer"))
+        kind = "x"          # a job that stopped unexpectedly
+    left = max(0, int((info.get("TotalTicks") or 0) - (info.get("CurrentTicks") or 0))) \
+        if live else 0
+    total = _whole(info.get("TotalLayer")) if live else 0
     temps = "сопло %s · стол %s" % (
         _temp(status.get("TempOfNozzle"), status.get("TempTargetNozzle")),
         _temp(status.get("TempOfHotbed"), status.get("TempTargetHotbed")))
@@ -263,9 +289,11 @@ def card(status, online, printer_name, now, keys="", items=None):
         temps += " · внутри %d°" % round(float(status.get("TempOfBox") or 0))
     data = {
         "v": VERSION, "k": kind, "s": state_ru(code, online),
-        "f": "" if code in ps.STATUS_DONE else str(info.get("Filename") or ""),
-        "p": round(float(info.get("Progress") or 0), 1),
-        "l": "слой %d из %d" % (_whole(info.get("CurrentLayer")), total) if total else "",
+        "f": str(info.get("Filename") or "") if live else "",
+        "p": round(float(info.get("Progress") or 0), 1) if live else 0,
+        "l": ("слой %d из %d" % (_whole(info.get("CurrentLayer")), total) if total
+              else "" if live else
+              "Можно ставить печать" if online else "Переподключаюсь к принтеру"),
         "m": temps,
         "r": left, "o": 1 if online else 0, "b": keys, "u": int(now),
     }
@@ -294,12 +322,105 @@ def encode(data):
     return text   # without the file name the rest is short: well under the limit
 
 
+# ------------------------------------------------------------ screens on the card
+#
+# Every other screen of the bot (files, fans, macros, confirmations...) is
+# drawn on the card too. The bot runs the very handler the inline button would
+# run, takes the text and keyboard it would have put under the message, and
+# answers the card's request with them as a screen:
+#   sc = {"t": title, "x": [lines], "k": [[[label, code, style], ...], ...]}
+# code "c:<callback_data>" runs that button, "u:<url>" opens a link, "b" goes
+# back to the card, "" is a label that cannot be pressed. The answer reaches
+# only the card that asked and changes nothing else: going back is local.
+
+BACK = {"refresh", "brief", "cardmenu"}
+
+
+def lines(text):
+    """Telegram HTML to plain lines; blank runs collapse to one."""
+    plain = re.sub(r"<br\s*/?>", "\n", str(text or ""))
+    plain = _html.unescape(re.sub(r"<[^>]+>", "", plain))
+    out = []
+    for line in plain.split("\n"):
+        line = line.strip()
+        if line or (out and out[-1]):
+            out.append(line)
+    while out and not out[-1]:
+        out.pop()
+    return out
+
+
+def _style(label):
+    if label.startswith("✅"):
+        return "y"
+    if label.startswith(("🗑", "⏹")):
+        return "k"
+    return ""
+
+
+def screen(text, keyboard, title=None):
+    """A bot screen as the card draws it. ``title`` replaces the text, for
+    the submenus whose text is only the status the card already shows."""
+    body = lines(text)
+    if title:
+        head, body = title, []
+    else:
+        head, body = (body[0], body[1:]) if body else ("", [])
+    rows = []
+    for row in keyboard or []:
+        out = []
+        for button in row:
+            label = str(button.get("text") or "")
+            data = button.get("callback_data") or ""
+            if button.get("url"):
+                code = "u:" + button["url"]
+            elif data in BACK:
+                code = "b"
+            elif data and data != "noop" and len(("c:" + data).encode("utf-8")) <= QUERY_LIMIT:
+                code = "c:" + data
+            else:
+                code = ""
+            out.append([label, code, _style(label)])
+        if out:
+            rows.append(out)
+    return {"t": head, "x": body, "k": rows}
+
+
+def fit(sc, note=""):
+    """The answer carrying ``sc`` within 1024 bytes, or None if even a cut
+    version does not fit: long lines are shortened, then the last lines
+    dropped, then the button labels shortened."""
+    sc = {"t": sc["t"][:80], "x": [line[:140] for line in sc["x"]],
+          "k": [[list(b) for b in row] for row in sc["k"]]}
+
+    def dump():
+        return json.dumps({"sc": sc, "m": note} if note else {"sc": sc},
+                          ensure_ascii=False, separators=(",", ":"))
+
+    def fits():
+        return len(dump().encode("utf-8")) <= ANSWER_LIMIT
+
+    while not fits() and sc["x"]:
+        sc["x"] = sc["x"][:-2] + (["…"] if len(sc["x"]) > 2 else [])
+        if sc["x"] == ["…"]:
+            sc["x"] = []
+    for width in (28, 18, 12):
+        if fits():
+            break
+        for row in sc["k"]:
+            for b in row:
+                if len(b[0]) > width:
+                    b[0] = b[0][:width - 1] + "…"
+    return dump() if fits() else None
+
+
 def answer(**fields):
     """The bot's answer to a request from the card: JSON the card reads.
 
-    m  a line to show under the buttons
+    m      a line to show under the buttons
     a, t, q, y  a confirmation: the action, its one-use token, the question
-                and the label of the button that confirms
+           and the label of the button that confirms
+    close  back to the card (after an action that ended its screen)
     """
     text = json.dumps(fields, ensure_ascii=False, separators=(",", ":"))
     if len(text.encode("utf-8")) > ANSWER_LIMIT:

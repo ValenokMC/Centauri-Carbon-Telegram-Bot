@@ -18,12 +18,14 @@ this project uses [Semantic Versioning](https://semver.org/).
   down on the phone between updates. Pause or resume, Stop and a camera frame
   are buttons on the card itself: Pause and Stop ask for confirmation on the
   card with a one-use token, and the frame arrives as its own message that is
-  taken down after five minutes, with the card moving down under it. The
-  rest of the panel opens on the card too, behind "⚙️ Ещё", so there are no
-  buttons under the message at all; a screen that is a picture (the bed map,
-  the objects) takes the card's place and "Назад" brings the card back. A
-  refused widget, a group chat or a screen too long for a caption falls back
-  to the ordinary message. New settings:
+  taken down after five minutes, with the card moving down under it. Every
+  other screen of the bot opens on the card as well (files, fans, speed,
+  heating, macros, history, their confirmations), behind "⚙️ Ещё": the bot
+  runs the same handler an inline button would and draws its result on the
+  card, so there are no buttons under the message at all. A picture screen
+  (the bed map, the objects) sends its picture beside the card. The card is
+  also the panel while the printer is idle. A refused widget, a group chat or
+  a screen over the widget's 1 KB answer falls back to the ordinary message. New settings:
   `status_widget`, `widget_refresh_sec`.
 - Delayed print start on COSMOS. A `.gcode` sent into the chat is uploaded to
   the printer and offered for printing now or at a set time: quick choices

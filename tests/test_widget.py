@@ -53,15 +53,17 @@ def test_state_classes_do_not_restyle_the_card():
     names elsewhere restyled the whole card: on the first live card ".p" (the
     big percentage) made every line large and bold."""
     style = widget.HTML.split("</style>")[0]
-    for kind in ("p", "w", "x"):
+    for kind in ("p", "w", "x", "i"):
         rules = re.findall(r"(?:^|[}\n,])\s*\.%s\s*[{,]" % kind, style)
         assert rules == [], kind
+    assert "'cd k-'+d.k" in widget.HTML        # kinds are prefixed
 
 
 def test_html_loads_nothing_and_never_parses_state_as_markup():
-    """The sandbox loads nothing anyway; a file name must not become HTML."""
+    """The sandbox loads nothing anyway; a file name must not become HTML.
+    The only URL handling is opening a link the bot sent, on a tap."""
     assert not re.search(r"<script[^>]*\bsrc\b", widget.HTML)
-    assert "http" not in widget.HTML
+    assert not re.search(r"\bsrc=|url\(|fetch\(|XMLHttpRequest|WebSocket", widget.HTML)
     assert "innerHTML" not in widget.HTML
     assert "textContent" in widget.HTML
     assert "chatDataChanged" in widget.HTML
@@ -618,27 +620,95 @@ def test_card_state_with_menu_and_a_long_name_fits(card_bot):
     assert card_of(text)["mn"]                         # the menu survived
 
 
-def test_menu_item_opens_its_screen_under_the_card(card_bot, fake_telegram):
-    mid = storage.message_id()
+def test_menu_item_opens_its_screen_on_the_card(card_bot, fake_telegram):
+    """A screen of the bot is drawn on the card; the message is not touched."""
     card_bot.refresh_files = lambda: (True, "")
     card_bot.files = ["/local/a.gcode"]
-    handlers.handle_widget_query(card_bot, widget_query("open:files"))
-    assert last_answer(fake_telegram) == {"m": ""}
-    _, edited_mid, text, keyboard = fake_telegram.edited[-1]
-    assert edited_mid == mid and "a.gcode" in text
-    assert fake_telegram.edit_forms[-1] == (mid, "caption")
-    labels = [b["text"] for row in keyboard for b in row]
-    assert any("Назад" in l for l in labels)
+    edits_before = len(fake_telegram.edited)
+    handlers.handle_widget_query(card_bot, widget_query("c:files"))
+    sc = last_answer(fake_telegram)["sc"]
+    assert any("a.gcode" in line for line in [sc["t"]] + sc["x"])
+    codes = [b[1] for row in sc["k"] for b in row]
+    assert any(c.startswith("c:ask:print:") for c in codes)
+    assert "b" in codes                                   # "Назад" is local
+    assert len(fake_telegram.edited) == edits_before      # no inline buttons
+    assert fake_telegram.sent == []
     # no stray answerCallbackQuery for a tap that had no callback
     assert all(cid is None for cid, _ in fake_telegram.answers)
 
 
-def test_menu_refuses_what_the_panel_does_not_have(card_bot, fake_telegram):
-    card_bot.cfg["allow_control"] = False
-    handlers.handle_widget_query(card_bot, widget_query("open:menu:temp"))
-    handlers.handle_widget_query(card_bot, widget_query("open:do:job:cancel:x"))
-    assert all("нет" in json.loads(d)["m"] for _, d in fake_telegram.widget_answers)
-    assert fake_telegram.edited == []
+def test_nested_screen_and_its_confirmation_stay_on_the_card(card_bot, fake_telegram):
+    """Fans -> a level -> apply: every step is a screen on the card."""
+    card_bot.cfg["backend"] = "sdcp"
+    handlers.handle_widget_query(card_bot, widget_query("c:menu:fans"))
+    sc = last_answer(fake_telegram)["sc"]
+    assert sc["t"] == "🌀 Вентиляторы" and sc["x"] == []  # a title, not the status
+    level = next(b[1] for row in sc["k"] for b in row if b[1].startswith("c:set:fan:"))
+    handlers.handle_widget_query(card_bot, widget_query(level, qid="wq-2"))
+    assert "sc" in last_answer(fake_telegram)
+    assert fake_telegram.sent == []
+
+
+def test_screen_action_result_goes_back_to_the_card(card_bot, fake_telegram):
+    handlers.handle_widget_query(card_bot, widget_query("c:ask:stop"))
+    sc = last_answer(fake_telegram)["sc"]
+    confirm = next(b for row in sc["k"] for b in row if b[2] == "y")
+    handlers.handle_widget_query(card_bot, widget_query(confirm[1], qid="wq-2"))
+    from centauri_bot import sdcp
+    assert sdcp.CMD_STOP in card_bot.commands
+    answer = last_answer(fake_telegram)
+    assert answer.get("close") == 1 and "останов" in answer["m"].lower()
+
+
+def test_forged_screen_taps_do_nothing(card_bot, fake_telegram):
+    handlers.handle_widget_query(card_bot, widget_query("c:do:job:cancel:guess"))
+    handlers.handle_widget_query(card_bot, widget_query("c:files", sender="999"))
+    assert card_bot.commands == []
+    assert fake_telegram.sent == []
+
+
+def test_screen_too_big_for_the_card_is_shown_under_it(card_bot, fake_telegram):
+    card_bot.refresh_files = lambda: (True, "")
+    card_bot.files = ["/local/%s_%d.gcode" % ("ж" * 40, i) for i in range(8)]
+    import centauri_bot.widget as w
+    real_fit, w.fit = w.fit, lambda sc, note="": None
+    try:
+        handlers.handle_widget_query(card_bot, widget_query("c:files"))
+    finally:
+        w.fit = real_fit
+    assert "под карточкой" in last_answer(fake_telegram)["m"]
+    assert fake_telegram.edited[-1][1] == storage.message_id()
+
+
+def test_fit_keeps_answers_within_1kb():
+    sc = widget.screen("<b>Файлы</b>\n" + "\n".join("строка %d " % i + "ж" * 60
+                                                    for i in range(30)),
+                       [[{"text": "🖨 " + "ж" * 50, "callback_data": "ask:print:abcdefgh"}]] * 8)
+    text = widget.fit(sc, "заметка")
+    assert text and len(text.encode("utf-8")) <= widget.ANSWER_LIMIT
+    assert json.loads(text)["sc"]["k"]
+
+
+def test_screen_converts_buttons():
+    sc = widget.screen("<b>Заголовок</b>\nстрока &amp; ещё", [
+        [{"text": "✅ Да", "callback_data": "do:job:cancel:t"},
+         {"text": "↩️ Отмена", "callback_data": "refresh"}],
+        [{"text": "сайт", "url": "https://example.org"},
+         {"text": "подпись", "callback_data": "noop"}]])
+    assert sc["t"] == "Заголовок" and sc["x"] == ["строка & ещё"]
+    assert sc["k"] == [[["✅ Да", "c:do:job:cancel:t", "y"], ["↩️ Отмена", "b", ""]],
+                       [["сайт", "u:https://example.org", ""], ["подпись", "", ""]]]
+
+
+def test_idle_printer_gets_the_card_too(bot, fake_telegram):
+    bot.cfg["status_widget"] = True
+    bot.status, bot.online = status(0), True
+    bot.refresh_main(force_new=True)
+    [sent] = fake_telegram.widgets
+    data = card_of(sent["chat_data"])
+    assert data["k"] == "i" and data["s"] == "Свободен"
+    assert data["l"] == "Можно ставить печать" and data["mn"]
+    assert "свободен" in sent["caption"]
 
 
 def test_frame_goes_on_top_and_the_card_moves_under_it(card_bot, fake_telegram):

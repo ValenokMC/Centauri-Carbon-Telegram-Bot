@@ -31,11 +31,89 @@ from .telegram_api import TelegramAPI
 log = logging.getLogger(__name__)
 
 
+class ScreenCapture(object):
+    """What one handler would have shown, taken instead of shown."""
+
+    def __init__(self, mid):
+        self.mid = mid          # the card
+        self.text = None
+        self.keyboard = None
+        self.toast = None
+        self.close = False      # the handler went back to the status
+
+    def screen(self, text, keyboard):
+        self.text, self.keyboard = text, keyboard
+
+
+class _CapturingAPI(object):
+    """The Telegram client, plus one detour for buttons on the live card.
+
+    While a card button runs an ordinary button's handler on this thread,
+    whatever that handler would put on the card message (an edit, a new
+    screen message, a toast) is recorded instead, and the card draws it.
+    Every other call, and every call from another thread, goes straight
+    through.
+    """
+
+    def __init__(self, bot, api):
+        self._bot = bot
+        self._api = api
+
+    def __getattr__(self, name):
+        return getattr(self._api, name)
+
+    def __setattr__(self, name, value):
+        # A replaced detour method stays on the wrapper (a spy that calls the
+        # original must reach the detour, not itself); settings and other
+        # replaced methods belong to the client.
+        if name.startswith("_") or hasattr(type(self), name):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._api, name, value)
+
+    def _cap(self):
+        return getattr(self._bot._tls, "capture", None)
+
+    def edit_message(self, chat, message_id, text, keyboard=None,
+                     photo=None, is_photo=False):
+        cap = self._cap()
+        if cap is not None and message_id == cap.mid:
+            # A photo here is the camera frame of a status redraw; a screen
+            # that is a picture goes through edit_main_from_callback.
+            cap.screen(text, keyboard)
+            return {"ok": True, "result": {"message_id": message_id}}
+        return self._api.edit_message(chat, message_id, text, keyboard=keyboard,
+                                      photo=photo, is_photo=is_photo)
+
+    def send_message(self, chat, text, keyboard=None, photo=None):
+        cap = self._cap()
+        if cap is not None and str(chat) == self._bot.owner:
+            if photo:
+                self._bot.post_picture(photo)
+            cap.screen(text, keyboard)
+            return {"ok": True, "result": {"message_id": cap.mid}}
+        return self._api.send_message(chat, text, keyboard=keyboard, photo=photo)
+
+    def delete_message(self, chat, message_id):
+        cap = self._cap()
+        if cap is not None and message_id == cap.mid:
+            return {"ok": True}         # the card stays; its screen changes
+        return self._api.delete_message(chat, message_id)
+
+    def answer_callback(self, callback_id, text=None):
+        cap = self._cap()
+        if cap is not None and not callback_id:
+            cap.toast = text or cap.toast
+            return {"ok": True}
+        return self._api.answer_callback(callback_id, text)
+
+
 class Bot(object):
 
     def __init__(self, cfg, api=None, clock=time.time):
         self.cfg = cfg
-        self.api = api or TelegramAPI(cfg["telegram_token"])
+        self._tls = threading.local()
+        self.api = _CapturingAPI(self, api or TelegramAPI(cfg["telegram_token"]))
         self.clock = clock
         self.owner = str(cfg["chat_id"])
         self.owner_user = str(cfg.get("owner_user_id") or "")
@@ -422,6 +500,20 @@ class Bot(object):
         (``text``) is still an ordinary message. If Telegram refuses the
         widget, the ordinary message goes out instead, exactly as before.
         """
+        cap = self.capturing()
+        if cap is not None:
+            # A handler run for a tap on the card: a screen becomes the
+            # card's screen, and "the status" means back to the card itself.
+            if text is None:
+                cap.close = True
+                if cap.mid and storage.message_kind() == widget.KIND:
+                    with self.main_lock:
+                        self._push_widget_locked(cap.mid, force=True)
+            else:
+                if photo:
+                    self.post_picture(photo)
+                cap.screen(text, keyboard)
+            return cap.mid
         with self.main_lock:
             mid = storage.message_id()
             kind = storage.message_kind() if mid else None
@@ -518,8 +610,10 @@ class Bot(object):
             return False
         if self.clock() < self.widget_retry_at:
             return False
+        # Not only during a print: idle, the card is the panel too. Without
+        # a connection the bot says so in an ordinary message.
         status, online = self._snapshot()
-        return widget.is_live(status, online)
+        return bool(status) and online
 
     def _card(self):
         status, online = self._snapshot()
@@ -555,20 +649,9 @@ class Bot(object):
         kept in state.json, so a restart still cleans up.
         """
         shot = self.grab()
-        if not shot:
+        if not shot or not self.post_picture(shot, "📷 %s" % time.strftime(
+                "%H:%M", time.localtime(self.clock()))):
             return False
-        minutes = self.SNAPSHOT_TTL_SEC // 60
-        answer = self.api.send_message(
-            self.owner, "📷 %s · уберу через %d мин" % (
-                time.strftime("%H:%M", time.localtime(self.clock())), minutes),
-            photo=shot)
-        if not answer.get("ok"):
-            return False
-        old = storage.load_state().get("snapshot_message")
-        storage.update_state(snapshot_message=[answer["result"]["message_id"],
-                                               self.clock() + self.SNAPSHOT_TTL_SEC])
-        if old:
-            self.api.delete_message(self.owner, old[0])
         # The frame went in below the card; the card moves down under it, so
         # the picture stays on top and the buttons stay under the thumb.
         try:
@@ -576,6 +659,36 @@ class Bot(object):
         except Exception as e:
             log.warning("status did not move under the frame: %r", e)
         return True
+
+    def post_picture(self, photo, title="🖼"):
+        """A picture beside the card: the camera frame, or a screen that is a
+        picture (the bed map, the objects). A widget cannot show one. Only the
+        newest stays, and it goes away after SNAPSHOT_TTL_SEC."""
+        answer = self.api._api.send_message(
+            self.owner, "%s · уберу через %d мин" % (title, self.SNAPSHOT_TTL_SEC // 60),
+            photo=photo)
+        if not answer.get("ok"):
+            return False
+        old = storage.load_state().get("snapshot_message")
+        storage.update_state(snapshot_message=[answer["result"]["message_id"],
+                                               self.clock() + self.SNAPSHOT_TTL_SEC])
+        if old:
+            self.api._api.delete_message(self.owner, old[0])
+        return True
+
+    def run_screen(self, handler):
+        """Run an ordinary button's handler for a tap on the card, and return
+        what it would have shown as a ScreenCapture."""
+        cap = ScreenCapture(storage.message_id())
+        self._tls.capture = cap
+        try:
+            handler()
+        finally:
+            self._tls.capture = None
+        return cap
+
+    def capturing(self):
+        return getattr(self._tls, "capture", None)
 
     def expire_snapshot(self):
         """Take down a requested frame once its time is up. Looks at most
@@ -695,10 +808,14 @@ class Bot(object):
                     # on a widget: it replaces the card as an ordinary photo
                     # message, and "Назад" brings the card back. The camera
                     # frame of a plain refresh simply stays out.
-                    if photo and picture:
+                    capturing = self.capturing() is not None
+                    if photo and picture and not capturing:
                         return False
                     if tracked_kind == widget.KIND:
                         self._push_widget_locked(target, force=True)
+                    # On the card itself the picture goes beside it.
+                    if photo and picture and capturing:
+                        self.post_picture(photo)
                     form = dict(photo=None, is_photo=True)
                 else:
                     form = dict(photo=photo, is_photo=is_photo)
