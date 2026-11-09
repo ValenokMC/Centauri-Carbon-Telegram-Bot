@@ -157,6 +157,9 @@ class Bot(object):
         self.frame_time = 0.0
         self.print_frame = None
         self.print_frame_time = 0.0
+        self.frame_job = None      # (TaskId, Filename) the kept frame belongs to
+        self.z_max = None          # highest toolhead Z seen in this job
+        self.frame_frozen = False  # the bed has started to drop: keep the frame
         # Макрос, запущенный из бота: (имя, когда, видели ли его в работе).
         # Нужен, чтобы доложить об окончании — HTTP-вызов возвращается сразу,
         # а сама калибровка идёт ещё десять минут.
@@ -595,23 +598,67 @@ class Bot(object):
                 self.frame, self.frame_time = shot, self.clock()
         return shot
 
-    def capture_print_frame(self, progress):
+    # How far the bed must drop below the highest point of the print to count
+    # as the end-of-print drop (mm). A layer step is 0.1-0.3 mm and a Z-hop
+    # under a millimetre; the END_PRINT macro moves the bed tens of millimetres.
+    BED_DROP_MM = 2.0
+
+    def capture_print_frame(self, progress, status=None):
         """Keep a frame taken while the print was still up.
 
         By the time the "ready" code arrives the bed is already dropping, and a
         finish photo shows the part sunk out of view. So near the end frames
         are taken more often, and the finish message uses the last one where
         the top surface is still visible.
+
+        On COSMOS that is not enough: END_PRINT, which lowers the bed, is
+        G-code inside the job, so the job stays "printing" at about 100 % while
+        the bed goes down, and every later frame would replace the good one.
+        The toolhead's Z (it grows as the bed goes down on this printer) tells
+        when that starts: a jump of BED_DROP_MM over the highest Z seen, or
+        100 %, freezes the frame until the job changes. The jump itself is
+        not counted into the highest Z. The stock printer reports its finish
+        code before the bed moves, so its behaviour is the old one.
+
+        Cost: a grab is about 0.3 s over the network and runs on the printer
+        thread, so frames come every 10 s from 97 %, every 20 s from 95 %,
+        otherwise every 90 s - often enough for a recent frame at the end,
+        rare enough not to hold up the status loop.
         """
-        every = 20 if (progress or 0) >= 95 else 90
+        progress = progress or 0
+        moonraker_backend = self.backend_name == backend.MOONRAKER
+        info = (status or {}).get("PrintInfo") or {}
+        job = (info.get("TaskId"), info.get("Filename"))
         with self.lock:
+            if job != self.frame_job:
+                self.frame_job, self.z_max, self.frame_frozen = job, None, False
+            if moonraker_backend and not self.frame_frozen:
+                coord = (status or {}).get("CurrentCoord")
+                try:
+                    z = float(coord.get("Z")) if isinstance(coord, dict) else None
+                except (TypeError, ValueError):
+                    z = None
+                if progress >= 100:
+                    self.frame_frozen = True
+                elif z is not None:
+                    if self.z_max is None:
+                        self.z_max = z
+                    elif z > self.z_max + self.BED_DROP_MM:
+                        self.frame_frozen = True
+                    else:
+                        self.z_max = max(self.z_max, z)
+            # Frozen with nothing kept yet would leave the finish without a picture.
+            if self.frame_frozen and self.print_frame:
+                return
             when = self.print_frame_time
+        every = 10 if progress >= 97 else 20 if progress >= 95 else 90
         if self.clock() - when < every:
             return
         shot = self.grab()
         if shot:
             with self.lock:
-                self.print_frame, self.print_frame_time = shot, self.clock()
+                if not (self.frame_frozen and self.print_frame):
+                    self.print_frame, self.print_frame_time = shot, self.clock()
 
     # -------------------------------------------------- the single message
 
@@ -1453,6 +1500,7 @@ class Bot(object):
     def _take_print_frame(self):
         with self.lock:
             shot, self.print_frame, self.print_frame_time = self.print_frame, None, 0.0
+            self.frame_job, self.z_max, self.frame_frozen = None, None, False
         return shot
 
     def show_connection_lost(self, elapsed):
@@ -1583,7 +1631,7 @@ class Bot(object):
 
         if code == ps.STATUS_PRINTING and print_info.get("Filename"):
             try:
-                self.capture_print_frame(print_info.get("Progress", 0) or 0)
+                self.capture_print_frame(print_info.get("Progress", 0) or 0, status)
             except Exception as e:
                 log.debug("print frame not taken: %r", e)
             try:

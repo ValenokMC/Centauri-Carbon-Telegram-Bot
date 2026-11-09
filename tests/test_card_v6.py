@@ -882,3 +882,127 @@ def test_outdated_card_is_tried_once_and_not_in_a_loop(live_bot, fake_telegram):
         live_bot.push_widget()
     assert len(fake_telegram.widgets) == 1
     assert storage.message_id() == 500                       # the old card is kept
+
+
+# ------------------------------------------------------------ the finish frame
+
+def moon_status(progress, z, code=13, task="job-1", **extra):
+    return status(code, "part.gcode", progress=progress, task=task,
+                  CurrentCoord={"X": 100.0, "Y": 100.0, "Z": z}, **extra)
+
+
+@pytest.fixture
+def frame_bot(bot, fake_telegram):
+    """A COSMOS-backed bot with a camera that hands out frames A, B, C, D in
+    turn (only the print-frame capture asks without max_age), and a record of
+    every picture sent."""
+    bot.backend_name = backend.MOONRAKER
+    bot.cfg["light_off_at_night"] = False       # the test must not depend on the hour
+    bot.online = True
+    bot.frames = [b"\xff\xd8A", b"\xff\xd8B", b"\xff\xd8C", b"\xff\xd8D", b"\xff\xd8E"]
+    bot.taken = []
+
+    def grab(max_age=0):
+        if max_age:
+            return b"\xff\xd8other"
+        bot.taken.append(bot.frames[len(bot.taken)])
+        return bot.taken[-1]
+    bot.grab = grab
+    bot.pictures = []
+    real = fake_telegram.send_message
+
+    def spy(chat, text, keyboard=None, photo=None):
+        bot.pictures.append((text, photo))
+        return real(chat, text, keyboard=keyboard, photo=photo)
+    fake_telegram.send_message = spy
+    return bot
+
+
+def step(bot, st, seconds=100):
+    bot.clock_control.now += seconds
+    bot._handle_status(st)
+
+
+def finish_picture(bot):
+    return next(photo for text, photo in bot.pictures if "Печать закончена" in text)
+
+
+def test_the_finish_picture_is_the_last_frame_before_the_bed_dropped(frame_bot):
+    step(frame_bot, moon_status(50, 10.0))                      # frame A
+    step(frame_bot, moon_status(98, 10.2))                      # frame B
+    assert frame_bot.taken == [b"\xff\xd8A", b"\xff\xd8B"]
+    step(frame_bot, moon_status(100, 40.2), 15)                 # the bed drops 30 mm
+    step(frame_bot, moon_status(100, 40.2), 15)
+    assert frame_bot.frame_frozen and len(frame_bot.taken) == 2  # C and D never taken
+    step(frame_bot, moon_status(100, 40.2, code=9), 15)         # the finish code
+    assert finish_picture(frame_bot) == b"\xff\xd8B"
+
+
+def test_the_finish_picture_goes_through_post_picture_on_the_card(frame_bot, fake_telegram):
+    frame_bot.cfg["status_widget"] = True
+    step(frame_bot, moon_status(50, 10.0))
+    step(frame_bot, moon_status(98, 10.2))
+    step(frame_bot, moon_status(100, 40.2), 15)
+    step(frame_bot, moon_status(100, 40.2, code=9), 15)
+    assert finish_picture(frame_bot) == b"\xff\xd8B"
+    assert fake_telegram.widgets                               # and the card follows
+
+
+def test_a_z_hop_does_not_freeze_the_frame(frame_bot):
+    step(frame_bot, moon_status(40, 10.0))
+    step(frame_bot, moon_status(41, 10.4))                      # a Z-hop, not the bed
+    step(frame_bot, moon_status(42, 10.2))
+    assert not frame_bot.frame_frozen and frame_bot.z_max == 10.4
+    assert frame_bot.print_frame == frame_bot.taken[-1] == b"\xff\xd8C"
+
+
+def test_a_new_job_starts_again(frame_bot):
+    step(frame_bot, moon_status(50, 10.0))
+    step(frame_bot, moon_status(100, 40.0), 15)
+    assert frame_bot.frame_frozen
+    step(frame_bot, moon_status(1, 0.2, task="job-2"))
+    assert not frame_bot.frame_frozen and frame_bot.z_max == 0.2
+    assert frame_bot.print_frame == frame_bot.taken[-1]        # taken again
+
+
+def test_the_jump_itself_is_not_the_highest_z(frame_bot):
+    step(frame_bot, moon_status(50, 10.0))
+    step(frame_bot, moon_status(60, 40.0), 15)
+    assert frame_bot.z_max == 10.0
+
+
+def test_the_cooldown_notice_repeats_the_frozen_frame(frame_bot):
+    step(frame_bot, moon_status(50, 10.0))
+    step(frame_bot, moon_status(98, 10.2))
+    step(frame_bot, moon_status(100, 40.2), 15)
+    step(frame_bot, moon_status(100, 40.2, code=9), 15)
+    assert frame_bot.cooldown_pending
+    cold = moon_status(100, 40.2, code=9, TempOfNozzle=30, TempTargetNozzle=0)
+    frame_bot._maybe_notify_cooldown(cold)
+    text, photo = frame_bot.pictures[-1]
+    assert "остыл" in text and photo == b"\xff\xd8B"
+
+
+def test_frames_come_every_ten_seconds_near_the_end(frame_bot):
+    step(frame_bot, moon_status(50, 10.0))
+    step(frame_bot, moon_status(97, 10.2))
+    taken = len(frame_bot.taken)
+    step(frame_bot, moon_status(97.5, 10.2), 5)                 # too soon
+    assert len(frame_bot.taken) == taken
+    step(frame_bot, moon_status(98, 10.2), 6)                   # 11 s since the last
+    assert len(frame_bot.taken) == taken + 1
+    step(frame_bot, moon_status(96, 10.2), 15)                  # 95-97 %: every 20 s
+    assert len(frame_bot.taken) == taken + 1
+    step(frame_bot, moon_status(96, 10.2), 6)
+    assert len(frame_bot.taken) == taken + 2
+
+
+def test_stock_printer_behaviour_is_unchanged(frame_bot):
+    """Stock SDCP has no Z in a dict and its finish comes before the bed moves:
+    no freezing, the last frame before the finish code is the one kept."""
+    frame_bot.backend_name = backend.SDCP
+    step(frame_bot, status(13, "part.gcode", progress=50, CurrenCoord="0,0,10"))
+    step(frame_bot, status(13, "part.gcode", progress=100, CurrenCoord="0,0,40"), 15)
+    step(frame_bot, status(13, "part.gcode", progress=100, CurrenCoord="0,0,45"), 15)
+    assert not frame_bot.frame_frozen and frame_bot.z_max is None
+    assert frame_bot.print_frame == frame_bot.taken[-1] == b"\xff\xd8C"
