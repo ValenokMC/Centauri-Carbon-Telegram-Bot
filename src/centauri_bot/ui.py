@@ -528,6 +528,34 @@ def kb_files(files, allow_control=True, limit=8, can_start=None, refs=None,
     return rows
 
 
+def kb_files_card(files, limit=8, can_start=True, refs=None, can_delete=False,
+                  delete_refs=None, delete_all_ref=None):
+    """The files screen for the live card: one row per file, [🖨 name] [🗑].
+
+    The names are on the buttons, so the screen has no lines of text. The
+    bin button is the same confirmation step as before, never a deletion.
+    """
+    rows = []
+    for i, path in enumerate(files[:limit]):
+        base = path.rsplit("/", 1)[-1]
+        row = []
+        if can_start:
+            ref = refs[i] if refs and i < len(refs) else str(i)
+            row.append({"text": "🖨 %s" % short_name(base, 30),
+                        "callback_data": "ask:print:%s" % ref})
+        else:
+            row.append({"text": "📄 %s" % short_name(base, 30), "callback_data": "noop"})
+        if can_delete:
+            ref = delete_refs[i] if delete_refs and i < len(delete_refs) else str(i)
+            row.append({"text": "🗑", "callback_data": "ask:delete:%s" % ref})
+        rows.append(row)
+    if can_delete and delete_all_ref and len(files) > 1:
+        rows.append([{"text": "🗑 Удалить все файлы (%d)" % len(files),
+                      "callback_data": "ask:delall:%s" % delete_all_ref}])
+    rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
+    return rows
+
+
 def objects_text(state, compact=False):
     names = list(state.get("Objects") or [])
     excluded = set(state.get("ExcludedObjects") or [])

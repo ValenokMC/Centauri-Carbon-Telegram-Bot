@@ -107,20 +107,69 @@ def labels(pages):
 
 # ------------------------------------------------------------ 1a: pages
 
-def test_files_are_paged_with_every_label_distinct(mr_bot, fake_telegram):
+def test_files_are_paged_one_row_per_file_with_every_label_distinct(mr_bot, fake_telegram):
     pages = pages_of(mr_bot, fake_telegram, "c:files")
     assert len(pages) > 1
     for sc in pages:
         assert len(json.dumps({"sc": sc}, ensure_ascii=False,
-                              separators=(",", ":")).encode("utf-8")) \
-            <= widget.ANSWER_LIMIT
+                              separators=(",", ":")).encode("utf-8"))             <= widget.ANSWER_LIMIT
+        assert sc["x"] == []                         # the names are on the buttons
+        assert sc["t"].startswith("📂 Файлы на принтере · 8")
+    # every file: its print and its bin button in ONE row, on the same page
+    rows = [row for sc in pages for row in sc["k"]]
+    file_rows = [row for row in rows if row[0][0].startswith("🖨")]
+    assert len(file_rows) == 8
+    for i, row in enumerate(file_rows, 1):
+        assert "_v%d_" % i in row[0][0] and row[0][1].startswith("c:ask:print:")
+        assert row[1][0] == "🗑" and row[1][1].startswith("c:ask:delete:")
     shown = labels(pages)
-    assert len(shown) == len(set(shown))
-    # 8 x print, 8 x delete, delete all, back: nothing was shortened to a stump
-    for i in range(1, 9):
-        assert any("_v%d_" % i in label and label.startswith("🖨") for label in shown)
-        assert any("_v%d" % i in label and label.startswith("🗑") for label in shown)
+    own = [label for label in shown if label != "🗑"]
+    assert len(own) == len(set(own))
+    # "delete all" and "back" are rows of their own, at the end
+    assert rows[-3 + 0][0][1].startswith("c:ask:delall:") or any(
+        r[0][1].startswith("c:ask:delall:") for r in rows)
+    assert [b[1] for b in pages[-1]["k"][-2]] == ["b"]
     assert fake_telegram.sent == [] and fake_telegram.edited == []
+
+
+def test_bin_button_asks_first_and_never_deletes(mr_bot, fake_telegram):
+    handlers.handle_widget_query(mr_bot, widget_query("c:files"))
+    sc = last_answer(fake_telegram)["sc"]
+    code = next(b[1] for row in sc["k"] for b in row if b[0] == "🗑")
+    handlers.handle_widget_query(mr_bot, widget_query(code, qid="wq-2"))
+    ask = last_answer(fake_telegram)["sc"]
+    assert mr_bot.moonraker.deleted == []
+    assert "Удалить файл" in ask["t"]
+    yes = next(b for row in ask["k"] for b in row if b[2] == "y")
+    assert yes[1].startswith("c:do:delete:")
+    handlers.handle_widget_query(mr_bot, widget_query(yes[1], qid="wq-3"))
+    assert len(mr_bot.moonraker.deleted) == 1            # only the second step deletes
+
+
+def test_pages_stay_short_enough_for_a_widget_bubble():
+    rows = [[["🖨 файл %d" % i, "c:ask:print:t%d" % i, ""], ["🗑", "c:ask:delete:t%d" % i, "k"]]
+            for i in range(30)] + [[["↩️ Назад", "b", ""]]]
+    lines = ["строка %d " % i + "ж" * 200 for i in range(40)]
+    for sc in ({"t": "Файлы", "x": [], "k": rows},
+               {"t": "Текст", "x": lines, "k": rows[:3]}):
+        pages = [json.loads(p)["sc"] for p in widget.paginate(sc, "tok", "заметка")]
+        assert len(pages) > 1
+        for n, page in enumerate(pages):
+            assert len(page["x"]) <= widget.MAX_LINES
+            assert len(page["k"]) <= widget.MAX_ROWS     # the nav row included
+            assert all(len(line) <= widget.LINE_WIDTH for line in page["x"])
+            nav = page["k"][-1]
+            assert nav[len(nav) // 2 if len(nav) == 3 else (0 if n == 0 else 1)][0]                 == "%d/%d" % (n + 1, len(pages))
+        assert pages[0]["k"][-1][-1][1] == "pg:tok:1"
+        assert pages[-1]["k"][-1][0][1] == "pg:tok:%d" % (len(pages) - 2)
+
+
+def test_small_screen_is_one_page_without_a_nav_row():
+    sc = {"t": "Т", "x": ["a", "b"], "k": [[["ok", "b", ""]]]}
+    [page] = widget.paginate(sc, "tok")
+    assert json.loads(page)["sc"]["k"] == [[["ok", "b", ""]]]
+    many = {"t": "Т", "x": ["a"] * 9, "k": []}           # too many lines for one bubble
+    assert len(widget.paginate(many, "tok")) == 2
 
 
 def test_nav_row_has_arrows_only_where_there_is_a_page(mr_bot, fake_telegram):
@@ -588,3 +637,12 @@ def test_widget_reads_an_answer_whatever_shape_it_arrives_in():
     assert "пустой экран" in html and "Object.keys" in html
     assert "<canvas" in html and "pg:" in html and "localStorage" in html
     assert widget.html_fits()
+
+
+def test_a_note_never_changes_where_the_pages_break():
+    rows = [[["🖨 файл %d" % i, "c:ask:print:t%d" % i, ""], ["🗑", "c:ask:delete:t%d" % i, "k"]]
+            for i in range(20)]
+    sc = {"t": "Файлы", "x": [], "k": rows}
+    plain = [json.loads(p)["sc"] for p in widget.paginate(sc, "tok")]
+    noted = [json.loads(p)["sc"] for p in widget.paginate(sc, "tok", "Читаю список…")]
+    assert plain == noted

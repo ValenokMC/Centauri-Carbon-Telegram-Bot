@@ -104,6 +104,7 @@ body{margin:0;padding:8px;color:var(--tg-theme-text-color)}
 .g{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}
 button{background:var(--b);border:1px solid var(--l);color:inherit;border-radius:12px;padding:9px 6px;font:inherit;font-size:.9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 button:active{background:var(--l)}
+.rw .k:not(:only-child){flex:none;padding:9px 14px}
 .pg button{flex:1;padding:6px}.pg button:disabled{flex:2;padding:6px;background:none}
 #cz{width:100%;height:auto;display:block;margin-top:8px;border-radius:12px;background:var(--g)}
 button.k{color:var(--tg-theme-destructive-text-color)}
@@ -497,6 +498,13 @@ def fit(sc, note=""):
 
 SCREEN_TTL_SEC = 600
 SCREENS_KEPT = 16
+# A widget bubble is 50-600 px tall and clips what does not fit (Telegram
+# recommends staying under about 560 px at 320 px width). So a page is limited
+# by height as well as by bytes: this many text lines and button rows (the
+# nav row among them), and a line is cut rather than left to wrap.
+MAX_LINES = 8
+MAX_ROWS = 9
+LINE_WIDTH = 60
 FIGURE_ON_EVERY_PAGE = 320     # bytes: a drawing this small is repeated on each page
 
 
@@ -544,13 +552,16 @@ def paginate(sc, tok, note=""):
     """
     sc = dict(sc)
     sc["t"] = sc["t"][:80]
-    sc["x"] = [line[:140] for line in sc["x"]]
+    sc["x"] = [line if len(line) <= LINE_WIDTH else line[:LINE_WIDTH - 1] + "…"
+               for line in sc["x"]]
     sc["k"] = [[list(b) for b in row] for row in sc["k"]]
     figure = sc.pop("g", None)
     whole = dict(sc, g=figure) if figure else sc
-    one = _answer_text(whole, note)
-    if _small_answer(one):
-        return [one]
+    # The note never changes where the pages break (a later request for the
+    # same page carries none): it rides on page 0 when there is room.
+    one = _answer_text(whole)
+    if _small_answer(one) and len(sc["x"]) <= MAX_LINES and len(sc["k"]) <= MAX_ROWS:
+        return [_with_note(whole, note)]
     tok = tok() if callable(tok) else tok
     on_every = bool(figure) and len(_dump(figure)) <= FIGURE_ON_EVERY_PAGE
     worst = nav_row(tok, 10, 99)      # the longest nav row any page can have
@@ -562,7 +573,10 @@ def paginate(sc, tok, note=""):
         return page
 
     def fits(x, k, first):
-        return _small_answer(_answer_text(build(x, k, first), note if first else ""))
+        # the worst nav row is counted in the rows
+        if len(x) > MAX_LINES or len(k) + 1 > MAX_ROWS:
+            return False
+        return _small_answer(_answer_text(build(x, k, first)))
 
     if figure and not fits([], [], True):
         figure, on_every = None, False       # the drawing alone is too big
@@ -592,11 +606,16 @@ def paginate(sc, tok, note=""):
         page = {"t": sc["t"], "x": x, "k": rows}
         if figure and (n == 0 or on_every):
             page["g"] = figure
-        text = _answer_text(page, note if n == 0 else "")
+        text = _with_note(page, note if n == 0 else "")
         if not _small_answer(text):
             return []
         out.append(text)
     return out
+
+
+def _with_note(page, note):
+    text = _answer_text(page, note)
+    return text if _small_answer(text) else _answer_text(page)
 
 
 def _small_answer(text):

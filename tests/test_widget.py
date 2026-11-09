@@ -634,7 +634,7 @@ def test_menu_item_opens_its_screen_on_the_card(card_bot, fake_telegram):
     edits_before = len(fake_telegram.edited)
     handlers.handle_widget_query(card_bot, widget_query("c:files"))
     sc = last_answer(fake_telegram)["sc"]
-    assert any("a.gcode" in line for line in [sc["t"]] + sc["x"])
+    assert any("a.gcode" in text for text in [sc["t"]] + sc["x"] + [b[0] for r in sc["k"] for b in r])
     codes = [b[1] for row in sc["k"] for b in row]
     assert any(c.startswith("c:ask:print:") for c in codes)
     assert "b" in codes                                   # "Назад" is local

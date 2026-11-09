@@ -90,9 +90,16 @@ def show_files(bot, chat, mid=None, is_photo=False, force_new=False):
     # swept away by a button that did not know about it.
     delete_all_ref = (bot.confirmations.issue("delete-all-choice", tuple(files))
                       if can_delete and len(files) > 1 else None)
-    rows = ui.kb_files(files, allow_control=bot.cfg.get("allow_control", True),
-                       can_start=can_start, refs=refs, can_delete=can_delete,
-                       delete_refs=delete_refs, delete_all_ref=delete_all_ref)
+    if _figures(bot, force_new):
+        # On the card: a header and one row per file, [🖨 name] [🗑].
+        body = "<b>📂 Файлы на принтере · %d</b>" % len(files)
+        rows = ui.kb_files_card(files, can_start=can_start, refs=refs,
+                                can_delete=can_delete, delete_refs=delete_refs,
+                                delete_all_ref=delete_all_ref)
+    else:
+        rows = ui.kb_files(files, allow_control=bot.cfg.get("allow_control", True),
+                           can_start=can_start, refs=refs, can_delete=can_delete,
+                           delete_refs=delete_refs, delete_all_ref=delete_all_ref)
     if force_new:
         bot.refresh_main(force_new=True, text=body, keyboard=rows)
     elif mid:
