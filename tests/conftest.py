@@ -82,6 +82,12 @@ class FakeTelegram(object):
         self.me = {"id": 123456789, "username": "demo_printer_bot", "is_bot": True}
         self.documents = {}     # file_id -> bytes the owner "sent"
         self.downloads = []
+        self.edit_forms = []    # (message_id, "text" | "caption" | "photo")
+        self.widgets = []       # sendWidget calls
+        self.widget_edits = []  # (message_id, chat_data)
+        self.widget_answers = []  # (widget_query_id, data)
+        self.widget_answer = None
+        self.widget_data_answer = None
 
     def download_document(self, file_id, max_bytes=20_000_000):
         from centauri_bot.telegram_api import TelegramError
@@ -106,10 +112,35 @@ class FakeTelegram(object):
 
     def edit_message(self, chat, message_id, text, keyboard=None,
                      photo=None, is_photo=False):
+        self.edit_forms.append((message_id, "photo" if photo else
+                                "caption" if is_photo else "text"))
         if self.fail_edits:
             return {"ok": False, "description": "message to edit not found"}
         self.edited.append((str(chat), message_id, text, keyboard))
         return {"ok": True, "result": {"message_id": message_id}}
+
+    # Bot API 10.4 widgets. ``widget_answer`` replaces the reply to sendWidget,
+    # ``widget_data_answer`` the reply to editMessageWidgetData.
+    def send_widget(self, chat, html, caption=None, keyboard=None,
+                    chat_data=None, silent=False, allow_queries=False):
+        self.widgets.append({"chat": str(chat), "html": html, "caption": caption,
+                             "keyboard": keyboard, "chat_data": chat_data,
+                             "silent": silent, "allow_queries": allow_queries})
+        if self.widget_answer is not None:
+            return self.widget_answer
+        self._next_id += 1
+        return {"ok": True, "result": {"message_id": self._next_id,
+                                       "widget": {"html": html}}}
+
+    def answer_widget_query(self, query_id, data=None):
+        self.widget_answers.append((query_id, data))
+        return {"ok": True, "result": True}
+
+    def edit_widget_data(self, chat, message_id, chat_data):
+        self.widget_edits.append((message_id, chat_data))
+        if self.widget_data_answer is not None:
+            return self.widget_data_answer
+        return {"ok": True, "result": True}
 
     def delete_message(self, chat, message_id):
         self.deleted.append((str(chat), message_id))

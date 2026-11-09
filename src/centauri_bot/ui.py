@@ -16,6 +16,7 @@ from . import backend
 from . import printer_state as ps
 from . import schedule
 from . import support
+from . import widget
 
 
 HEAT_PRESETS = {
@@ -229,7 +230,7 @@ def stall_header(status, code):
 # ------------------------------------------------------------------ status text
 
 def render(status, online, printer_name, header="", detailed=False,
-           maintenance_line="", now=None, tz=None):
+           maintenance_line="", now=None, tz=None, compact=False):
     """The single status message.
 
     The block order is deliberately inverted. On a phone the keyboard takes up
@@ -282,6 +283,16 @@ def render(status, online, printer_name, header="", detailed=False,
     if filename and online:
         summary += " · %s%%" % print_info.get("Progress", 0)
     top.append(summary)
+    if compact:
+        # The caption under the live card: one line, since the card shows the
+        # rest. It is also what the chat list, notifications and apps without
+        # widgets show, so it keeps the state and the percentage, in the
+        # card's Russian words.
+        top[-1] = "%s <b>%s</b> · %s" % (
+            icon, printer_name, widget.state_ru(code, online).lower())
+        if filename and online:
+            top[-1] += " · %s%%" % int(float(print_info.get("Progress") or 0))
+        return "\n".join(top)
     # The code alone is not actionable. Klipper says why it stopped, so that
     # line goes directly under the summary where it will be read first.
     if code == ps.STATUS_KLIPPY_ERROR:
@@ -485,6 +496,15 @@ def kb_fans(current, draft=None):
     return rows
 
 
+def short_name(name, width):
+    """A name cut to ``width`` characters in the middle: the end of a file name
+    (the print time, the version) is what tells two files apart."""
+    if len(name) <= width:
+        return name
+    tail = min(14, width // 2)
+    return name[:width - 1 - tail] + "…" + name[-tail:]
+
+
 def kb_files(files, allow_control=True, limit=8, can_start=None, refs=None,
              can_delete=False, delete_refs=None, delete_all_ref=None):
     rows = []
@@ -493,13 +513,13 @@ def kb_files(files, allow_control=True, limit=8, can_start=None, refs=None,
         for i, path in enumerate(files[:limit]):
             base = path.rsplit("/", 1)[-1]
             ref = refs[i] if refs and i < len(refs) else str(i)
-            rows.append([{"text": "🖨 %s" % base[:38],
+            rows.append([{"text": "🖨 %s" % short_name(base, 38),
                           "callback_data": "ask:print:%s" % ref}])
     if can_delete:
         for i, path in enumerate(files[:limit]):
             base = path.rsplit("/", 1)[-1]
             ref = delete_refs[i] if delete_refs and i < len(delete_refs) else str(i)
-            rows.append([{"text": "🗑 Удалить %s" % base[:29],
+            rows.append([{"text": "🗑 Удалить %s" % short_name(base, 29),
                           "callback_data": "ask:delete:%s" % ref}])
         if delete_all_ref and len(files) > 1:
             rows.append([{"text": "🗑 Удалить все файлы (%d)" % len(files),
@@ -508,11 +528,43 @@ def kb_files(files, allow_control=True, limit=8, can_start=None, refs=None,
     return rows
 
 
-def objects_text(state):
+def kb_files_card(files, limit=8, can_start=True, refs=None, can_delete=False,
+                  delete_refs=None, delete_all_ref=None):
+    """The files screen for the live card: one row per file, [🖨 name] [🗑].
+
+    The names are on the buttons, so the screen has no lines of text. The
+    bin button is the same confirmation step as before, never a deletion.
+    """
+    rows = []
+    for i, path in enumerate(files[:limit]):
+        base = path.rsplit("/", 1)[-1]
+        row = []
+        if can_start:
+            ref = refs[i] if refs and i < len(refs) else str(i)
+            row.append({"text": "🖨 %s" % short_name(base, 30),
+                        "callback_data": "ask:print:%s" % ref})
+        else:
+            row.append({"text": "📄 %s" % short_name(base, 30), "callback_data": "noop"})
+        if can_delete:
+            ref = delete_refs[i] if delete_refs and i < len(delete_refs) else str(i)
+            row.append({"text": "🗑", "callback_data": "ask:delete:%s" % ref})
+        rows.append(row)
+    if can_delete and delete_all_ref and len(files) > 1:
+        rows.append([{"text": "🗑 Удалить все файлы (%d)" % len(files),
+                      "callback_data": "ask:delall:%s" % delete_all_ref}])
+    rows.append([{"text": "↩️ Назад к статусу", "callback_data": "refresh"}])
+    return rows
+
+
+def objects_text(state, compact=False):
     names = list(state.get("Objects") or [])
     excluded = set(state.get("ExcludedObjects") or [])
     current = state.get("CurrentObject") or ""
     active = [name for name in names if name not in excluded]
+    if compact:
+        # On the live card the drawing and the numbered buttons say the rest.
+        return ("<b>✂️ Убрать объект</b>\nОсталось %d из %d"
+                % (len(active), len(names)))
     lines = ["<b>✂️ Объекты текущей печати</b>",
              "Осталось: %d из %d" % (len(active), len(names))]
     labels = object_labels(names)
@@ -603,10 +655,16 @@ def kb_back():
     return [[{"text": "↩️ Назад к статусу", "callback_data": "refresh"}]]
 
 
-def height_map_text(mesh):
+def height_map_text(mesh, compact=False):
     points = mesh.get("points") or []
     values = [float(value) for row in points for value in row]
     low, high = min(values), max(values)
+    if compact:
+        return ("<b>🗺 Карта высот стола</b>\n"
+                "%s · %d×%d точек\n"
+                "мин %.3f · макс %.3f · разброс %.3f мм"
+                % (html.escape(str(mesh.get("profile") or "—")), len(points),
+                   len(points[0]) if points else 0, low, high, high - low))
     return ("<b>🗺 Карта высот стола</b>\n"
             "Профиль: <code>%s</code> · %d×%d точек\n"
             "Минимум: %.3f мм · максимум: %.3f мм\n"
@@ -621,7 +679,22 @@ def height_map_text(mesh):
                else "лежит сохранённым, в память не загружен"))
 
 
-def history_text(jobs):
+HISTORY_ICONS = {"completed": "✅", "cancelled": "⏹", "klippy_shutdown": "⚠️",
+                 "error": "⚠️", "interrupted": "⚠️", "klippy_disconnect": "⚠️"}
+
+
+def history_text(jobs, compact=False):
+    if compact and jobs:
+        # On the card a line is cut at the right: the state and the time come
+        # first, the file name, which may be long, last.
+        lines = ["<b>🧾 История печатей</b>"]
+        for job in jobs:
+            status = str(job.get("status") or "—")
+            icon = HISTORY_ICONS.get(status.lower(), html.escape(status))
+            seconds = int(float(job.get("total_duration") or job.get("print_duration") or 0))
+            filename = html.escape(str(job.get("filename") or "без имени").rsplit("/", 1)[-1])
+            lines.append("%s %s · %s" % (icon, hhmm(seconds) if seconds else "—", filename))
+        return "\n".join(lines)
     if not jobs:
         return "<b>🧾 История печатей</b>\n\nMoonraker пока не сохранил завершённых заданий."
     lines = ["<b>🧾 История печатей</b> — последние %d" % len(jobs)]

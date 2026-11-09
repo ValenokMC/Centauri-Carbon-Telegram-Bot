@@ -112,10 +112,17 @@ def _badge(canvas, centre, text, size):
                     canvas.rect(left, top, left + cell, top + cell, DIGIT)
 
 
+def numbered(names, shapes):
+    """[(number, name, shape)] of the parts the map draws: the number is the
+    part's place in the job's list of objects, counting from one, and the same
+    number is on its button on the card. A part without an outline is not drawn."""
+    return [(number, name, shapes[name]) for number, name in enumerate(names, 1)
+            if name in shapes and len(shapes[name].get("polygon") or ()) >= 3]
+
+
 def render(names, shapes, excluded=(), current=""):
     """PNG bytes, numbering ``names`` from one. Raises ValueError without shapes."""
-    drawn = [(number, name, shapes[name]) for number, name in enumerate(names, 1)
-             if name in shapes and len(shapes[name].get("polygon") or ()) >= 3]
+    drawn = numbered(names, shapes)
     if not drawn:
         raise ValueError("в задании нет контуров объектов")
     xs = [p[0] for _n, _name, shape in drawn for p in shape["polygon"]]

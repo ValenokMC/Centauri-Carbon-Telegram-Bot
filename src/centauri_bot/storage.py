@@ -39,6 +39,7 @@ def _write(path, data):
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
         os.replace(tmp, path)
+        _state_cache.pop(path, None)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -51,6 +52,7 @@ def _write(path, data):
 
 STATE_DEFAULT = {
     "message_id": None,
+    "message_kind": None,
     "installed_at": None,
     "last_support_reminder_at": None,
 }
@@ -61,9 +63,31 @@ STATE_DEFAULT = {
 OBSOLETE_STATE_KEYS = ("telemetry_installation_id", "last_telemetry_at")
 
 
+# state.json is looked at on every printer status (is the status message a
+# card?). Parsing it each time was wasted work, so the parsed file is kept
+# until the file itself changes: the signature is the file's size and
+# modification time, which also catches a write made behind our back.
+_state_cache = {}
+
+
+def _signature(path):
+    try:
+        st = os.stat(path)
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
 def load_state():
     with _lock:
-        d = _read(paths.state_path(), STATE_DEFAULT)
+        path = paths.state_path()
+        sig = _signature(path)
+        cached = _state_cache.get(path)
+        if cached and cached[0] == sig and sig is not None:
+            d = dict(cached[1])
+        else:
+            d = _read(path, STATE_DEFAULT)
+            _state_cache[path] = (sig, dict(d))
     for k, v in STATE_DEFAULT.items():
         d.setdefault(k, v)
     return d
@@ -101,8 +125,15 @@ def message_id():
     return load_state().get("message_id")
 
 
-def set_message_id(mid):
-    update_state(message_id=mid)
+def set_message_id(mid, kind=None):
+    """``kind`` says what the message is when it matters: "widget" for the
+    live print card, None for an ordinary text or photo message. Changing
+    the message always restates it, so a stale kind cannot outlive it."""
+    update_state(message_id=mid, message_kind=kind)
+
+
+def message_kind():
+    return load_state().get("message_kind")
 
 
 def forget_statistics():
