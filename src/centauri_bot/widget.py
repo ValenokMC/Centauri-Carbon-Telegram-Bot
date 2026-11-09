@@ -40,7 +40,7 @@ from . import printer_state as ps
 
 log = logging.getLogger(__name__)
 
-VERSION = 11
+VERSION = 12
 
 # storage.message_kind() of a card sent with this very HTML. A sent widget's
 # HTML can never be replaced, so a card from an older version is not ours to
@@ -92,7 +92,7 @@ HTML = r"""<style>
 :root{--g:light-dark(rgba(0,0,0,.05),rgba(255,255,255,.07));--l:light-dark(rgba(0,0,0,.12),rgba(255,255,255,.14));--b:light-dark(rgba(255,255,255,.7),rgba(255,255,255,.1));--ac:var(--tg-theme-button-color)}
 [hidden]{display:none!important}
 body{font-variant-numeric:tabular-nums;margin:0;padding:8px;color:var(--tg-theme-text-color)}
-.cd{border-radius:18px;padding:12px;border:1px solid var(--l);background:linear-gradient(140deg,light-dark(rgba(60,120,255,.12),rgba(90,150,255,.2)),var(--g) 65%)}
+.cd{border-radius:18px;padding:12px;border:1px solid var(--l);background:light-dark(rgba(60,120,255,.08),rgba(90,150,255,.14))}
 .k-w{--ac:#e5a50a}.k-x{--ac:var(--tg-theme-destructive-text-color)}.k-i{--ac:var(--tg-theme-hint-color)}
 .top,.rg b,.hd,.a,.rw,.ht,.tl{display:flex}.top,.rg b,.hd,.tl{align-items:center}
 .rg b{justify-content:center}.top{gap:12px}
@@ -107,8 +107,8 @@ button svg{width:16px;height:16px;margin-right:5px}
 .mn{flex:1;min-width:0}
 .s{font-size:1.15em;font-weight:700;color:var(--ac)}
 .f,.h,.u,.n,button:disabled{color:var(--tg-theme-hint-color)}
-.f{font-size:.88em;margin-top:1px}
-.l{margin-top:4px}.h{font-size:.85em;margin-top:1px}
+.f{font-size:.88em}
+.l{margin-top:4px}.h{font-size:.85em}
 .cp{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
 .cp span{padding:4px 10px;border-radius:99px;background:var(--g);border:1px solid var(--l);font-size:.85em}
 .a,.rw{gap:6px;margin-top:8px}.a button,.rw button{flex:1}
@@ -150,7 +150,7 @@ function tm(k,v){var a=v?v.split('|'):[0,0,0,210,0],h=+a[4];$('t'+k).className='
 function mk(p,t,c,f,n){var e=el(p,'button',t),P=n&&IC[n.slice(0,2)];e.className=c;if(f)e.onclick=f;else e.disabled=true;
 if(P)try{var s=S('svg',{viewBox:'0 0 24 24','class':n});s.appendChild(S('path',{d:P}));e.insertBefore(s,e.firstChild)}catch(r){}
 return e}
-function ic(){if(IC.pa)return;if(busy)return setTimeout(ic,5e3);
+function ic(){if(IC.pa)return;
 W.request('ic').then(function(r){try{IC=JSON.parse(r.result).ic;try{localStorage.setItem('ic11',JSON.stringify(IC))}catch(e){}show()}catch(e){}},function(){setTimeout(ic,3e4)})}
 function go(q){if(busy)return;busy=1;mnu=0;x('n','Отправляю…');
 W.request(q).then(null,function(){return{result:'{"m":"Не дошло, ещё раз"}'}}).then(function(r){busy=0;try{var a=JSON.parse(r.result);
@@ -167,7 +167,7 @@ var t=function(){mnu=!mnu;x('n','');show()};
 if(mn.length)mk(a,IC.mo?'Ещё':'⚙️ Ещё','',t,'mo');
 if(mnu){mn.forEach(function(i){mk(g,i[0],'',function(){go('c:'+i[1])},i[2])});mk(g,'‹ Назад в главное','y',t)}}
 function cv(n){return getComputedStyle(document.documentElement).getPropertyValue(n)}
-function fig(g){var c=$('cz'),o=g&&g.s,m=g&&g.m,t,B=428,K=B/63,i,j,f,n,s,a,x,y,w,h,z,u,A='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';c.hidden=!(o||m);if(c.hidden)return;
+function fig(g){var c=$('cz'),o=g&&g.s,m=g&&g.m,t,B=428,K=B/63,i,j,f,n,s,a,x,y,w,h,z,u,v,p,A='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';c.hidden=!(o||m);if(c.hidden)return;
 c.width=440;t=c.getContext('2d');
 if(m){for(i=0;i<m.h;i++)for(j=0;j<m.w;j++){u=+m.z.substr(2*(i*m.w+j),2)/99;
 t.fillStyle='hsl('+(u<.5?210:5)+',65%,'+(95-110*Math.abs(u-.5))+'%)';t.fillRect(6+j*B/m.w,6+i*B/m.h,B/m.w+.5,B/m.h+.5)}return}
@@ -176,9 +176,8 @@ for(n=0;n<o.length;n++){s=+o[n];if(s==3)continue;
 a=g.b.substr(4*n,4).split('').map(function(k){return A.indexOf(k)*K});x=6+a[0];y=6+a[1];w=a[2]-a[0];h=a[3]-a[1];
 t.fillStyle=t.strokeStyle=cv(s==1?'--tg-theme-destructive-text-color':'--tg-theme-button-color');
 t.globalAlpha=[.05,.25,.85,0,.4][s];t.fillRect(x,y,w,h);t.globalAlpha=[.35,.6,1,1,1][s];t.strokeRect(x,y,w,h);
-z=Math.min(30,h*.8,w/(.6*String(n+1).length));
-if(z>=20&&(s==2||s==4)){t.fillStyle=s==2?'#fff':f;t.font='600 '+z+'px sans-serif';
-t.textAlign='center';t.textBaseline='middle';t.fillText(n+1,x+w/2,y+h/2)}}}
+v=parseInt(g.n[n],36);if(v){z=20+8*((v-1)/5|0);p=(v-1)%5;t.fillStyle=s==2&&!p?'#fff':f;t.font='600 '+z+'px sans-serif';
+t.textAlign='center';t.textBaseline='middle';t.fillText(n+1,x+w/2+[0,0,1,-1,0][p]*(w/2+3+.3*z*String(n+1).length),y+h/2+[0,-1,0,0,1][p]*(h/2+3+.4*z))}}}
 function drawScreen(){try{x('vt',sc.t||'');fig(sc.g);var t=clr('vx');(sc.x||[]).forEach(function(s){el(t,'div',s)});
 var k=clr('vk');(sc.k||[]).forEach(function(r){var w=el(k,'div','');
 w.className='rw'+(r.length>2?' wr':'');
@@ -202,7 +201,7 @@ if(W){W.onEvent('chatDataChanged',draw);draw();if(W.ready)W.ready();if(W.request
 # First 12 hex digits of sha256 of HTML. A card that is already in the chat
 # keeps the HTML it was sent with, so any change of HTML must bump VERSION; a
 # test compares this with the real hash and fails until both are updated.
-HTML_SHA = "32ac1bebdd64"
+HTML_SHA = "63ef194c1a9e"
 
 
 def html_fits(html=HTML):
@@ -665,7 +664,8 @@ def thin_figure(figure):
     if not states:
         return None
     thin = states.replace("1", "3").rstrip("3")
-    return {"b": figure["b"][:4 * len(thin)], "s": thin} if thin else None
+    return {"b": figure["b"][:4 * len(thin)], "s": thin,
+            "n": (figure.get("n") or "")[:len(thin)]} if thin else None
 
 
 def estimate_height(sc, width=320):

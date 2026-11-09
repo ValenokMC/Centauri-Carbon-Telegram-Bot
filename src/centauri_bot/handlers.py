@@ -209,8 +209,6 @@ def show_bed_calibration(bot, chat, mid=None, is_photo=False, force_new=False):
 
 # Number buttons in a row of the objects grid: 8 two-digit numbers fit a phone.
 GRID_PER_ROW = 8
-# The map is only worth its height on the first level when there are few groups.
-MAP_MAX_GROUPS = 4
 
 
 def _objects_on_card(bot, state, names, excluded, group):
@@ -244,10 +242,8 @@ def _objects_on_card(bot, state, names, excluded, group):
                 for label, ref in zip(live, refs)]
         text = ("<b>✂️ Убрать объект</b>\nОсталось %d из %d · моделей %d"
                 % (left, len(names), len(live)))
-        highlight = set() if len(live) <= MAP_MAX_GROUPS else None
-        figure_wanted = len(live) <= MAP_MAX_GROUPS
-        return text, rows + back, _figure(names, shapes, excluded, current, highlight,
-                                          figure_wanted)
+        # No map here: a square of dimmed boxes above a list told nothing.
+        return text, rows + back, None
     members = groups[group]
     mine = [name for name in members if name not in excluded]
     number = {name: i for i, name in enumerate(names, 1)}
@@ -262,17 +258,30 @@ def _objects_on_card(bot, state, names, excluded, group):
         rows.append([{"text": "‹ К группам", "callback_data": "objects"}])
     text = ("<b>✂️ %s</b>\nОсталось %d из %d"
             % (escape(group), len(mine), len(members)))
-    return text, rows + back, _figure(names, shapes, excluded, current, set(mine), True)
+    return text, rows + back, _figure(names, shapes, excluded, current, set(mine))
 
 
-def _figure(names, shapes, excluded, current, highlight, wanted):
-    if not wanted:
-        return None
+def _figure(names, shapes, excluded, current, highlight, zoom=None):
     try:
-        return objectmap.figure(names, shapes, excluded, current, highlight)
+        return objectmap.figure(names, shapes, excluded, current, highlight, zoom)
     except (KeyError, TypeError, ValueError) as e:
         log.info("object map not drawn: %s", e)
         return None
+
+
+def _confirm_figure(bot, value):
+    """The picture under "Убрать №16?": the model's window with only that part
+    highlighted (and numbered), so it is clear which one goes even when its
+    number was not drawn on the grid's map."""
+    ok, state = bot.exclude_objects()
+    names = list(state.get("Objects") or []) if ok else []
+    name = value.get("name")
+    if name not in names:
+        return None
+    model = ui.object_label(name)
+    return _figure(names, state.get("Shapes") or {}, set(state.get("ExcludedObjects") or []),
+                   state.get("CurrentObject") or "", {name},
+                   {other for other in names if ui.object_label(other) == model})
 
 
 def show_objects(bot, chat, mid=None, is_photo=False, force_new=False, group=None):
@@ -678,6 +687,9 @@ def _ask_confirmation(bot, chat, mid, query, what, is_photo):
             return
         token = bot.issue_object_confirmation(value)
         bot.api.answer_callback(query["id"])
+        cap = bot.capturing()
+        if cap is not None:
+            cap.figure = _confirm_figure(bot, value)      # a tap on the card: show the part
         bot.api.edit_message(
             chat, mid,
             "❌ <b>Убрать модель из текущей печати?</b>\n%s\n\n"

@@ -251,8 +251,9 @@ def test_objects_figure_coordinates_and_states():
     assert decode(fig) == [(1, 2, 48, 15, 61, 2), (2, 24, 26, 37, 39, 1)]
     assert decode(objectmap.figure(["A"], {"A": shapes["A"]}))[0][-1] == 4      # selected, to print
     assert decode(objectmap.figure(["A", "B"], shapes, current="B", highlight={"A"}))[0][-1] == 4
-    assert [d[-1] for d in decode(objectmap.figure(["A", "B"], shapes, highlight={"A"}))] == [4, 0]
-    assert decode(objectmap.figure(["A", "B"], shapes, current="B", highlight={"A"}))[1][-1] == 0
+    # zoomed to A's window, B (far away) is not in the picture at all
+    assert [d[-1] for d in decode(objectmap.figure(["A", "B"], shapes, highlight={"A"}))] == [4]
+    assert [d[-1] for d in decode(objectmap.figure(["A", "B"], shapes, highlight=set()))] == [0, 0]
     far = {"A": {"polygon": [(-20, -5), (400, -5), (400, 400)]}}
     assert decode(objectmap.figure(["A"], far)) == [(1, 0, 0, 63, 63, 4)]
     tiny = {"A": {"polygon": [(100, 100), (101, 100), (101, 101)]}}
@@ -273,7 +274,7 @@ def test_objects_on_the_card_are_drawn_not_sent_as_a_picture(mr_bot, fake_telegr
     assert fake_telegram.sent == []                       # no PNG
     # three parts, B already gone: two models are still to print -> the models first
     assert sc["t"] == "✂️ Убрать объект" and sc["x"] == ["Осталось 2 из 3 · моделей 2"]
-    assert [d[-1] for d in decode(sc["g"])] == [0, 1]     # dimmed, and the excluded one
+    assert "g" not in sc                                  # no map on the list of models
     codes = [b[1] for row in sc["k"] for b in row]
     assert sum(c.startswith("c:objgrp:") for c in codes) == 2
     handlers.handle_widget_query(mr_bot, widget_query(next(c for c in codes if "objgrp" in c),
@@ -738,7 +739,7 @@ def test_a_drawing_that_cannot_fit_is_thinned_then_dropped_with_a_log(caplog):
     assert "drawing dropped" in caplog.text
     # the excluded ones are given up first
     thin = widget.thin_figure({"b": "AAAABBBBCCCC", "s": "101"})
-    assert thin == {"b": "AAAABBBB", "s": "30"}
+    assert thin == {"b": "AAAABBBB", "s": "30", "n": ""}
     assert widget.thin_figure({"b": "AAAA", "s": "1"}) is None
 
 
@@ -790,7 +791,7 @@ def test_html_changes_must_come_with_a_new_version():
     import hashlib
     digest = hashlib.sha256(widget.HTML.encode("utf-8")).hexdigest()[:12]
     assert digest == widget.HTML_SHA, "HTML changed: bump VERSION and update HTML_SHA"
-    assert widget.KIND == "widget-%d" % widget.VERSION == "widget-11"
+    assert widget.KIND == "widget-%d" % widget.VERSION == "widget-12"
 
 
 # ------------------------------------------------------------ round 6
@@ -1226,7 +1227,7 @@ def test_the_icon_request_is_answered_to_the_owner_and_data_queries_only(card_bo
 def test_the_cards_script_fetches_icons_late_quietly_and_without_storage():
     script = widget.HTML.split("<script>")[1]
     assert "setTimeout(ic,4e3)" in script                    # after the first render
-    assert "function ic(){if(IC.pa)return;if(busy)return setTimeout(ic,5e3)" in script
+    assert "function ic(){if(IC.pa)return;" in script and "W.request('ic')" in script
     assert "function(){setTimeout(ic,3e4)}" in script        # a failure: later, no note line
     # every storage access is guarded; the card works without icons
     assert "try{IC=JSON.parse(localStorage.getItem('ic11'))||{}}catch(e){}" in script
@@ -1303,9 +1304,7 @@ def test_two_models_of_28_copies_list_the_models_then_a_grid(mr_bot, fake_telegr
     assert sc["t"] == "✂️ Убрать объект" and sc["x"] == ["Осталось 55 из 56 · моделей 2"]
     rows = [r for r in sc["k"] if r[0][1].startswith("c:objgrp:")]
     assert [r[0][0] for r in rows] == ["МОДЕЛЬ А ×28 · осталось 27", "МОДЕЛЬ Б ×28 · осталось 28"]
-    # the map is there at level one, every part dimmed and none numbered
-    states = "".join(d[-1:] and str(d[-1]) for d in decode(sc["g"]))
-    assert set(states) == {"0", "1"} and states.count("1") == 1
+    assert "g" not in sc                                  # no map on the list of models
     assert_pages_fit(first)
 
     second = pages_of(mr_bot, fake_telegram, rows[0][0][1])      # a tap on the first model
@@ -1459,3 +1458,175 @@ def test_the_heating_rings_and_the_air_arrive_as_strings(card_bot):
     assert data["tn"] == "245|245|100|0|0" and data["tb"] == "70|70|100|20|0"
     assert isinstance(data["ti"], str) and data["ti"] == "внутри 30°"
     assert numeric_lists(data) == []
+
+
+# ------------------------------------------------------------ round 9: zoom and labels placed by the bot
+
+def live_like_job(mr_bot):
+    """56 invented parts shaped like a real job: 28 small copies of one model
+    packed tightly in a grid, 24 of another, and 4 larger ones (the last two
+    models are kept apart so that the zoom window of the first reaches some
+    of them)."""
+    names, shapes = [], {}
+
+    def add(model, count, columns, x0, y0, side, pitch):
+        for i in range(count):
+            name = "%s.STEP_ID_%d_COPY_0" % (model, len(names))
+            x, y = x0 + pitch * (i % columns), y0 + pitch * (i // columns)
+            shapes[name] = {"polygon": [(x, y), (x + side, y), (x + side, y + side),
+                                        (x, y + side)]}
+            names.append(name)
+    add("АЛЬФА", 28, 7, 20, 20, 24, 27)          # 7 x 4, gaps of 3 mm
+    add("БЕТА", 24, 6, 20, 150, 18, 30)           # reaches into the window of the first
+    add("ГАММА", 4, 2, 170, 190, 44, 52)
+    state = {"Objects": names, "ExcludedObjects": [names[4]], "CurrentObject": names[9],
+             "PrintState": "printing", "Filename": "x.gcode", "Shapes": shapes}
+    mr_bot.moonraker.exclude_object_state = lambda: state
+    return names, shapes, state
+
+
+K = 428 / 63.0
+
+
+def boxes_and_labels(fig):
+    """What the card's script would draw: the boxes (x, y, w, h) in canvas px and
+    the label rectangles, worked out here from the figure alone."""
+    out, labels = [], []
+    for n, state in enumerate(fig["s"]):
+        if state == "3":
+            continue
+        a = [objectmap.ALPHABET.index(c) * K for c in fig["b"][4 * n:4 * n + 4]]
+        box = (6 + a[0], 6 + a[1], a[2] - a[0], a[3] - a[1])
+        out.append((n + 1, state, box))
+        code = int(fig["n"][n], 36)
+        if not code:
+            continue
+        size = 20 + 8 * ((code - 1) // 5)
+        place = (code - 1) % 5
+        x, y, w, h = box
+        half = .3 * size * len(str(n + 1))
+        cx = x + w / 2 + (0, 0, 1, -1, 0)[place] * (w / 2 + 3 + half)
+        cy = y + h / 2 + (0, -1, 0, 0, 1)[place] * (h / 2 + 3 + .4 * size)
+        labels.append((n + 1, (cx - half, cy - .4 * size, cx + half, cy + .4 * size), place))
+    return out, labels
+
+
+def overlap(a, b):
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def test_a_zoomed_map_labels_most_copies_and_no_label_overlaps(mr_bot, fake_telegram):
+    names, shapes, state = live_like_job(mr_bot)
+    first = pages_of(mr_bot, fake_telegram, "c:objects")
+    assert len(first) >= 1 and "g" not in first[0]               # level one: no map at all
+    assert all("g" not in sc for sc in first)
+    group = next(b[1] for sc in first for r in sc["k"] for b in r
+                 if b[1].startswith("c:objgrp:") and b[0].startswith("АЛЬФА"))
+    pages = pages_of(mr_bot, fake_telegram, group)
+    assert_pages_fit(pages)
+    fig = pages[0]["g"]
+    assert len(fig["n"]) == len(fig["s"]) == len(names)
+    boxes, labels = boxes_and_labels(fig)
+    mine = [(n, box) for n, state_, box in boxes if state_ in "24"]
+    assert len(mine) == 27                                       # 28 copies minus the one gone
+    # the window holds every copy, and they fill it (not squeezed into a corner)
+    assert all(0 <= b[0] and b[0] + b[2] <= 440 and 0 <= b[1] and b[1] + b[3] <= 440
+               for _n, b in mine)
+    span = max(max(b[0] + b[2] for _n, b in mine) - min(b[0] for _n, b in mine),
+               max(b[1] + b[3] for _n, b in mine) - min(b[1] for _n, b in mine))
+    assert span > 0.75 * 428
+    # the other models that reach into the window are there, dimmed, without labels
+    dim = [n for n, state_, _b in boxes if state_ == "0"]
+    assert dim and all(not any(lab[0] == n for lab in labels) for n in dim)
+    # at least 70 % of the selected copies carry a label; the rest are on the grid
+    labelled = {n for n, _r, _p in labels}
+    assert len([n for n, _b in mine if n in labelled]) >= 0.7 * len(mine)
+    # every label is on the canvas, and no two overlap each other or any box but its own
+    for n, rect, place in labels:
+        assert rect[0] >= 0 and rect[1] >= 0 and rect[2] <= 440 and rect[3] <= 440, (n, rect)
+    for i, (n, rect, place) in enumerate(labels):
+        for m, other, _p in labels[i + 1:]:
+            assert not overlap(rect, other), (n, m)
+    for sc in pages:
+        assert numeric_lists({"sc": sc}) == []
+
+
+def test_a_lone_copy_and_a_whole_bed_view_still_label(mr_bot):
+    one = objectmap.figure(["A"], {"A": {"polygon": [(100, 100), (112, 100), (112, 112)]}},
+                           highlight={"A"})
+    assert one["s"] == "4" and one["n"] != "0"               # zoomed to a 40 mm window
+    whole = objectmap.figure(["A", "B"], {"A": {"polygon": [(10, 10), (60, 10), (60, 60)]},
+                                          "B": {"polygon": [(100, 100), (150, 100), (150, 150)]}})
+    assert whole["n"] == "bb"                                # big boxes: the largest size, centred
+
+
+def test_the_scripts_label_formulas_are_the_bots():
+    """The card draws what objectmap placed; its formulas must stay equal."""
+    html = widget.HTML
+    assert "z=20+8*((v-1)/5|0);p=(v-1)%5" in html and "v=parseInt(g.n[n],36)" in html
+    assert "[0,0,1,-1,0][p]*(w/2+3+.3*z*String(n+1).length)" in html
+    assert "[0,-1,0,0,1][p]*(h/2+3+.4*z)" in html
+    assert objectmap.FONTS == (20, 28, 40) and objectmap.PLACES == 5
+    assert (objectmap.CANVAS, objectmap.MARGIN, objectmap.SPAN) == (440, 6, 428)
+    assert 'width=440 height=440' in html and "B=428" in html
+
+
+def test_object_tokens_have_a_store_of_their_own(mr_bot):
+    """Tapping through a hundred parts must not push a pending "stop" out."""
+    stop = mr_bot.issue_action_confirmation("cancel")
+    mr_bot.prepare_object_choices([{"name": "n%d" % i} for i in range(200)])
+    assert mr_bot.consume_action_confirmation("cancel", stop)       # still there
+    assert mr_bot.confirmations is not mr_bot.object_tokens
+    assert mr_bot.object_tokens.limit == 256 and mr_bot.confirmations.limit == 64
+    token = mr_bot.issue_object_confirmation({"name": "x"})
+    assert mr_bot.consume_object_confirmation(token) == {"name": "x"}
+
+
+# ------------------------------------------------------------ the confirmation shows the part
+
+def test_the_exclusion_confirmation_shows_only_the_chosen_part(mr_bot, fake_telegram):
+    names, shapes, state = live_like_job(mr_bot)
+    first = pages_of(mr_bot, fake_telegram, "c:objects")
+    group = next(b[1] for sc in first for r in sc["k"] for b in r
+                 if b[1].startswith("c:objgrp:") and b[0].startswith("АЛЬФА"))
+    grid = pages_of(mr_bot, fake_telegram, group)
+    cells = [b for sc in grid for r in sc["k"] for b in r if b[1].startswith("c:xo:")]
+    chosen = next(b for b in cells if b[0] == "16")                 # a part without a drawn number
+    handlers.handle_widget_query(mr_bot, widget_query(chosen[1], qid="wq-c"))
+    answer = last_answer(fake_telegram)
+    assert len(fake_telegram.widget_answers[-1][1].encode("utf-8")) <= widget.ANSWER_LIMIT
+    sc = answer["sc"]
+    assert "Убрать модель" in sc["t"] and "16" in " ".join(sc["x"])
+    fig = sc["g"]
+    # only the chosen part (number 16) is highlighted and labelled; the others are dimmed
+    boxes, labels = boxes_and_labels(fig)
+    assert [n for n, st, _b in boxes if st in "24"] == [16]
+    assert [n for n, _r, _p in labels] == [16]
+    assert sum(1 for _n, st, _b in boxes if st == "0") >= 27          # the rest of the model, dimmed
+    assert fig["s"][4] == "1"                                         # the one already gone
+    # unchanged flow: the second step is a one-use confirmation of that very part
+    yes = next(b for r in sc["k"] for b in r if b[1].startswith("c:do:exclude:"))
+    assert yes[2] == "y"
+    for width in (320, 430):
+        assert widget.estimate_height(sc, width) <= widget.MAX_HEIGHT_PX
+    assert numeric_lists(answer) == []
+    # the zoom is the model's window, not the part's: the 28 copies are all in the picture
+    assert len(boxes) >= 28
+
+
+def test_labels_ignore_boxes_but_never_overlap_each_other():
+    """Thin slanted parts have bounding boxes that overlap heavily; the numbers
+    are drawn on top, so only label-label overlaps and the canvas edge count."""
+    shapes = {}
+    names = []
+    for i in range(20):                                   # overlapping boxes in a row
+        name = "BAR.STEP_ID_%d_COPY_0" % i
+        shapes[name] = {"polygon": [(30 + 6 * i, 60), (50 + 6 * i, 60), (50 + 6 * i, 150),
+                                    (30 + 6 * i, 150)]}
+        names.append(name)
+    fig = objectmap.figure(names, shapes, highlight=set(names))
+    boxes, labels = boxes_and_labels(fig)
+    assert len(labels) >= 18
+    for i, (n, rect, _p) in enumerate(labels):
+        assert rect[0] >= 0 and rect[2] <= 440 and rect[1] >= 0 and rect[3] <= 440
+        assert all(not overlap(rect, other) for _m, other, _q in labels[i + 1:])
