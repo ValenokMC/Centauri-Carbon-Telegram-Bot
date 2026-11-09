@@ -207,7 +207,75 @@ def show_bed_calibration(bot, chat, mid=None, is_photo=False, force_new=False):
     _show_readonly(bot, chat, mid, is_photo, force_new, text, ui.kb_bed_temps(enabled, refs))
 
 
-def show_objects(bot, chat, mid=None, is_photo=False, force_new=False):
+# Number buttons in a row of the objects grid: 8 two-digit numbers fit a phone.
+GRID_PER_ROW = 8
+# The map is only worth its height on the first level when there are few groups.
+MAP_MAX_GROUPS = 4
+
+
+def _objects_on_card(bot, state, names, excluded, group):
+    """The objects screen for the live card: (text, rows, figure).
+
+    Parts of one model are many copies with the same name. Level one lists the
+    models ("<name> ×28 · осталось 27"); a tap opens level two, whose title is
+    the model, whose map highlights its copies with their numbers, and whose
+    buttons are a grid of those numbers. With a single model level two comes
+    at once. The exclusion itself is the confirmation flow it always was: one
+    token for the exact part, then a second one for the exact action.
+    """
+    shapes = state.get("Shapes") or {}
+    current = state.get("CurrentObject") or ""
+    labels = ui.object_labels(names)
+    groups = {}
+    for name in names:
+        groups.setdefault(ui.object_label(name), []).append(name)
+    live = [label for label, members in groups.items()
+            if any(member not in excluded for member in members)]
+    left = sum(1 for name in names if name not in excluded)
+    if group not in live:
+        group = live[0] if len(live) == 1 else None
+    back = ui.kb_back()
+    if group is None:
+        refs = bot.prepare_object_groups(live)
+        rows = [[{"text": "%s ×%d · осталось %d" % (
+                    label, len(groups[label]),
+                    sum(1 for n in groups[label] if n not in excluded)),
+                  "callback_data": "objgrp:" + ref}]
+                for label, ref in zip(live, refs)]
+        text = ("<b>✂️ Убрать объект</b>\nОсталось %d из %d · моделей %d"
+                % (left, len(names), len(live)))
+        highlight = set() if len(live) <= MAP_MAX_GROUPS else None
+        figure_wanted = len(live) <= MAP_MAX_GROUPS
+        return text, rows + back, _figure(names, shapes, excluded, current, highlight,
+                                          figure_wanted)
+    members = groups[group]
+    mine = [name for name in members if name not in excluded]
+    number = {name: i for i, name in enumerate(names, 1)}
+    refs = bot.prepare_object_choices(
+        [{"name": name, "filename": state.get("Filename") or "", "label": labels[name]}
+         for name in mine])
+    per_row = GRID_PER_ROW if len(names) < 100 else 6
+    cells = [{"text": ("▶ %d" if name == current else "%d") % number[name],
+              "callback_data": "xo:" + ref} for name, ref in zip(mine, refs)]
+    rows = [cells[i:i + per_row] for i in range(0, len(cells), per_row)]
+    if len(live) > 1:
+        rows.append([{"text": "‹ К группам", "callback_data": "objects"}])
+    text = ("<b>✂️ %s</b>\nОсталось %d из %d"
+            % (escape(group), len(mine), len(members)))
+    return text, rows + back, _figure(names, shapes, excluded, current, set(mine), True)
+
+
+def _figure(names, shapes, excluded, current, highlight, wanted):
+    if not wanted:
+        return None
+    try:
+        return objectmap.figure(names, shapes, excluded, current, highlight)
+    except (KeyError, TypeError, ValueError) as e:
+        log.info("object map not drawn: %s", e)
+        return None
+
+
+def show_objects(bot, chat, mid=None, is_photo=False, force_new=False, group=None):
     ok, state = bot.exclude_objects()
     if not ok:
         _show_readonly(bot, chat, mid, is_photo, force_new,
@@ -224,23 +292,20 @@ def show_objects(bot, chat, mid=None, is_photo=False, force_new=False):
         text = ("✂️ Убрать модель нельзя: в задании не размечено несколько "
                 "объектов или остался только один.")
         rows = ui.kb_back()
+    elif _figures(bot, force_new):
+        text, rows, figure = _objects_on_card(bot, state, names, excluded, group)
     else:
         labels = ui.object_labels(names)
         values = [{"name": name, "filename": state.get("Filename") or "",
                    "label": labels[name]} for name in active]
         refs = bot.prepare_object_choices(values)
-        on_card = _figures(bot, force_new)
         try:
-            if on_card:
-                figure = objectmap.figure(names, state.get("Shapes") or {},
-                                          excluded, state.get("CurrentObject") or "")
-            else:
-                photo = objectmap.render(names, state.get("Shapes") or {},
-                                         excluded, state.get("CurrentObject") or "")
+            photo = objectmap.render(names, state.get("Shapes") or {},
+                                     excluded, state.get("CurrentObject") or "")
         except (KeyError, TypeError, ValueError) as e:
             log.info("object map not drawn: %s", e)
             state = dict(state, Shapes={})
-        text = ui.objects_text(state, compact=on_card)
+        text = ui.objects_text(state)
         if photo and len(text) > CAPTION_LIMIT:
             # A caption holds 1024 characters; the buttons carry the names anyway.
             text = ("<b>✂️ Объекты текущей печати</b>\nОсталось: %d из %d\n\n"
@@ -266,6 +331,10 @@ def handle_callback(bot, query):
     if data == "noop":
         bot.api.answer_callback(query["id"])
         return
+
+    if data.startswith("xo:"):
+        # the number buttons of the card's objects grid: "ask:exclude:" made short
+        data = "ask:exclude:" + data[3:]
 
     # Any other button ends a "type your own time" prompt: the owner has moved
     # on, and the next ordinary message must not be read as a start time.
@@ -396,6 +465,15 @@ def handle_callback(bot, query):
     if data == "objects":
         bot.api.answer_callback(query["id"], "Читаю объекты печати…")
         show_objects(bot, chat, mid, is_photo)
+        return
+
+    if data.startswith("objgrp:"):
+        label = bot.resolve_object_group(data.split(":", 1)[1])
+        if not label:
+            bot.api.answer_callback(query["id"], "Список устарел. Открой объекты заново.")
+            return
+        bot.api.answer_callback(query["id"])
+        show_objects(bot, chat, mid, is_photo, group=label)
         return
 
     if data.startswith("menu:"):
@@ -847,6 +925,11 @@ def handle_widget_query(bot, query):
     if not _is_owner(bot, chat, sender):
         reply(m="Этот бот личный.")
         log.info("widget query from a foreign chat was refused")
+        return
+
+    if data == "ic":
+        # The card's icon table, asked for once after its first draw.
+        raw(widget.icons_answer())
         return
 
     if data.startswith("ask:"):

@@ -28,6 +28,7 @@ Pure functions only, like ui.py: the tests call them and look at the result.
 What this module does not decide: when a widget is sent, and what happens when
 Telegram refuses it. That is app.py, which falls back to the ordinary message.
 """
+import datetime
 import html as _html
 import json
 import logging
@@ -39,7 +40,7 @@ from . import printer_state as ps
 
 log = logging.getLogger(__name__)
 
-VERSION = 10
+VERSION = 11
 
 # storage.message_kind() of a card sent with this very HTML. A sent widget's
 # HTML can never be replaced, so a card from an older version is not ours to
@@ -69,12 +70,13 @@ PAUSE, RESUME, STOP, CAMERA = "P", "R", "S", "C"
 #   v  format version          k  "p" printing, "w" paused, "x" anything else
 #   s  state, in Russian       f  file name
 #   p  progress, %             l  "слой 20 из 45"
-#   tn, tb  the nozzle's and the bed's heating ring, see heat(); ti the air inside
+#   tn, tb  the nozzle's and the bed's heating ring as "now|target|fill|hue|heating",
+#      see heat() and _pipe(); ti the air inside
 #      in whole degrees, only when the printer has it
-#   r  seconds left            e  finish, epoch seconds (printing only)
-#   sp speed, % (only if not 100)                      o  1 online, 0 not
-#   ab the action buttons to draw: [[label, request, style], ...], see ACTIONS
-#   mn the rest of the panel behind "⚙️ Ещё": [[label, callback_data], ...],
+#   et "· ещё 20 мин"         ef  "готово ≈ 14:30" (printing only)
+#   o  1 online, 0 not (the speed, if changed, rides on the layer line)
+#   ab the action buttons to draw: [[label, request, style, icon], ...], see ACTIONS
+#   mn the rest of the panel behind "⚙️ Ещё": [[label, callback_data, icon], ...],
 #      taken from the very keyboard the bot would put under a message, so
 #      the owner's permissions decide here exactly as there
 #   u  when the bot wrote this, epoch seconds
@@ -90,15 +92,17 @@ HTML = r"""<style>
 :root{--g:light-dark(rgba(0,0,0,.05),rgba(255,255,255,.07));--l:light-dark(rgba(0,0,0,.12),rgba(255,255,255,.14));--b:light-dark(rgba(255,255,255,.7),rgba(255,255,255,.1));--ac:var(--tg-theme-button-color)}
 [hidden]{display:none!important}
 body{font-variant-numeric:tabular-nums;margin:0;padding:8px;color:var(--tg-theme-text-color)}
-.cd{border-radius:18px;padding:12px;border:1px solid var(--l);background:linear-gradient(140deg,light-dark(rgba(60,120,255,.12),rgba(90,150,255,.2)),light-dark(rgba(255,255,255,.45),rgba(255,255,255,.03)) 65%)}
+.cd{border-radius:18px;padding:12px;border:1px solid var(--l);background:linear-gradient(140deg,light-dark(rgba(60,120,255,.12),rgba(90,150,255,.2)),var(--g) 65%)}
 .k-w{--ac:#e5a50a}.k-x{--ac:var(--tg-theme-destructive-text-color)}.k-i{--ac:var(--tg-theme-hint-color)}
-.top,.rg,.rg b,.hd,.a,.rw,.ht,.tl{display:flex}.top,.rg,.rg b,.hd,.tl{align-items:center}
-.rg,.rg b{border-radius:50%;justify-content:center}.top{gap:12px}
-.rg{--s:70px;--t:14px;width:var(--s);height:var(--s);flex:none;color:var(--ac)}
-.rg b{width:calc(var(--s) - var(--t));height:calc(var(--s) - var(--t));background:var(--tg-theme-bg-color);color:var(--tg-theme-text-color);font-size:1.2em}
-.tl{gap:8px;flex:1}.tl .rg{--s:38px;--t:7px}.ht{gap:10px;margin-top:10px}
-svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linejoin:round}
-@media(prefers-reduced-motion:no-preference){.hot .rg{animation:pu 2s infinite}@keyframes pu{50%{opacity:.45}}}
+.top,.rg b,.hd,.a,.rw,.ht,.tl{display:flex}.top,.rg b,.hd,.tl{align-items:center}
+.rg b{justify-content:center}.top{gap:12px}
+.rg{position:relative;width:70px;height:70px;flex:none;color:var(--ac)}
+.rg>svg,.rg b{position:absolute;inset:0;width:100%;height:100%}
+.rg>svg{stroke-width:3.6}.rg b{color:var(--tg-theme-text-color);font-size:1.2em}
+.tl{gap:8px;flex:1}.tl .rg{width:38px;height:38px}.ht{gap:10px;margin-top:10px}
+svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8}
+button svg{width:16px;height:16px;margin-right:5px}
+@media(prefers-reduced-motion:no-preference){.hot .rg,.re{animation:pu 2s infinite}@keyframes pu{50%{opacity:.45}}}
 .k-i #rg{display:none}
 .mn{flex:1;min-width:0}
 .s{font-size:1.15em;font-weight:700;color:var(--ac)}
@@ -115,40 +119,39 @@ button{background:var(--b);border:1px solid var(--l);color:inherit;border-radius
 .rw button:disabled{flex:2;padding:9px 6px 0}
 .a,.wr{flex-wrap:wrap}.a button,.wr button{min-width:max-content;padding-inline:4px}
 @media(max-width:399px){.a button{flex:1 1 40%}}
-#cz{width:170px;max-width:100%;height:auto;display:block;margin:8px auto 0;border-radius:12px;background:var(--g)}
-.z,button.k{color:var(--tg-theme-destructive-text-color)}
+#cz{width:220px;max-width:100%;height:auto;display:block;margin:8px auto 0;border-radius:12px;background:var(--g)}
+button.k{color:var(--tg-theme-destructive-text-color)}
 button.y{background:var(--tg-theme-button-color);color:var(--tg-theme-button-text-color);border-color:transparent}
 button:disabled{background:none;border-color:transparent;padding:4px 6px 0}
-.hd{gap:8px}.hd button{flex:none;padding:6px 12px}
+.hd{gap:8px}.hd button{flex:none}
 .hd b{flex:1;min-width:0;font-size:1.08em}
-.tx{margin-top:8px;font-size:.92em;line-height:1.4}.tx div{min-height:.6em}
-.n{font-size:.84em;margin-top:6px}.u{font-size:.75em;margin-top:6px;text-align:right}
+.tx{margin-top:8px;font-size:.92em;line-height:1.4}
+.n{font-size:.84em;margin-top:6px}
 </style>
 <div id=c class=cd><div id=cv><div class=top><div class=rg id=rg><b id=p></b></div>
 <div class=mn><div class=s><span id=s></span></div><div class=f id=f></div>
 <div class=l><span id=l></span> <span id=t></span></div><div class=h id=e></div></div></div>
 <div class=ht><div class=tl id=tn><i class=rg id=rn><b><svg viewBox="0 0 24 24"><path d="M8 4h8v6l-4 9-4-9z"/></svg></b></i><span id=xn></span></div>
 <div class=tl id=tb><i class=rg id=rb><b><svg viewBox="0 0 24 24"><path d="M3 11h18v4H3zM6 15v5M18 15v5"/></svg></b></i><span id=xb></span></div></div><div class=cp id=m></div><div class=a id=a></div><div class=g id=g hidden></div></div>
-<div id=v hidden><div class=hd><button id=bk>‹ Назад</button><b id=vt></b></div><canvas id=cz width=340 height=340 hidden></canvas><div class=tx id=vx></div><div id=vk></div></div>
-<div class=n id=n></div><div class=u id=u></div></div>
-<p id=q hidden></p>
+<div id=v hidden><div class=hd><button id=bk>‹ Назад</button><b id=vt></b></div><canvas id=cz width=440 height=440 hidden></canvas><div class=tx id=vx></div><div id=vk></div></div>
+<div class=n id=n></div></div>
 <script>(function(){
-var W=window.TelegramWidget,d=null,ask=null,busy=0,mnu=0,sc=null,ln='';
+var W=window.TelegramWidget,d=null,ask=null,busy=0,mnu=0,sc=null,ln='',IC={};try{IC=JSON.parse(localStorage.getItem('ic11'))||{}}catch(e){}
 function $(i){return document.getElementById(i)}
 function x(i,v){$(i).textContent=v}
 function er(e){x('n','ошибка: '+String(e).slice(0,120))}
 function clr(i){var a=$(i);a.textContent='';return a}
 function el(p,t,v){var e=document.createElement(t);e.textContent=v;p.appendChild(e);return e}
-function dur(s){var m=Math.max(1,Math.round(s/60)),h=Math.floor(m/60);m%=60;
-return h?(m?h+' ч '+m+' мин':h+' ч'):m+' мин'}
-function clock(e){return new Date(e*1e3).toTimeString().slice(0,5)}
-function tick(){if(!d)return;var now=Date.now()/1e3,left=d.e?Math.max(0,d.e-now):d.r,age=now-d.u;
-x('t',left>0?(d.l?'· ':'')+'ещё '+dur(left):'');
-x('e',d.e&&left>0?'готово ≈ '+clock(d.e):'');$('u').className=age>600?'u z':'u';
-x('u',age>600?'нет обновлений '+dur(age):'обновлено '+clock(d.u))}
-function rr(i,f,c){var e=$(i);if(c)e.style.color=c;e.style.background='conic-gradient(currentColor '+f+'%,var(--l) 0)'}
-function tm(k,a){a=a||[0,0,0,210,0];$('t'+k).className='tl'+(a[4]?' hot':'');rr('r'+k,a[2],'hsl('+a[3]+',80%,50%)');x('x'+k,a[0]+'°'+(a[4]?' → '+a[1]+'°':''))}
-function mk(p,t,c,f){var e=el(p,'button',t);e.className=c;if(f)e.onclick=f;else e.disabled=true;return e}
+function S(t,a){var o=document.createElementNS('http://www.w3.org/2000/svg',t);for(var k in a)o.setAttribute(k,a[k]);return o}
+function rr(i,f,c){var e=$(i),s=S('svg',{viewBox:'0 0 36 36'}),o={cx:18,cy:18,r:16,pathLength:100,transform:'rotate(-90 18 18)',style:'stroke:var(--l)'};
+if(c)e.style.color=c;if(e.r)e.removeChild(e.r);s.appendChild(S('circle',o));
+if(f>0){o.style='';o['stroke-dasharray']=f+' 100';o['stroke-linecap']='round';s.appendChild(S('circle',o))}e.insertBefore(e.r=s,e.firstChild)}
+function tm(k,v){var a=v?v.split('|'):[0,0,0,210,0],h=+a[4];$('t'+k).className='tl'+(h?' hot':'');rr('r'+k,+a[2],'hsl('+a[3]+',80%,50%)');x('x'+k,a[0]+'°'+(h?' → '+a[1]+'°':''))}
+function mk(p,t,c,f,n){var e=el(p,'button',t),P=n&&IC[n.slice(0,2)];e.className=c;if(f)e.onclick=f;else e.disabled=true;
+if(P)try{var s=S('svg',{viewBox:'0 0 24 24','class':n});s.appendChild(S('path',{d:P}));e.insertBefore(s,e.firstChild)}catch(r){}
+return e}
+function ic(){if(IC.pa)return;if(busy)return setTimeout(ic,5e3);
+W.request('ic').then(function(r){try{IC=JSON.parse(r.result).ic;try{localStorage.setItem('ic11',JSON.stringify(IC))}catch(e){}show()}catch(e){}},function(){setTimeout(ic,3e4)})}
 function go(q){if(busy)return;busy=1;mnu=0;x('n','Отправляю…');
 W.request(q).then(null,function(){return{result:'{"m":"Не дошло, ещё раз"}'}}).then(function(r){busy=0;try{var a=JSON.parse(r.result);
 ask=a.t?a:null;if(a.sc)sc=a.sc;if(a.close||ask)sc=null;
@@ -159,47 +162,47 @@ function btns(){var a=clr('a'),g=clr('g');g.hidden=!mnu;
 if(!d||!W.request||W.isForward)return;
 if(ask){mk(a,ask.y,'y',function(){go('do:'+ask.a+':'+ask.t)});mk(a,'Отмена','',function(){ask=null;x('n','');show()});return}
 var mn=d.mn||[];
-(d.ab||[]).forEach(function(i){mk(a,i[0],i[2],function(){go(i[1])})});
+(d.ab||[]).forEach(function(i){mk(a,i[0],i[2],function(){go(i[1])},i[3])});
 var t=function(){mnu=!mnu;x('n','');show()};
-if(mn.length)mk(a,'⚙️ Ещё','',t);
-if(mnu){mn.forEach(function(i){mk(g,i[0],'',function(){go('c:'+i[1])})});mk(g,'‹ Назад в главное','y',t)}}
+if(mn.length)mk(a,IC.mo?'Ещё':'⚙️ Ещё','',t,'mo');
+if(mnu){mn.forEach(function(i){mk(g,i[0],'',function(){go('c:'+i[1])},i[2])});mk(g,'‹ Назад в главное','y',t)}}
 function cv(n){return getComputedStyle(document.documentElement).getPropertyValue(n)}
-function fig(g){var c=$('cz'),o=g&&g.s,m=g&&g.m,t,B=328,K=B/63,i,j,f,n,s,a,x,y,w,h,z,u,A='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';c.hidden=!(o||m);if(c.hidden)return;
-c.width=340;t=c.getContext('2d');
-if(m){for(i=0;i<m.h;i++)for(j=0;j<m.w;j++){u=m.z[i*m.w+j]/99;
+function fig(g){var c=$('cz'),o=g&&g.s,m=g&&g.m,t,B=428,K=B/63,i,j,f,n,s,a,x,y,w,h,z,u,A='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';c.hidden=!(o||m);if(c.hidden)return;
+c.width=440;t=c.getContext('2d');
+if(m){for(i=0;i<m.h;i++)for(j=0;j<m.w;j++){u=+m.z.substr(2*(i*m.w+j),2)/99;
 t.fillStyle='hsl('+(u<.5?210:5)+',65%,'+(95-110*Math.abs(u-.5))+'%)';t.fillRect(6+j*B/m.w,6+i*B/m.h,B/m.w+.5,B/m.h+.5)}return}
 f=cv('--tg-theme-text-color');t.globalAlpha=.2;t.strokeStyle=f;t.lineWidth=3;t.strokeRect(6,6,B,B);
-for(n=0;n<o.length;n++){s=+o[n];if(s>2)continue;
+for(n=0;n<o.length;n++){s=+o[n];if(s==3)continue;
 a=g.b.substr(4*n,4).split('').map(function(k){return A.indexOf(k)*K});x=6+a[0];y=6+a[1];w=a[2]-a[0];h=a[3]-a[1];
 t.fillStyle=t.strokeStyle=cv(s==1?'--tg-theme-destructive-text-color':'--tg-theme-button-color');
-t.globalAlpha=s==1?.25:s==2?.85:.12;t.fillRect(x,y,w,h);t.globalAlpha=s==1?.6:1;t.strokeRect(x,y,w,h);
-z=Math.min(30,Math.min(w,h)*.55);
-if(z>=14&&String(n+1).length*z*.6<=w){t.fillStyle=s==2?'#fff':f;t.font='600 '+z+'px sans-serif';
+t.globalAlpha=[.05,.25,.85,0,.4][s];t.fillRect(x,y,w,h);t.globalAlpha=[.35,.6,1,1,1][s];t.strokeRect(x,y,w,h);
+z=Math.min(30,h*.8,w/(.6*String(n+1).length));
+if(z>=20&&(s==2||s==4)){t.fillStyle=s==2?'#fff':f;t.font='600 '+z+'px sans-serif';
 t.textAlign='center';t.textBaseline='middle';t.fillText(n+1,x+w/2,y+h/2)}}}
 function drawScreen(){try{x('vt',sc.t||'');fig(sc.g);var t=clr('vx');(sc.x||[]).forEach(function(s){el(t,'div',s)});
 var k=clr('vk');(sc.k||[]).forEach(function(r){var w=el(k,'div','');
 w.className='rw'+(r.length>2?' wr':'');
-r.forEach(function(b){mk(w,b[0],b[2],b[1]?function(){tap(b[1])}:null)})})}catch(e){er(e)}}
+r.forEach(function(b){mk(w,b[0],b[2],b[1]?function(){tap(b[1])}:null,b[3])})})}catch(e){er(e)}}
 function show(){$('cv').hidden=!!sc;$('v').hidden=!sc;try{if(sc)drawScreen();else btns()}catch(e){er(e)}}
 function draw(){try{d=null;try{d=JSON.parse(W.chatData)}catch(e){}
-var ok=!!(d&&d.v);$('c').hidden=!ok;$('q').hidden=ok;if(!ok)return;
+var ok=!!(d&&d.v);$('c').hidden=!ok;if(!ok)return;
 $('c').className='cd k-'+d.k;x('s',d.s);x('f',d.f||'');
 var p=Math.max(0,Math.min(100,+d.p||0));x('p',Math.floor(p)+'%');
 rr('rg',p);tm('n',d.tn);tm('b',d.tb);
-x('l',d.l||'');var m=clr('m');if(d.ti!=null)el(m,'span','внутри '+d.ti+'°');
-if(!busy)show();tick();
+x('l',d.l||'');var m=clr('m');if(d.ti)el(m,'span',d.ti);
+if(!busy)show();x('t',d.et||'');x('e',d.ef||'');
 if(d.n&&d.n!=ln&&!busy&&!ask){ln=d.n;x('n',d.n)}if(!d.n)ln='';
 if(d.go&&!busy&&W.request&&!W.isForward){var l='';try{l=localStorage.getItem('go')}catch(e){}
 if(l!=d.go){try{localStorage.setItem('go',d.go)}catch(e){}go('pg:'+d.go+':0')}}}catch(e){er(e)}}
 $('bk').onclick=function(){tap('b')};
-if(W){W.onEvent('chatDataChanged',draw);draw();setInterval(tick,15e3);if(W.ready)W.ready()}
+if(W){W.onEvent('chatDataChanged',draw);draw();if(W.ready)W.ready();if(W.request&&!W.isForward)setTimeout(ic,4e3)}
 })();
 </script>"""
 
 # First 12 hex digits of sha256 of HTML. A card that is already in the chat
 # keeps the HTML it was sent with, so any change of HTML must bump VERSION; a
 # test compares this with the real hash and fails until both are updated.
-HTML_SHA = "69194e93aed1"
+HTML_SHA = "32ac1bebdd64"
 
 
 def html_fits(html=HTML):
@@ -253,6 +256,16 @@ def _whole(value):
 NOZZLE_TOP, BED_TOP = 300, 120
 
 
+def _pipe(numbers):
+    """[245, 245, 100, 0, 0] as "245|245|100|0|0".
+
+    Telegram Desktop's widget sandbox reads an ARRAY OF NUMBERS out of chat_data
+    wrongly (the elements come out joined by dots: "слой 20.45 из 45" for
+    [20, 45], "245.245°" for a ring). Arrays of strings and plain numbers are
+    fine. So the card gets numbers in strings, never in lists, anywhere."""
+    return "|".join(str(n) for n in numbers)
+
+
 def heat(cur, target, top):
     """One heating ring's numbers: [current, target, fill %, hue, heating].
 
@@ -269,8 +282,17 @@ def heat(cur, target, top):
 
 
 # What each letter of buttons() is on the card: label, request, style.
-ACTIONS = {PAUSE: ["⏸ Пауза", "ask:pause", ""], RESUME: ["▶️ Дальше", "ask:resume", ""],
-           STOP: ["⏹ Стоп", "ask:stop", "k"], CAMERA: ["📷 Кадр", "snap", ""]}
+ACTIONS = {PAUSE: ["Пауза", "ask:pause", "", "pa"], RESUME: ["Дальше", "ask:resume", "", "re"],
+           STOP: ["Стоп", "ask:stop", "k", "st"], CAMERA: ["Кадр", "snap", "", "ca"]}
+
+
+def _duration(seconds):
+    """"1 ч 20 мин", "2 ч", "5 мин": at least a minute."""
+    minutes = max(1, int(seconds / 60.0 + 0.5))
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return "%d ч %d мин" % (hours, minutes) if minutes else "%d ч" % hours
+    return "%d мин" % minutes
 
 
 def buttons(status, online, allowed, camera):
@@ -296,7 +318,80 @@ def buttons(status, online, allowed, camera):
 ON_THE_CARD = {"refresh", "brief", "ask:pause", "ask:resume", "ask:stop", "snap"}
 
 
-def menu(keyboard):
+# Thin-line icons, 24x24, drawn by the card as <path d=...> with stroke 1.8,
+# round caps and joins, in the text colour. The card's script has no room for
+# them (its code is limited to 4096 bytes and cannot be replaced once sent), so
+# it asks for this table once ("ic") and keeps it. Every button the bot sends
+# carries an icon id as its last field; a client that cannot draw it still has
+# the label, which loses its leading emoji only when an id is attached.
+ICONS = {
+    "pa": "M8 5v14M16 5v14",
+    "re": "M7 4l13 8-13 8z",
+    "st": "M6 6h12v12H6z",
+    "ca": "M3 8h4l2-3h6l2 3h4v11H3zM12 10a3.5 3.5 0 1 0 .01 0",
+    "mo": "M4 7h10M18 7h2M4 17h2M10 17h10M14 5v4M8 15v4",
+    "fi": "M3 6h6l2 2h10v11H3z",
+    "pr": "M7 9V4h10v5M7 17H4v-7h16v7h-3M7 14h10v6H7z",
+    "de": "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13",
+    "cl": "M12 4a8 8 0 1 0 .01 0M12 8v4l3 2",
+    "cu": "M6 6a2.5 2.5 0 1 0 .01 0M6 18a2.5 2.5 0 1 0 .01 0M8 8l12 10M8 16L20 6",
+    "fa": "M12 12C10 7 12 3 15 4s2 5-3 8M12 12c5 0 8 2 7 5s-5 2-7-5M12 12c-2 5-6 6-8 4s1-6 8-4",
+    "sp": "M4 16a8 8 0 1 1 16 0M12 16l4-5",
+    "he": "M12 3c1 4 5 5 5 10a5 5 0 0 1-10 0c0-2 1-3 2-4 0 2 1 3 2 3 1-3 0-6 1-9",
+    "li": "M9 18h6M10 21h4M12 3a6 6 0 0 0-3 11v2h6v-2a6 6 0 0 0-3-11",
+    "be": "M3 17l9-5 9 5-9 5zM3 12l9-5 9 5",
+    "hi": "M4 12a8 8 0 1 0 3-6.2M4 4v4h4M12 8v4l3 2",
+    "ma": "M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M6 18l2.5-2.5M15.5 8.5L18 6",
+    "di": "M3 12h4l2-5 4 10 2-5h6",
+    "hp": "M9 9a3 3 0 1 1 4 2.8c-.7.4-1 1-1 2M12 17h.01",
+    "in": "M12 8h.01M11 12h1v5h1",
+    "bk": "M15 5l-7 7 7 7",
+}
+
+# The icon of a button by the start of its callback_data. The first match
+# wins. The level buttons of the speed, fan and heat screens ("set:...") have
+# none: five icons in a row of short labels would only crowd it.
+ICON_PREFIXES = (
+    ("ask:pause", "pa"), ("ask:resume", "re"), ("ask:stop", "st"), ("snap", "ca"),
+    ("files", "fi"), ("ask:print:", "pr"), ("ask:delete:", "de"), ("ask:delall:", "de"),
+    ("plan", "cl"), ("objects", "cu"), ("ask:exclude:", "cu"),
+    ("menu:fans", "fa"), ("menu:speed", "sp"), ("menu:temp", "he"), ("light", "li"),
+    ("mesh", "be"), ("history", "hi"), ("macros", "ma"), ("ask:macro:", "ma"),
+    ("bedcalib", "ma"), ("diag", "di"), ("help", "hp"), ("details", "in"),
+    ("objgrp:", "cu"),
+)
+
+
+def icon_for(data):
+    """The icon id for a button's callback_data, or "" for none."""
+    data = str(data or "")
+    for prefix, icon in ICON_PREFIXES:
+        if data.startswith(prefix):
+            return icon
+    return ""
+
+
+def plain(label):
+    """``label`` without its leading emoji and spaces, if something is left.
+
+    "Letterlike symbols" (the U+2100 block, where the information sign "ℹ"
+    lives) are letters to Unicode but emoji to a reader: stripped too."""
+    text = str(label)
+    start = 0
+    while start < len(text):
+        ch = text[start]
+        if (ch.isalnum() and not 0x2100 <= ord(ch) <= 0x214F) or ch in "«(\"'":
+            break
+        start += 1
+    return text[start:] or text
+
+
+def icons_answer():
+    """The answer to the card's "ic" request."""
+    return _dump({"ic": ICONS})
+
+
+def menu(keyboard, fans_on=False):
     """The "⚙️ Ещё" items: the usual panel's buttons, minus those on the card.
 
     The panel is built by ui.kb_main from the owner's settings, so a button
@@ -310,7 +405,11 @@ def menu(keyboard):
             # back would be a dead button.
             if (data and data not in ON_THE_CARD
                     and len(("c:" + data).encode("utf-8")) <= QUERY_LIMIT):
-                items.append([str(button.get("text") or ""), data])
+                icon = icon_for(data)
+                if icon == "fa" and fans_on:
+                    icon = "fa1"            # a fan is running: its icon spins
+                label = str(button.get("text") or "")
+                items.append([plain(label), data, icon] if icon else [label, data])
     return items
 
 
@@ -319,7 +418,7 @@ def menu_allows(keyboard, data):
     return any(item[1] == data for item in menu(keyboard))
 
 
-def card(status, online, printer_name, now, keys="", items=None, go="", note=""):
+def card(status, online, printer_name, now, keys="", items=None, go="", note="", tz=None):
     """The widget's state as a dict, or None when there is no status yet.
 
     ``printer_name`` stays in the caption under the card, not on it.
@@ -347,14 +446,18 @@ def card(status, online, printer_name, now, keys="", items=None, go="", note="")
         "l": ("слой %d из %d" % (_whole(info.get("CurrentLayer")), total) if total
               else "" if live else
               "Можно ставить печать" if online else "Переподключаюсь к принтеру"),
-        "tn": heat(status.get("TempOfNozzle"), status.get("TempTargetNozzle"), NOZZLE_TOP),
-        "tb": heat(status.get("TempOfHotbed"), status.get("TempTargetHotbed"), BED_TOP),
-        "r": left, "o": 1 if online else 0, "u": int(now),
+        "tn": _pipe(heat(status.get("TempOfNozzle"), status.get("TempTargetNozzle"), NOZZLE_TOP)),
+        "tb": _pipe(heat(status.get("TempOfHotbed"), status.get("TempTargetHotbed"), BED_TOP)),
+        "o": 1 if online else 0, "u": int(now),
     }
+    # The time left and the finish clock, ready-made: the card's script has no
+    # room for the arithmetic, and a push comes whenever the minute changes.
+    if left > 0:
+        data["et"] = ("· " if data["l"] else "") + "ещё " + _duration(left)
     # Stock SDCP reports the air inside the printer; COSMOS does not, and an
     # empty cell for it only puzzled.
     if status.get("TempOfBox") is not None:
-        data["ti"] = round(float(status.get("TempOfBox") or 0))
+        data["ti"] = "внутри %d°" % round(float(status.get("TempOfBox") or 0))
     if keys:
         data["ab"] = [list(ACTIONS[key]) for key in keys]
     if items:
@@ -365,7 +468,8 @@ def card(status, online, printer_name, now, keys="", items=None, go="", note="")
         data["n"] = note[:120]
     # Only while it prints: on a pause the finish moves with every minute.
     if kind == "p" and online and left > 0:
-        data["e"] = int(now + left)
+        data["ef"] = "готово ≈ " + datetime.datetime.fromtimestamp(
+            now + left, tz).strftime("%H:%M")
     # The speed, when it is not the usual one, rides on the layer line: the
     # card's own script has no room left for a part of its own.
     speed = info.get("PrintSpeedPct")
@@ -405,7 +509,7 @@ def encode(data):
         return text
     items = [list(item) for item in data.get("mn") or []]
     for width in (20, 12):
-        items = [[label[:width], code] for label, code in items]
+        items = [[item[0][:width]] + item[1:] for item in items]
         data["mn"] = items
         text = _dump(data)
         if _small(text):
@@ -449,7 +553,7 @@ def lines(text):
 
 
 def _style(label):
-    if label.startswith("✅"):
+    if label.startswith(("✅", "▶")):
         return "y"
     if label.startswith(("🗑", "⏹")):
         return "k"
@@ -480,7 +584,13 @@ def screen(text, keyboard, title=None, figure=None):
                 code = "c:" + data
             else:
                 code = ""
-            out.append([label, code, _style(label)])
+            icon = "bk" if code == "b" else icon_for(data) if code.startswith("c:") else ""
+            if plain(label).isdigit():
+                icon = ""            # a number button: the digits alone, as narrow as can be
+            style = _style(label)
+            out.append([plain(label), code, style, icon] if icon
+                       else [label, code] if plain(label).isdigit() and not style
+                       else [label, code, style])
         if out:
             rows.append(out)
     out = {"t": head, "x": body, "k": rows}
@@ -540,7 +650,7 @@ LINE_WIDTH = 60
 # The bubble is 600 px at most and clips; a page stays under MAX_HEIGHT_PX at
 # the narrowest bubble, where lines wrap most.
 PAGE_BASE_PX = 118
-FIGURE_PX = 178
+FIGURE_PX = 228
 LINE_PX = 20
 ROW_PX = 44
 MAX_HEIGHT_PX = 560
@@ -567,7 +677,9 @@ def estimate_height(sc, width=320):
     for line in sc.get("x") or ():
         height += LINE_PX * max(1, -(-len(line) // per_line))
     for row in sc.get("k") or ():
-        need = sum(len(b[0]) * 7.5 + 20 for b in row) + 6 * (len(row) - 1)
+        pad = 12 if len(row) > 2 else 20      # a row of many has narrow buttons
+        need = sum(len(b[0]) * 7.5 + pad + (21 if len(b) > 3 else 0) for b in row) \
+            + 6 * (len(row) - 1)
         # a row of three or more wraps; one or two buttons clip their label
         height += ROW_PX * (max(1, int(-(-need // inner))) if len(row) > 2 else 1)
     return height

@@ -77,9 +77,10 @@ def test_printing_card_carries_the_numbers_and_the_finish_time():
     # Ready-made strings: the card draws them as they are.
     assert data["l"] == "слой 12 из 300"
     # Each heater as a ring: [now, target, fill %, hue, heating]; the air inside in whole degrees
-    assert data["tn"] == [210, 210, 100, 6, 0] and data["tb"] == [60, 60, 100, 28, 0]
-    assert data["ti"] == 30 and "m" not in data
-    assert data["r"] == 3000 and data["e"] == int(NOW) + 3000
+    assert data["tn"] == "210|210|100|6|0" and data["tb"] == "60|60|100|28|0"   # strings, never a list
+    assert data["ti"] == "внутри 30°" and "m" not in data
+    # the time left and the finish clock are ready-made strings too
+    assert data["et"] == "· ещё 50 мин" and data["ef"].startswith("готово ≈ ") and "r" not in data
     assert data["f"] == "Benchy_PLA.gcode" and data["u"] == int(NOW)
     assert "sp" not in data and "⚡" not in data["l"]
 
@@ -113,7 +114,7 @@ def test_layer_is_a_finished_string():
 
 def test_heating_shows_the_target():
     st = printing(TempOfNozzle=180, TempTargetNozzle=245)
-    assert widget.card(st, True, "P", NOW)["tn"] == [180, 245, 73, 13, 1]   # 73 % full, pulsing
+    assert widget.card(st, True, "P", NOW)["tn"] == "180|245|73|13|1"   # 73 % full, pulsing
 
 
 def test_no_air_temperature_when_the_printer_has_none():
@@ -178,7 +179,7 @@ def test_unchanged_numbers_are_the_same_content():
     b = widget.card(printing(), True, "P", NOW + 5)
     a["u"], b["u"] = 1, 2
     # The finish time moves with the clock while printing; compare a pause.
-    a.pop("e"), b.pop("e")
+    a.pop("et", None), b.pop("et", None), a.pop("ef"), b.pop("ef")
     assert widget.same_content(a, b)
     assert not widget.same_content(a, dict(b, p=43))
 
@@ -611,10 +612,10 @@ def test_widget_queries_reach_the_handler(card_bot, fake_telegram):
 
 def test_menu_is_the_panel_minus_the_card_buttons(card_bot):
     items = widget.menu(card_bot.keyboard())
-    datas = [d for _, d in items]
+    datas = [item[1] for item in items]
     assert "files" in datas and "help" in datas
     assert not set(datas) & widget.ON_THE_CARD
-    assert card_of(widget.encode(card_bot._card()))["mn"] == items
+    assert card_of(widget.encode(card_bot._card()))["mn"] == widget.menu(card_bot.keyboard(), fans_on=True)
 
 
 def test_nothing_under_the_card(card_bot, fake_telegram):
@@ -702,7 +703,7 @@ def test_screen_converts_buttons():
         [{"text": "сайт", "url": "https://example.org"},
          {"text": "подпись", "callback_data": "noop"}]])
     assert sc["t"] == "Заголовок" and sc["x"] == ["строка & ещё"]
-    assert sc["k"] == [[["✅ Да", "c:do:job:cancel:t", "y"], ["↩️ Отмена", "b", ""]],
+    assert sc["k"] == [[["✅ Да", "c:do:job:cancel:t", "y"], ["Отмена", "b", "", "bk"]],
                        [["сайт", "u:https://example.org", ""], ["подпись", "", ""]]]
 
 

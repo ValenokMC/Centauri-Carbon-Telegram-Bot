@@ -171,7 +171,7 @@ ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 CELLS = 63
 
 
-def figure(names, shapes, excluded=(), current=""):
+def figure(names, shapes, excluded=(), current="", highlight=None):
     """The same picture as data, for the live card to draw on a canvas.
 
     {"b": boxes, "s": states}: for the n-th object of ``names`` (the number
@@ -180,7 +180,10 @@ def figure(names, shapes, excluded=(), current=""):
     counted from the top of the picture (the back wall), the way a canvas
     wants it; and one character in ``s``: "0" still to print, "1" excluded,
     "2" printing now, "3" not drawn (it has no outline: its button still
-    carries the number). A job of 56 objects is about 300 bytes this way, and
+    carries the number), "4" a part of the selected group, "0" any other
+    part still to print (drawn dimmed, without a number). ``highlight`` is the
+    set of names of the selected group; None selects every part still to
+    print. A job of 56 objects is about 300 bytes this way, and
     a screen answer holds 1024. Raises ValueError when no object has an
     outline, like render().
     """
@@ -201,7 +204,9 @@ def figure(names, shapes, excluded=(), current=""):
         x0, x1 = cells(min(p[0] for p in points), max(p[0] for p in points))
         y0, y1 = cells(min(p[1] for p in points), max(p[1] for p in points))
         boxes.append("".join(ALPHABET[v] for v in (x0, CELLS - y1, x1, CELLS - y0)))
-        states.append("1" if name in excluded else "2" if name == current else "0")
+        selected = highlight is None or name in highlight
+        states.append("1" if name in excluded else
+                      ("2" if name == current else "4") if selected else "0")
     if all(state == "3" for state in states):
         raise ValueError("в задании нет контуров объектов")
     return {"b": "".join(boxes), "s": "".join(states)}

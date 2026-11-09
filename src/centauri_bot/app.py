@@ -132,7 +132,8 @@ class Bot(object):
         self.owner_user = str(cfg.get("owner_user_id") or "")
         self.host = cfg["printer_ip"]
         self.backend_name = backend.name(cfg)
-        self.confirmations = backend.ConfirmationStore(clock=clock)
+        # 56 parts of one job are 56 one-use tokens at once, besides the other screens'
+        self.confirmations = backend.ConfirmationStore(clock=clock, limit=256)
         self.moonraker = None
         if self.backend_name == backend.MOONRAKER:
             base_url = cfg.get("moonraker_url") or ("http://%s" % self.host)
@@ -440,11 +441,19 @@ class Bot(object):
 
     def prepare_object_choices(self, values):
         """Bind buttons to an exact object and the current print filename."""
-        return [self.confirmations.issue("exclude-choice", value)
+        # Four characters each: a whole job's buttons share one 1 KB answer
+        return [self.confirmations.issue("exclude-choice", value, size=3)
                 for value in values]
 
     def resolve_object_choice(self, token):
         return self.confirmations.consume("exclude-choice", token)
+
+    def prepare_object_groups(self, labels):
+        """Short tokens for the model groups of the objects screen."""
+        return [self.confirmations.issue("exclude-group", label) for label in labels]
+
+    def resolve_object_group(self, token):
+        return self.confirmations.consume("exclude-group", token)
 
     def issue_object_confirmation(self, value):
         return self.confirmations.issue("exclude-object", value)
@@ -854,8 +863,17 @@ class Bot(object):
                               camera=bool(self.cfg.get("send_photo")))
         return widget.card(status, online,
                            self.cfg.get("printer_name", "Centauri Carbon"), self.clock(),
-                           keys=keys, items=widget.menu(self.keyboard()),
-                           go=self._live_go(), note=self._live_note())
+                           keys=keys, items=widget.menu(self.keyboard(), fans_on=self._fans_on()),
+                           go=self._live_go(), note=self._live_note(),
+                           tz=self.schedule_tz())
+
+    def _fans_on(self):
+        status, _ = self._snapshot()
+        fans = (status or {}).get("CurrentFanSpeed") or {}
+        try:
+            return any(float(value or 0) > 0 for value in fans.values())
+        except (TypeError, ValueError):
+            return False
 
     FOLD_BUTTON = {"text": "▲ Свернуть меню", "callback_data": "refresh"}
 

@@ -59,9 +59,10 @@ def render(points, cell=42):
 def figure(points):
     """The mesh as data for the live card's canvas.
 
-    {"m": {"w": columns, "h": rows, "z": [...]}} with ``z`` the heights as
-    whole numbers 0..99 of the spread between the lowest and the highest
-    point, row by row from the top of the picture. Klipper lists rows from the
+    {"m": {"w": columns, "h": rows, "z": "..."}} with ``z`` the heights as
+    two digits each, 00..99 of the spread between the lowest and the highest
+    point, row by row from the top of the picture, in one string (no list of
+    numbers: see widget._pipe). Klipper lists rows from the
     front edge, so they are turned over exactly as render() does: the door ends
     up at the bottom. The exact millimetres are in the screen's text. Raises
     ValueError for a malformed mesh.
@@ -76,4 +77,5 @@ def figure(points):
     low = min(v for row in rows for v in row)
     spread = (max(v for row in rows for v in row) - low) or 1.0
     return {"m": {"w": cols, "h": len(rows),
-                  "z": [int(round((v - low) / spread * 99)) for row in rows for v in row]}}
+                  "z": "".join("%02d" % int(round((v - low) / spread * 99))
+                               for row in rows for v in row)}}
