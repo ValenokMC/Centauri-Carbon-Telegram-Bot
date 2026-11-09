@@ -667,3 +667,12 @@ def test_script_is_one_closure_and_has_no_global_named_like_a_window_property():
     markup = widget.HTML.split("<script>")[0]
     assert not re.search(r"\son\w+\s*=", markup)
     assert widget.html_fits()
+
+
+def test_html_keeps_a_safety_margin_under_the_sendwidget_limit():
+    """sendWidget refuses code above 4096 bytes after zlib -9, and a card
+    already sent can never be repaired. The hard limit is checked elsewhere;
+    this keeps ~200 bytes of room, so a one-line change cannot push the next
+    release over it."""
+    import zlib
+    assert len(zlib.compress(widget.HTML.encode("utf-8"), 9)) <= 3900
