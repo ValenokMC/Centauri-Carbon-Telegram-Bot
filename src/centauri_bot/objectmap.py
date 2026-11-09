@@ -163,3 +163,33 @@ def render(names, shapes, excluded=(), current=""):
         size = 5 if room >= 60 else 4 if room >= 45 else 3 if room >= 30 else 2
         _badge(canvas, px(centre), str(number), size)
     return canvas.png()
+
+
+def figure(names, shapes, excluded=(), current=""):
+    """The same picture as data, for the live card to draw on a canvas.
+
+    {"o": [[number, x0, y0, x1, y1, state], ...]} with the corners of each
+    object's bounding box in whole units of a hundredth of the bed, y counted
+    from the top of the picture (the back wall), the way a canvas wants it.
+    State 0 is still to print, 1 excluded, 2 printing now. An object without
+    an outline is left out: its button still carries the number.
+    Raises ValueError when no object has one, like render().
+    """
+    excluded = set(excluded or ())
+    out = []
+
+    def unit(value):
+        return max(0, min(100, int(round(value * 100.0 / BED_MM))))
+
+    for number, name in enumerate(names, 1):
+        points = (shapes.get(name) or {}).get("polygon") or ()
+        if len(points) < 3:
+            continue
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        state = 1 if name in excluded else 2 if name == current else 0
+        out.append([number, unit(min(xs)), 100 - unit(max(ys)),
+                    unit(max(xs)), 100 - unit(min(ys)), state])
+    if not out:
+        raise ValueError("в задании нет контуров объектов")
+    return {"o": out}

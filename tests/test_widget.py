@@ -272,9 +272,14 @@ def test_group_chat_gets_the_old_message(live_bot, fake_telegram):
     assert fake_telegram.widgets == [] and len(fake_telegram.sent) == 1
 
 
-def test_other_screens_are_never_a_card(live_bot, fake_telegram):
-    live_bot.refresh_main(force_new=True, text="📂 Файлы")
-    assert fake_telegram.widgets == [] and fake_telegram.texts() == ["📂 Файлы"]
+def test_other_screens_are_the_cards_too(live_bot, fake_telegram):
+    """Card mode: a screen the bot opens by itself is stored, and the card
+    is told to open it ("go"); the caption is the screen's first line."""
+    live_bot.refresh_main(force_new=True, text="📂 Файлы\nстрока")
+    [sent] = fake_telegram.widgets
+    assert fake_telegram.sent == [] and sent["caption"] == "📂 Файлы"
+    tok = card_of(sent["chat_data"])["go"]
+    assert live_bot.get_screen(tok)["x"] == ["строка"]
 
 
 def test_finished_print_replaces_the_card(live_bot, fake_telegram):
@@ -282,9 +287,10 @@ def test_finished_print_replaces_the_card(live_bot, fake_telegram):
     card_mid = storage.message_id()
     live_bot.status = status(9)
     live_bot.refresh_main(force_new=True, text="✅ <b>Печать закончена</b>")
-    assert fake_telegram.texts() == ["✅ <b>Печать закончена</b>"]
+    assert fake_telegram.sent == []                    # the card says it, in its caption
+    assert fake_telegram.widgets[-1]["caption"] == "✅ <b>Печать закончена</b>"
     assert (live_bot.owner, card_mid) in fake_telegram.deleted
-    assert storage.message_kind() is None
+    assert storage.message_kind() == widget.KIND
 
 
 def test_undeletable_card_is_retired_and_emptied(live_bot, fake_telegram):
@@ -515,10 +521,11 @@ def test_stop_on_the_card_asks_then_acts(card_bot, fake_telegram):
     assert len(request.encode("utf-8")) <= widget.QUERY_LIMIT
     handlers.handle_widget_query(card_bot, widget_query(request, qid="wq-2"))
     assert sdcp.CMD_STOP in card_bot.commands
-    assert "остановлена" in last_answer(fake_telegram)["m"]
-    # every query was answered, and the card was brought up to date
+    # the answer comes first and says the command is on its way; the result
+    # is the card's note, written by the follow-up
+    assert "Отправляю" in last_answer(fake_telegram)["m"]
+    assert "остановлена" in card_of(fake_telegram.widget_edits[-1][1])["n"]
     assert [q for q, _ in fake_telegram.widget_answers] == ["wq-1", "wq-2"]
-    assert fake_telegram.widget_edits
 
 
 def test_card_token_is_one_use(card_bot, fake_telegram):
@@ -667,17 +674,14 @@ def test_forged_screen_taps_do_nothing(card_bot, fake_telegram):
     assert fake_telegram.sent == []
 
 
-def test_screen_too_big_for_the_card_is_shown_under_it(card_bot, fake_telegram):
+def test_screen_too_big_for_one_answer_is_paged_never_sent_under_the_card(card_bot, fake_telegram):
     card_bot.refresh_files = lambda: (True, "")
-    card_bot.files = ["/local/%s_%d.gcode" % ("ж" * 40, i) for i in range(8)]
-    import centauri_bot.widget as w
-    real_fit, w.fit = w.fit, lambda sc, note="": None
-    try:
-        handlers.handle_widget_query(card_bot, widget_query("c:files"))
-    finally:
-        w.fit = real_fit
-    assert "под карточкой" in last_answer(fake_telegram)["m"]
-    assert fake_telegram.edited[-1][1] == storage.message_id()
+    card_bot.files = ["/local/ECC_0.2mm_PLA_Bracket_left_v%d_xxx.gcode" % i
+                      for i in range(1, 9)]
+    handlers.handle_widget_query(card_bot, widget_query("c:files"))
+    answer = last_answer(fake_telegram)
+    assert fake_telegram.edited == [] and fake_telegram.sent == []
+    assert "sc" in answer and "под карточкой" not in json.dumps(answer, ensure_ascii=False)
 
 
 def test_fit_keeps_answers_within_1kb():

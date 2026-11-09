@@ -496,6 +496,15 @@ def kb_fans(current, draft=None):
     return rows
 
 
+def short_name(name, width):
+    """A name cut to ``width`` characters in the middle: the end of a file name
+    (the print time, the version) is what tells two files apart."""
+    if len(name) <= width:
+        return name
+    tail = min(14, width // 2)
+    return name[:width - 1 - tail] + "…" + name[-tail:]
+
+
 def kb_files(files, allow_control=True, limit=8, can_start=None, refs=None,
              can_delete=False, delete_refs=None, delete_all_ref=None):
     rows = []
@@ -504,13 +513,13 @@ def kb_files(files, allow_control=True, limit=8, can_start=None, refs=None,
         for i, path in enumerate(files[:limit]):
             base = path.rsplit("/", 1)[-1]
             ref = refs[i] if refs and i < len(refs) else str(i)
-            rows.append([{"text": "🖨 %s" % base[:38],
+            rows.append([{"text": "🖨 %s" % short_name(base, 38),
                           "callback_data": "ask:print:%s" % ref}])
     if can_delete:
         for i, path in enumerate(files[:limit]):
             base = path.rsplit("/", 1)[-1]
             ref = delete_refs[i] if delete_refs and i < len(delete_refs) else str(i)
-            rows.append([{"text": "🗑 Удалить %s" % base[:29],
+            rows.append([{"text": "🗑 Удалить %s" % short_name(base, 29),
                           "callback_data": "ask:delete:%s" % ref}])
         if delete_all_ref and len(files) > 1:
             rows.append([{"text": "🗑 Удалить все файлы (%d)" % len(files),
@@ -519,11 +528,15 @@ def kb_files(files, allow_control=True, limit=8, can_start=None, refs=None,
     return rows
 
 
-def objects_text(state):
+def objects_text(state, compact=False):
     names = list(state.get("Objects") or [])
     excluded = set(state.get("ExcludedObjects") or [])
     current = state.get("CurrentObject") or ""
     active = [name for name in names if name not in excluded]
+    if compact:
+        # On the live card the drawing and the numbered buttons say the rest.
+        return ("<b>✂️ Убрать объект</b>\nОсталось %d из %d"
+                % (len(active), len(names)))
     lines = ["<b>✂️ Объекты текущей печати</b>",
              "Осталось: %d из %d" % (len(active), len(names))]
     labels = object_labels(names)
@@ -614,10 +627,16 @@ def kb_back():
     return [[{"text": "↩️ Назад к статусу", "callback_data": "refresh"}]]
 
 
-def height_map_text(mesh):
+def height_map_text(mesh, compact=False):
     points = mesh.get("points") or []
     values = [float(value) for row in points for value in row]
     low, high = min(values), max(values)
+    if compact:
+        return ("<b>🗺 Карта высот стола</b>\n"
+                "%s · %d×%d точек\n"
+                "мин %.3f · макс %.3f · разброс %.3f мм"
+                % (html.escape(str(mesh.get("profile") or "—")), len(points),
+                   len(points[0]) if points else 0, low, high, high - low))
     return ("<b>🗺 Карта высот стола</b>\n"
             "Профиль: <code>%s</code> · %d×%d точек\n"
             "Минимум: %.3f мм · максимум: %.3f мм\n"

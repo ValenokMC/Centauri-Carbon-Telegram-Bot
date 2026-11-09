@@ -54,3 +54,26 @@ def render(points, cell=42):
                    for y in range(height))
     return (b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
             + _chunk(b"IDAT", zlib.compress(raw, 9)) + _chunk(b"IEND", b""))
+
+
+def figure(points):
+    """The mesh as data for the live card's canvas.
+
+    {"m": {"w": columns, "h": rows, "z": [...], "lo": min mm, "hi": max mm}}
+    with ``z`` the heights in whole micrometres above ``lo``, row by row from
+    the top of the picture. Klipper lists rows from the front edge, so they
+    are turned over exactly as render() does: the door ends up at the bottom.
+    Raises ValueError for a malformed mesh.
+    """
+    rows = [[float(value) for value in row] for row in (points or [])]
+    if not rows or not rows[0] or len(rows) > 30 or len(rows[0]) > 30:
+        raise ValueError("пустая или слишком большая сетка")
+    cols = len(rows[0])
+    if any(len(row) != cols for row in rows):
+        raise ValueError("неровная сетка")
+    rows = rows[::-1]
+    low = min(v for row in rows for v in row)
+    high = max(v for row in rows for v in row)
+    return {"m": {"w": cols, "h": len(rows),
+                  "z": [int(round((v - low) * 1000)) for row in rows for v in row],
+                  "lo": round(low, 3), "hi": round(high, 3)}}

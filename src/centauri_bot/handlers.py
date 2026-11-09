@@ -102,10 +102,32 @@ def show_files(bot, chat, mid=None, is_photo=False, force_new=False):
         bot.api.send_message(chat, body, keyboard=rows)
 
 
-def _show_readonly(bot, chat, mid, is_photo, force_new, text, keyboard, photo=None):
+def _figures(bot, force_new):
+    """Draw a screen's picture on the card's canvas instead of sending a PNG.
+
+    That is so in card mode when the screen goes to the card: a tap on it, or
+    a screen the bot opens by itself (``force_new``). A stale inline button on
+    an older message still gets the picture."""
+    return bot._widget_wanted() and (bot.capturing() is not None or force_new)
+
+
+def _frame(bot, on_card, max_age=5):
+    """A camera frame for an edit, unless the card will discard it: a tap on
+    the card never shows one, and fetching it costs a round trip."""
+    if on_card or bot.capturing() is not None:
+        return None
+    return bot.grab(max_age=max_age)
+
+
+def _show_readonly(bot, chat, mid, is_photo, force_new, text, keyboard, photo=None,
+                   figure=None):
     if force_new:
-        bot.refresh_main(force_new=True, text=text, keyboard=keyboard, photo=photo)
+        bot.refresh_main(force_new=True, text=text, keyboard=keyboard, photo=photo,
+                         figure=figure)
     elif mid:
+        cap = bot.capturing()
+        if cap is not None:
+            cap.figure = figure
         # ``picture``: the photo is the screen itself (bed map, objects), not
         # a camera frame, so it must be shown even if that replaces the card.
         bot.edit_main_from_callback(mid, text, keyboard=keyboard, photo=photo,
@@ -126,12 +148,18 @@ def show_mesh(bot, chat, mid=None, is_photo=False, force_new=False):
         _show_readonly(bot, chat, mid, is_photo, force_new,
                        "⚠️ Карту стола получить не вышло: %s" % result, ui.kb_back())
         return
+    photo = figure = None
     try:
-        photo = heightmap.render(result["points"])
-        text = ui.height_map_text(result)
+        if _figures(bot, force_new):
+            figure = heightmap.figure(result["points"])
+            text = ui.height_map_text(result, compact=True)
+        else:
+            photo = heightmap.render(result["points"])
+            text = ui.height_map_text(result)
     except (KeyError, TypeError, ValueError) as e:
-        photo, text = None, "⚠️ Сохранённая сетка стола некорректна: %s" % e
-    _show_readonly(bot, chat, mid, is_photo, force_new, text, ui.kb_back(), photo=photo)
+        photo, figure, text = None, None, "⚠️ Сохранённая сетка стола некорректна: %s" % e
+    _show_readonly(bot, chat, mid, is_photo, force_new, text, ui.kb_back(), photo=photo,
+                   figure=figure)
 
 
 def show_macros(bot, chat, mid=None, is_photo=False, force_new=False):
@@ -174,7 +202,7 @@ def show_objects(bot, chat, mid=None, is_photo=False, force_new=False):
     names = list(state.get("Objects") or [])
     excluded = set(state.get("ExcludedObjects") or [])
     active = [name for name in names if name not in excluded]
-    photo = None
+    photo = figure = None
     if state.get("PrintState") not in ("printing", "paused"):
         text = "✂️ Сейчас нет активной печати с отдельными объектами."
         rows = ui.kb_back()
@@ -187,20 +215,26 @@ def show_objects(bot, chat, mid=None, is_photo=False, force_new=False):
         values = [{"name": name, "filename": state.get("Filename") or "",
                    "label": labels[name]} for name in active]
         refs = bot.prepare_object_choices(values)
+        on_card = _figures(bot, force_new)
         try:
-            photo = objectmap.render(names, state.get("Shapes") or {},
-                                     excluded, state.get("CurrentObject") or "")
+            if on_card:
+                figure = objectmap.figure(names, state.get("Shapes") or {},
+                                          excluded, state.get("CurrentObject") or "")
+            else:
+                photo = objectmap.render(names, state.get("Shapes") or {},
+                                         excluded, state.get("CurrentObject") or "")
         except (KeyError, TypeError, ValueError) as e:
             log.info("object map not drawn: %s", e)
             state = dict(state, Shapes={})
-        text = ui.objects_text(state)
+        text = ui.objects_text(state, compact=on_card)
         if photo and len(text) > CAPTION_LIMIT:
             # A caption holds 1024 characters; the buttons carry the names anyway.
             text = ("<b>✂️ Объекты текущей печати</b>\nОсталось: %d из %d\n\n"
                     "Номера на кнопках — те же, что на схеме стола."
                     % (len(active), len(names)))
         rows = ui.kb_objects(active, refs, state.get("CurrentObject") or "", names)
-    _show_readonly(bot, chat, mid, is_photo, force_new, text, rows, photo=photo)
+    _show_readonly(bot, chat, mid, is_photo, force_new, text, rows, photo=photo,
+                   figure=figure)
 
 
 def handle_callback(bot, query):
@@ -279,7 +313,7 @@ def handle_callback(bot, query):
         bot.edit_main_from_callback(
             mid, bot.render(detailed=detailed, compact=compact),
             keyboard=bot.card_keyboard() if compact else bot.keyboard(detailed),
-            photo=bot.grab(max_age=5), is_photo=is_photo)
+            photo=_frame(bot, on_card), is_photo=is_photo)
         return
 
     if data == "files":
@@ -384,7 +418,7 @@ def handle_callback(bot, query):
             bot.fan_draft = None
         bot.api.answer_callback(query["id"])
         bot.api.edit_message(chat, mid, bot.render(), keyboard=bot.keyboard(),
-                             photo=bot.grab(max_age=5))
+                             photo=_frame(bot, _is_widget(query.get("message", {}))))
         return
 
     if data == "fans:apply":
@@ -731,7 +765,10 @@ def _do_action(bot, chat, mid, query, what):
                  backend.TEMPERATURE: "🌡 Нагрев", backend.FANS: "🌀 Вентиляторы"}
         note = "%s: команда принята.\n\n" % names[action] if ok else "⚠️ Команда не принялась (%s).\n\n" % info
     bot.api.answer_callback(query["id"], note or "Готово")
-    time.sleep(SETTLE_AFTER_ACTION_SEC)
+    # A tap on the card is waiting for its answer, and the card redraws itself
+    # from the printer's next status: no pause for it.
+    if bot.capturing() is None:
+        time.sleep(SETTLE_AFTER_ACTION_SEC)
     # Answering the same callback twice is refused by Telegram with "query is
     # too old or invalid", which used to fill the log.
     # Print, schedule and delete confirmations are separate messages. Editing
@@ -741,7 +778,7 @@ def _do_action(bot, chat, mid, query, what):
     on_card = _is_widget(message)
     bot.edit_main_from_callback(mid, bot.render(note, compact=on_card),
                                 keyboard=bot.card_keyboard() if on_card else bot.keyboard(),
-                                photo=bot.grab(max_age=5),
+                                photo=_frame(bot, on_card),
                                 is_photo=_has_caption(message))
 
 
@@ -771,13 +808,20 @@ def handle_widget_query(bot, query):
     the bot issued, and the bot re-checks that the action is allowed.
     """
     from . import widget
+    started = time.monotonic()
     qid = query.get("id")
     data = str(query.get("data") or "")
     chat = str((query.get("chat") or {}).get("id") or "")
     sender = (query.get("from") or {}).get("id")
+    tap = _tap_name(data)
+
+    def raw(text):
+        bot.api.answer_widget_query(qid, text)
+        log.info("card tap %s answered in %d ms", tap, (time.monotonic() - started) * 1000)
 
     def reply(**fields):
-        bot.api.answer_widget_query(qid, widget.answer(**fields))
+        raw(widget.answer(**fields))
+    reply.raw = raw
 
     if not _is_owner(bot, chat, sender):
         reply(m="Этот бот личный.")
@@ -804,12 +848,26 @@ def handle_widget_query(bot, query):
                 or not bot.consume_action_confirmation(action, token)):
             reply(m="Подтверждение устарело. Нажми кнопку ещё раз.")
             return
-        ok, info = bot.perform(action)
-        done, failed = CARD_DONE[action]
-        reply(m=done if ok else "⚠️ %s (%s)" % (failed, info))
-        # The card's own state is redrawn by the bot, never by the answer.
-        time.sleep(SETTLE_AFTER_ACTION_SEC)
-        bot.refresh_main()
+        # The token is spent and the action checked: answer now. The command,
+        # the pause for the printer to react and the redraw take seconds, and
+        # the next tap must not wait for them; the result comes back as the
+        # card's note.
+        reply(m="⏳ Отправляю команду…")
+        bot.defer(lambda: _finish_card_action(bot, action))
+        return
+
+    if data.startswith("pg:"):
+        parts = data.split(":", 2)
+        sc = bot.get_screen(parts[1]) if len(parts) == 3 and parts[2].isdigit() else None
+        if sc is None:
+            reply(m="Экран устарел, открой заново")
+            return
+        pages = widget.paginate(sc, parts[1])
+        if not pages:
+            reply(m="Экран не поместился")
+            return
+        raw(pages[min(int(parts[2]), len(pages) - 1)])
+        bot.serve_go(parts[1])
         return
 
     if data.startswith(("c:", "open:")):
@@ -820,13 +878,35 @@ def handle_widget_query(bot, query):
         if not bot.cfg.get("send_photo"):
             reply(m="Камера выключена в настройках.")
             return
-        # Answer first: grabbing a frame through the tunnel can take seconds.
+        # Answer first: grabbing a frame over the network can take seconds.
+        # A failure is reported on the card, not as a message of its own.
         reply(m="📷 Снимаю — кадр придёт ниже")
-        if not bot.send_snapshot():
-            bot.api.send_message(chat, "📷 Кадр получить не вышло.")
+        bot.defer(lambda: _send_frame(bot))
         return
 
     reply(m="Неизвестная кнопка.")
+
+
+def _tap_name(data):
+    """What a tap is, for the log: its kind, never a token or a file name."""
+    head = data[2:] if data.startswith("c:") else data
+    name = ("c:" if data.startswith("c:") else "") + head.split(":", 1)[0]
+    return "".join(ch for ch in name if ch.isalnum() or ch in ":_-")[:20]
+
+
+def _finish_card_action(bot, action):
+    """What follows the answer to a confirmed pause, resume or stop."""
+    ok, info = bot.perform(action)
+    done, failed = CARD_DONE[action]
+    bot.set_note(done if ok else "⚠️ %s (%s)" % (failed, info))
+    time.sleep(SETTLE_AFTER_ACTION_SEC)
+    bot.refresh_main()
+
+
+def _send_frame(bot):
+    if not bot.send_snapshot():
+        bot.set_note("📷 Кадр получить не вышло")
+        bot.push_now()
 
 
 # Submenus whose text is only the status the card already shows: the card
@@ -845,8 +925,8 @@ def _card_screen(bot, query, target, reply):
     it has; what it would have put on the message comes back to the card as
     a screen. The data is untrusted like any callback_data, and the handler
     treats it so: tokens, permissions and the owner were never the button's
-    business. A screen too big for the 1 KB answer is shown the old way,
-    under the card.
+    business. A screen too big for the 1 KB answer is cut into pages that
+    the card turns through; nothing is ever sent under the card.
     """
     from . import widget
     # The tracked card, whichever card was tapped: the capture watches that
@@ -858,26 +938,31 @@ def _card_screen(bot, query, target, reply):
                         "widget": {}}}
     cap = bot.run_screen(lambda: handle_callback(bot, fake))
     note = (cap.toast or "")[:200]
+    # The usual panel was built once during the tap; ask again only if the
+    # handler never did.
+    panel = cap.panel.get(False)
+    if panel is None and cap.keyboard:
+        panel = bot.keyboard()
 
     # Back to the card: the handler redrew the status, or a screen with no
     # buttons of its own (an action's result), or the usual panel again.
-    if cap.close or cap.text is None or not cap.keyboard \
-            or cap.keyboard == bot.keyboard():
+    if cap.close or cap.text is None or not cap.keyboard or cap.keyboard == panel:
         if not note and cap.text:
             note = " ".join(widget.lines(cap.text)[:2])[:200]
         reply(close=1, m=note)
-        return
-
-    title = next((t for prefix, t in SCREEN_TITLES if target.startswith(prefix)), None)
-    fitted = widget.fit(widget.screen(cap.text, cap.keyboard, title=title), note)
-    if fitted:
-        bot.api.answer_widget_query(query.get("id"), fitted)
-        return
-    reply(m="Экран большой — открыл его под карточкой")
-    answer = bot.api.edit_message(bot.owner, cap.mid, cap.text,
-                                  keyboard=cap.keyboard, is_photo=True)
-    if not answer.get("ok"):
-        bot.refresh_main(force_new=True, text=cap.text, keyboard=cap.keyboard)
+    else:
+        title = next((t for prefix, t in SCREEN_TITLES if target.startswith(prefix)), None)
+        sc = widget.screen(cap.text, cap.keyboard, title=title, figure=cap.figure)
+        pages = widget.paginate(sc, lambda: bot.store_screen(sc), note)
+        if pages:
+            reply.raw(pages[0])
+        else:
+            reply(m="Экран не поместился")
+    # After the answer, never before it: bring the card's numbers up to date.
+    try:
+        bot.push_widget()
+    except Exception as e:
+        log.debug("card not pushed after a tap: %r", e)
 
 
 # ------------------------------------------------------------------ messages
@@ -909,7 +994,13 @@ def handle_message(bot, message):
     # Whatever the bot answers, the status with its buttons goes out last, so
     # it is always at the bottom under the thumb and needs no scrolling.
     if text.startswith("/snap"):
-        bot.api.send_message(chat, "📷 " + time.strftime("%H:%M:%S"), photo=bot.grab())
+        shot = bot.grab()
+        if bot._widget_wanted():
+            # a picture slot beside the card, replaced by the next one
+            if shot:
+                bot.post_picture(shot, "📷 " + time.strftime("%H:%M"))
+        else:
+            bot.api.send_message(chat, "📷 " + time.strftime("%H:%M:%S"), photo=shot)
     elif text.startswith("/files"):
         show_files(bot, chat, force_new=True)
         return
@@ -918,7 +1009,11 @@ def handle_message(bot, message):
         return
     elif text.startswith("/diag") or text.startswith("/diagnostics"):
         ok, result = bot.diagnostics()
-        bot.api.send_message(chat, ui.diagnostics_text(result) if ok else "⚠️ Диагностика не прошла: %s" % result)
+        body = ui.diagnostics_text(result) if ok else "⚠️ Диагностика не прошла: %s" % result
+        if bot._widget_wanted():
+            bot.refresh_main(force_new=True, text=body, keyboard=ui.kb_back())
+            return
+        bot.api.send_message(chat, body)
     elif text.startswith("/mesh"):
         show_mesh(bot, chat, force_new=True)
         return
@@ -932,6 +1027,16 @@ def handle_message(bot, message):
         body, keyboard = ui.help_screen(
             bot.cfg.get("allow_control", True), allowed=bot.allowed_actions(),
             can_schedule=bot.schedule_available())
+        if bot._widget_wanted():
+            # one screen: the help, and the monthly note under it if it is due
+            note = bot.maybe_support_note()
+            if note:
+                from . import support
+                body += "\n\n" + note.strip()
+                keyboard = list(keyboard or []) + support.reminder_keyboard()
+            if bot.refresh_main(force_new=True, text=body, keyboard=keyboard) and note:
+                bot.confirm_support_note_shown()
+            return
         bot.api.send_message(chat, body, keyboard=keyboard)
         _maybe_help_reminder(bot, chat)
         return
@@ -1124,13 +1229,18 @@ def _maybe_schedule_text(bot, chat, text):
     at, error = schedule.parse_when(text, bot.clock(), bot.schedule_tz())
     if error:
         # Stay in the same message; the owner is clearly mid-way through this.
-        bot.api.edit_message(chat, draft["mid"],
-                             ui.schedule_custom_text(draft["path"], schedule.HINT, error),
-                             keyboard=ui.kb_cancel(), is_photo=draft.get("is_photo"))
+        retry = ui.schedule_custom_text(draft["path"], schedule.HINT, error)
+        if bot._widget_wanted():
+            bot.refresh_main(text=retry, keyboard=ui.kb_cancel())
+        else:
+            bot.api.edit_message(chat, draft["mid"], retry,
+                                 keyboard=ui.kb_cancel(), is_photo=draft.get("is_photo"))
         return True
     with bot.lock:
         bot.schedule_draft = None
-    bot.api.delete_message(chat, draft["mid"])
+    # The card is the message that asked; it is replaced below, not deleted.
+    if not (bot._widget_wanted() and draft["mid"] == storage.message_id()):
+        bot.api.delete_message(chat, draft["mid"])
     body, keyboard = _schedule_confirmation(bot, draft["path"], at)
     bot.refresh_main(force_new=True, text=body, keyboard=keyboard)
     return True

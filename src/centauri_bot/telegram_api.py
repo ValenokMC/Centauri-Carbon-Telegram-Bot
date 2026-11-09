@@ -5,6 +5,7 @@ The token appears in exactly one place — the request path — and never in a l
 line, an exception message, or a printed URL. `TelegramError` carries the API
 description, not the request.
 """
+import collections
 import http.client
 import json
 import logging
@@ -38,11 +39,27 @@ class TelegramAPI:
         self._token = token
         self._timeout = timeout
         self._tls = threading.local()
+        # Calls made since the last take_counts(), by method: the bot logs
+        # them every few minutes to show what a card costs in requests.
+        self._counts = collections.Counter()
+        self._counts_lock = threading.Lock()
+
+    def take_counts(self):
+        with self._counts_lock:
+            counts, self._counts = self._counts, collections.Counter()
+        return counts
 
     # -- connection ------------------------------------------------------
 
-    def _conn(self, reset=False):
+    # A connection idle for longer than this is probably dead on the far side
+    # (a NAT or the server dropped it) and would only fail after its timeout.
+    IDLE_RECONNECT_SEC = 30
+
+    def _conn(self, reset=False, timeout=None):
         conn = getattr(self._tls, "conn", None)
+        idle = time.monotonic() - getattr(self._tls, "last_used", 0.0)
+        if conn is not None and idle > self.IDLE_RECONNECT_SEC:
+            reset = True
         if reset and conn is not None:
             try:
                 conn.close()
@@ -53,6 +70,12 @@ class TelegramAPI:
             conn = http.client.HTTPSConnection(
                 API_HOST, timeout=self._timeout, context=ssl.create_default_context())
             self._tls.conn = conn
+        # The timeout is per request: a hung call must not hold the caller,
+        # and the locks it may hold, for the client's default minute.
+        if timeout:
+            conn.timeout = timeout
+            if conn.sock is not None:
+                conn.sock.settimeout(timeout)
         return conn
 
     def close(self):
@@ -66,13 +89,17 @@ class TelegramAPI:
 
     # -- raw call --------------------------------------------------------
 
-    def call(self, method, params=None, files=None, timeout=30):
+    def call(self, method, params=None, files=None, timeout=10):
         """Invoke a Bot API method. files: {name: (filename, bytes)}.
 
         Returns the decoded response dict. Never raises for an API-level
         refusal — callers check ``ok`` — but logs the description.
         """
         path = "/bot%s/%s" % (self._token, method)
+        with self._counts_lock:
+            self._counts[method] += 1
+        if files:
+            timeout = max(timeout, 30)     # a picture takes longer to upload
         params = {k: v for k, v in (params or {}).items() if v is not None}
         body, ctype = self._encode(params, files)
         headers = {"Content-Type": ctype, "Content-Length": str(len(body)),
@@ -83,9 +110,10 @@ class TelegramAPI:
         # exactly as long as Telegram asks before trying again.
         for attempt in (1, 2, 3):
             try:
-                conn = self._conn(reset=(attempt == 2))
+                conn = self._conn(reset=(attempt == 2), timeout=timeout)
                 conn.request("POST", path, body=body, headers=headers)
                 raw = conn.getresponse().read()
+                self._tls.last_used = time.monotonic()
                 answer = json.loads(raw.decode("utf-8"))
                 if answer.get("ok"):
                     return answer

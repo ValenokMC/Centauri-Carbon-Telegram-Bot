@@ -36,7 +36,7 @@ import zlib
 from . import printer_state as ps
 
 
-VERSION = 5
+VERSION = 6
 
 # storage.message_kind() of a card sent with this very HTML. A sent widget's
 # HTML can never be replaced, so a card from an older version is not ours to
@@ -74,13 +74,18 @@ PAUSE, RESUME, STOP, CAMERA = "P", "R", "S", "C"
 #      taken from the very keyboard the bot would put under a message, so
 #      the owner's permissions decide here exactly as there
 #   u  when the bot wrote this, epoch seconds
+#   go a stored screen the bot wants shown now (a command's answer, the
+#      printer's own dialog...): the card asks for it by itself, once
+#   n  a short note that outlives the tap that caused it ("Пауза поставлена",
+#      "Кадр получить не вышло"): the answer to a tap comes before the work
 #
 # The card's state classes are "p", "w" and "x": no other rule may use those
 # names, or it restyles the whole card (the big percentage once did).
 
 HTML = r"""<style>
-:root{--g:light-dark(rgba(0,0,0,.05),rgba(255,255,255,.07));--l:light-dark(rgba(0,0,0,.09),rgba(255,255,255,.13));--ac:var(--tg-theme-button-color)}
-body{margin:0;padding:8px}
+:root{--g:light-dark(rgba(0,0,0,.05),rgba(255,255,255,.07));--l:light-dark(rgba(0,0,0,.12),rgba(255,255,255,.14));--b:light-dark(rgba(255,255,255,.7),rgba(255,255,255,.1));--ac:var(--tg-theme-button-color)}
+[hidden]{display:none!important}
+body{margin:0;padding:8px;color:var(--tg-theme-text-color)}
 .cd{border-radius:18px;padding:12px;border:1px solid var(--l);background:linear-gradient(140deg,light-dark(rgba(60,120,255,.12),rgba(90,150,255,.2)),light-dark(rgba(255,255,255,.45),rgba(255,255,255,.03)) 65%)}
 .k-w{--ac:#e5a50a}.k-x{--ac:var(--tg-theme-destructive-text-color)}.k-i{--ac:var(--tg-theme-hint-color)}
 .top{display:flex;gap:12px;align-items:center}
@@ -97,13 +102,15 @@ body{margin:0;padding:8px}
 .cp span{padding:4px 10px;border-radius:99px;background:var(--g);border:1px solid var(--l);font-size:.85em;font-variant-numeric:tabular-nums}
 .a,.rw{display:flex;gap:6px;margin-top:8px}.a button,.rw button{flex:1}
 .g{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}
-button{background:var(--g);border:1px solid var(--l);color:inherit;border-radius:12px;padding:9px 6px;font:inherit;font-size:.9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+button{background:var(--b);border:1px solid var(--l);color:inherit;border-radius:12px;padding:9px 6px;font:inherit;font-size:.9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 button:active{background:var(--l)}
+.pg button{flex:1;padding:6px}.pg button:disabled{flex:2;padding:6px;background:none}
+#cz{width:100%;height:auto;display:block;margin-top:8px;border-radius:12px;background:var(--g)}
 button.k{color:var(--tg-theme-destructive-text-color)}
 button.y{background:var(--tg-theme-button-color);color:var(--tg-theme-button-text-color);border-color:transparent}
 button:disabled{color:var(--tg-theme-hint-color);background:none;border-color:transparent;padding:4px 6px 0}
 .hd{display:flex;align-items:center;gap:8px}.hd button{flex:none;padding:6px 12px}
-.hd b{font-size:1.08em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hd b{flex:1;min-width:0;font-size:1.08em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tx{margin-top:8px;font-size:.92em;line-height:1.4}.tx div{min-height:.6em}
 .n{font-size:.84em;margin-top:6px}.u{font-size:.75em;margin-top:6px;text-align:right}
 .z{color:var(--tg-theme-destructive-text-color)}
@@ -112,11 +119,11 @@ button:disabled{color:var(--tg-theme-hint-color);background:none;border-color:tr
 <div class=mn><div class=s><i class=dt></i><span id=s></span></div><div class=f id=f></div>
 <div class=l><span id=l></span> <span id=t></span></div><div class=h id=e></div></div></div>
 <div class=cp id=m></div><div class=a id=a></div><div class=g id=g hidden></div></div>
-<div id=v hidden><div class=hd><button id=bk>‹ Назад</button><b id=vt></b></div><div class=tx id=vx></div><div id=vk></div></div>
+<div id=v hidden><div class=hd><button id=bk>‹ Назад</button><b id=vt></b></div><canvas id=cz width=480 height=480 hidden></canvas><div class=tx id=vx></div><div id=vk></div></div>
 <div class=n id=n></div><div class=u id=u></div></div>
 <p id=q hidden>⬇️ Статус — ниже</p>
 <script>
-var W=window.TelegramWidget,d=null,ask=null,busy=0,menu=0,sc=null;
+var W=window.TelegramWidget,d=null,ask=null,busy=0,menu=0,sc=null,ln='';
 function $(i){return document.getElementById(i)}
 function x(i,v){$(i).textContent=v}
 function clr(i){var a=$(i);while(a.firstChild)a.removeChild(a.firstChild);return a}
@@ -130,8 +137,11 @@ x('e',d.e&&left>0?'готово ≈ '+clock(d.e):'');
 var age=now-d.u;$('u').className=age>600?'u z':'u';
 x('u',(d.sp?'скорость '+d.sp+'% · ':'')+(age>600?'нет обновлений '+dur(age):'обновлено '+clock(d.u)))}
 function mk(p,t,c,f){var e=el(p,'button',t);if(c)e.className=c;if(f)e.onclick=f;else e.disabled=true;return e}
+function pj(v){for(var i=0;i<2&&typeof v=='string';i++){try{v=JSON.parse(v)}catch(e){return{m:v}}}return v&&typeof v=='object'?v:{}}
 function go(q){if(busy)return;busy=1;menu=0;x('n','Отправляю…');
-W.request(q).then(function(r){busy=0;var a=null;try{a=JSON.parse(r.result)}catch(e){}a=a||{};
+W.request(q).then(function(r){busy=0;var o=typeof r=='object'&&r,v=o&&('result' in o)?o.result:r,a=pj(v);
+if(typeof a.sc=='string')a.sc=pj(a.sc);
+if(a.sc&&!a.sc.t&&!(a.sc.k&&a.sc.k.length)){a.m='пустой экран: '+typeof r+'/'+typeof(o&&o.result)+'/'+String(v).length+'/'+Object.keys(a.sc).join();a.sc=null}
 ask=a.t?a:null;if(a.sc)sc=a.sc;if(a.close||ask)sc=null;
 x('n',ask?ask.q:a.m||'');show()},
 function(e){busy=0;ask=null;x('n',e&&e.code=='RATE_LIMITED'?'Слишком часто, подожди немного':'Не дошло до бота, попробуй ещё раз');show()})}
@@ -147,8 +157,24 @@ if(b.indexOf('S')>=0)mk(a,'⏹ Стоп','k',function(){go('ask:stop')});
 if(b.indexOf('C')>=0)mk(a,'📷 Кадр','',function(){go('snap')});
 if(mn.length)mk(a,menu?'✕ Скрыть':'⚙️ Ещё','',function(){menu=!menu;x('n','');show()});
 if(menu)mn.forEach(function(i){mk(g,i[0],'',function(){go('c:'+i[1])})})}
-function screen(){x('vt',sc.t||'');var t=clr('vx');(sc.x||[]).forEach(function(s){el(t,'div',s)});
-var k=clr('vk');(sc.k||[]).forEach(function(r){var w=el(k,'div','');w.className='rw';
+function cv(n,f){try{return getComputedStyle(document.documentElement).getPropertyValue(n).trim()||f}catch(e){return f}}
+function fig(g){var c=$('cz'),o=g&&g.o,m=g&&g.m;c.hidden=!(o||m);if(c.hidden)return;
+var S=c.width,t=c.getContext('2d'),fg=cv('--tg-theme-text-color','#888'),ac=cv('--tg-theme-button-color','#3390ec'),
+rd=cv('--tg-theme-destructive-text-color','#e53935'),P=6,B=S-2*P,i,j;t.clearRect(0,0,S,S);t.globalAlpha=1;
+if(m){var r=Math.max(1,(m.hi-m.lo)*1e3),cw=B/m.w,ch=B/m.h;
+for(i=0;i<m.h;i++)for(j=0;j<m.w;j++){var q=m.z[i*m.w+j]/r,u=q<.5?2*q:2*q-1,a=q<.5?[35,104,180]:[244,244,244],b=q<.5?[244,244,244]:[197,57,47];
+t.fillStyle='rgb('+[0,1,2].map(function(k){return Math.round(a[k]+(b[k]-a[k])*u)}).join()+')';
+t.fillRect(P+j*cw+.5,P+i*ch+.5,cw-1,ch-1)}return}
+t.globalAlpha=.2;t.strokeStyle=fg;t.lineWidth=3;t.strokeRect(P,P,B,B);t.lineWidth=1;
+for(i=1;i<8;i++){t.beginPath();t.moveTo(P+B*i/8,P);t.lineTo(P+B*i/8,P+B);t.moveTo(P,P+B*i/8);t.lineTo(P+B,P+B*i/8);t.stroke()}
+o.forEach(function(v){var x=P+v[1]*B/100,y=P+v[2]*B/100,w=(v[3]-v[1])*B/100,h=(v[4]-v[2])*B/100,s=v[5],c=s==1?rd:ac;
+t.globalAlpha=s==1?.25:s==2?.85:.12;t.fillStyle=c;t.fillRect(x,y,w,h);
+t.globalAlpha=s==1?.6:1;t.strokeStyle=c;t.lineWidth=3;t.strokeRect(x,y,w,h);
+t.fillStyle=s==2?'#fff':fg;t.font='600 '+Math.max(18,Math.min(44,Math.min(w,h)*.5))+'px sans-serif';
+t.textAlign='center';t.textBaseline='middle';t.fillText(v[0],x+w/2,y+h/2)})}
+function screen(){x('vt',sc.t||'');fig(sc.g);var t=clr('vx');(sc.x||[]).forEach(function(s){el(t,'div',s)});
+var k=clr('vk');(sc.k||[]).forEach(function(r){var w=el(k,'div','');
+w.className='rw'+(r.some(function(b){return /^pg:/.test(b[1])})?' pg':'');
 r.forEach(function(b){mk(w,b[0],b[2],b[1]?function(){tap(b[1])}:null)})})}
 function show(){$('cv').hidden=!!sc;$('v').hidden=!sc;if(sc)screen();else keys()}
 function draw(){d=null;try{d=JSON.parse(W.chatData)}catch(e){}
@@ -157,7 +183,10 @@ $('c').className='cd k-'+d.k;x('s',d.s);x('f',d.f||'');
 var p=Math.max(0,Math.min(100,+d.p||0));x('p',Math.floor(p)+'%');
 $('rg').style.background='conic-gradient(var(--ac) '+p+'%,var(--l) 0)';
 x('l',d.l||'');var m=clr('m');(d.m||'').split(' · ').forEach(function(s){if(s)el(m,'span',s)});
-if(!busy)show();tick()}
+if(!busy)show();tick();
+if(d.n&&d.n!=ln&&!busy&&!ask){ln=d.n;x('n',d.n)}if(!d.n)ln='';
+if(d.go&&!busy&&W.request&&!W.isForward){var l='';try{l=localStorage.getItem('go')}catch(e){}
+if(l!=d.go){try{localStorage.setItem('go',d.go)}catch(e){}go('pg:'+d.go+':0')}}}
 $('bk').onclick=function(){sc=null;x('n','');show()};
 if(W){W.onEvent('chatDataChanged',draw);draw();setInterval(tick,15e3);if(W.ready)W.ready()}
 </script>"""
@@ -249,7 +278,10 @@ def menu(keyboard):
     for row in keyboard or []:
         for button in row:
             data = button.get("callback_data")
-            if data and data not in ON_THE_CARD:
+            # The same limit a request has: an item that could not be sent
+            # back would be a dead button.
+            if (data and data not in ON_THE_CARD
+                    and len(("c:" + data).encode("utf-8")) <= QUERY_LIMIT):
                 items.append([str(button.get("text") or ""), data])
     return items
 
@@ -259,7 +291,7 @@ def menu_allows(keyboard, data):
     return any(item[1] == data for item in menu(keyboard))
 
 
-def card(status, online, printer_name, now, keys="", items=None):
+def card(status, online, printer_name, now, keys="", items=None, go="", note=""):
     """The widget's state as a dict, or None when there is no status yet.
 
     ``printer_name`` stays in the caption under the card, not on it.
@@ -299,6 +331,10 @@ def card(status, online, printer_name, now, keys="", items=None):
     }
     if items:
         data["mn"] = items
+    if go:
+        data["go"] = go
+    if note:
+        data["n"] = note[:120]
     # Only while it prints: on a pause the finish moves with every minute.
     if kind == "p" and online and left > 0:
         data["e"] = int(now + left)
@@ -308,18 +344,50 @@ def card(status, online, printer_name, now, keys="", items=None):
     return data
 
 
+def _dump(data):
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+
+
+def _small(text):
+    return len(text.encode("utf-8")) <= DATA_LIMIT
+
+
 def encode(data):
-    """chat_data text within 1024 bytes. A long file name is cut, then dropped."""
+    """chat_data text within 1024 bytes, always.
+
+    What gives way, in order: a long file name is cut, then dropped; then the
+    note; then the menu loses long labels, then items from its end, then goes
+    entirely. The numbers and buttons of the print itself are never touched.
+    """
     if data is None:
         return ""
     data = dict(data)
+    name = data.get("f", "")
     for cut in (None, 60, 24, 0):
         if cut is not None:
-            data["f"] = data["f"][:cut] + ("…" if cut and len(data["f"]) > cut else "")
-        text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-        if len(text.encode("utf-8")) <= DATA_LIMIT:
+            data["f"] = name[:cut] + ("…" if cut and len(name) > cut else "")
+        text = _dump(data)
+        if _small(text):
             return text
-    return text   # without the file name the rest is short: well under the limit
+    data.pop("n", None)
+    text = _dump(data)
+    if _small(text):
+        return text
+    items = [list(item) for item in data.get("mn") or []]
+    for width in (20, 12):
+        items = [[label[:width], code] for label, code in items]
+        data["mn"] = items
+        text = _dump(data)
+        if _small(text):
+            return text
+    while items:
+        items.pop()
+        data["mn"] = items
+        text = _dump(data)
+        if _small(text):
+            return text
+    data.pop("mn", None)
+    return _dump(data)
 
 
 # ------------------------------------------------------------ screens on the card
@@ -358,9 +426,11 @@ def _style(label):
     return ""
 
 
-def screen(text, keyboard, title=None):
+def screen(text, keyboard, title=None, figure=None):
     """A bot screen as the card draws it. ``title`` replaces the text, for
-    the submenus whose text is only the status the card already shows."""
+    the submenus whose text is only the status the card already shows.
+    ``figure`` is a drawing for the card's canvas (objectmap.figure,
+    heightmap.figure), put under the key "g"."""
     body = lines(text)
     if title:
         head, body = title, []
@@ -383,7 +453,10 @@ def screen(text, keyboard, title=None):
             out.append([label, code, _style(label)])
         if out:
             rows.append(out)
-    return {"t": head, "x": body, "k": rows}
+    out = {"t": head, "x": body, "k": rows}
+    if figure:
+        out["g"] = figure
+    return out
 
 
 def fit(sc, note=""):
@@ -410,8 +483,124 @@ def fit(sc, note=""):
         for row in sc["k"]:
             for b in row:
                 if len(b[0]) > width:
-                    b[0] = b[0][:width - 1] + "…"
+                    b[0] = middle(b[0], width)
     return dump() if fits() else None
+
+
+# ------------------------------------------------------------------ pages
+#
+# A screen that does not fit one answer is cut into pages, never into a worse
+# screen: every button keeps its full label (sixteen file buttons shortened to
+# twelve letters all read alike), and a "‹ 2/3 ›" row moves between pages.
+# The bot keeps the whole screen for a while under a short token; a page is
+# asked for with "pg:<token>:<n>", and the screen is cut again on every request.
+
+SCREEN_TTL_SEC = 600
+SCREENS_KEPT = 16
+FIGURE_ON_EVERY_PAGE = 320     # bytes: a drawing this small is repeated on each page
+
+
+def nav_row(tok, n, total):
+    """[‹] n/N [›]; no arrow where there is no page to go to."""
+    row = []
+    if n > 0:
+        row.append(["‹", "pg:%s:%d" % (tok, n - 1), ""])
+    row.append(["%d/%d" % (n + 1, total), "", ""])
+    if n < total - 1:
+        row.append(["›", "pg:%s:%d" % (tok, n + 1), ""])
+    return row
+
+
+def _answer_text(sc, note=""):
+    return _dump({"sc": sc, "m": note} if note else {"sc": sc})
+
+
+def middle(label, width):
+    """``label`` cut to ``width`` characters in the middle, so that the end,
+    which tells similar names apart, stays."""
+    if len(label) <= width:
+        return label
+    tail = width // 3
+    return label[:width - 1 - tail] + "…" + label[-tail:]
+
+
+def _tighter(kind, unit):
+    """Ever shorter forms of one line or button row, for a unit that does not
+    fit a page on its own."""
+    if kind == "x":
+        for width in (100, 60, 30):
+            yield unit[:width]
+    else:
+        for width in (40, 28, 18):
+            yield [[middle(b[0], width)] + list(b[1:]) for b in unit]
+
+
+def paginate(sc, tok, note=""):
+    """The answers for ``sc``: one string per page, each within 1024 bytes.
+
+    ``tok`` is the token the bot stores the screen under, or a function
+    that does so; it is only asked for when more than one page is needed.
+    An empty list means nothing could be fitted.
+    """
+    sc = dict(sc)
+    sc["t"] = sc["t"][:80]
+    sc["x"] = [line[:140] for line in sc["x"]]
+    sc["k"] = [[list(b) for b in row] for row in sc["k"]]
+    figure = sc.pop("g", None)
+    whole = dict(sc, g=figure) if figure else sc
+    one = _answer_text(whole, note)
+    if _small_answer(one):
+        return [one]
+    tok = tok() if callable(tok) else tok
+    on_every = bool(figure) and len(_dump(figure)) <= FIGURE_ON_EVERY_PAGE
+    worst = nav_row(tok, 10, 99)      # the longest nav row any page can have
+
+    def build(x, k, first):
+        page = {"t": sc["t"], "x": x, "k": k + [worst]}
+        if figure and (first or on_every):
+            page["g"] = figure
+        return page
+
+    def fits(x, k, first):
+        return _small_answer(_answer_text(build(x, k, first), note if first else ""))
+
+    if figure and not fits([], [], True):
+        figure, on_every = None, False       # the drawing alone is too big
+    units = [("x", line) for line in sc["x"]] + [("k", row) for row in sc["k"]]
+    pages = [([], [])]
+    for kind, unit in units:
+        for form in [unit] + list(_tighter(kind, unit)):
+            x, k = pages[-1]
+            first = len(pages) == 1
+            trial = (x + [form], k) if kind == "x" else (x, k + [form])
+            if fits(trial[0], trial[1], first):
+                pages[-1] = trial
+                break
+            if x or k:
+                # this page is full: the unit goes on a fresh one
+                pages.append(([], []))
+                x, k = pages[-1]
+                trial = (x + [form], k) if kind == "x" else (x, k + [form])
+                if fits(trial[0], trial[1], False):
+                    pages[-1] = trial
+                    break
+        # a unit that fits no page even in its tightest form is dropped
+    pages = [p for p in pages if p[0] or p[1]] or [([], [])]
+    out = []
+    for n, (x, k) in enumerate(pages):
+        rows = k + ([nav_row(tok, n, len(pages))] if len(pages) > 1 else [])
+        page = {"t": sc["t"], "x": x, "k": rows}
+        if figure and (n == 0 or on_every):
+            page["g"] = figure
+        text = _answer_text(page, note if n == 0 else "")
+        if not _small_answer(text):
+            return []
+        out.append(text)
+    return out
+
+
+def _small_answer(text):
+    return len(text.encode("utf-8")) <= ANSWER_LIMIT
 
 
 def answer(**fields):
