@@ -39,7 +39,7 @@ from . import printer_state as ps
 
 log = logging.getLogger(__name__)
 
-VERSION = 8
+VERSION = 9
 
 # storage.message_kind() of a card sent with this very HTML. A sent widget's
 # HTML can never be replaced, so a card from an older version is not ours to
@@ -105,7 +105,7 @@ body{font-variant-numeric:tabular-nums;margin:0;padding:8px;color:var(--tg-theme
 .cp{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
 .cp span{padding:4px 10px;border-radius:99px;background:var(--g);border:1px solid var(--l);font-size:.85em}
 .a,.rw{gap:6px;margin-top:8px}.a button,.rw button{flex:1}
-.g{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}
+.g{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}.g .y{grid-column:1/-1}
 .f,.hd b,button{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 button{background:var(--b);border:1px solid var(--l);color:inherit;border-radius:12px;padding:9px 6px;font:inherit;font-size:.9em;min-width:0}
 button:active{background:var(--l)}
@@ -144,10 +144,9 @@ x('t',left>0?(d.l?'· ':'')+'ещё '+dur(left):'');
 x('e',d.e&&left>0?'готово ≈ '+clock(d.e):'');$('u').className=age>600?'u z':'u';
 x('u',(d.sp?'скорость '+d.sp+'% · ':'')+(age>600?'нет обновлений '+dur(age):'обновлено '+clock(d.u)))}
 function mk(p,t,c,f){var e=el(p,'button',t);e.className=c;if(f)e.onclick=f;else e.disabled=true;return e}
-function pj(v){for(var i=0;i<2&&typeof v=='string';i++){try{v=JSON.parse(v)}catch(e){return{m:v}}}return v&&typeof v=='object'?v:{}}
+function pj(v){if(typeof v=='string')try{v=JSON.parse(v)}catch(e){return{m:v}}return v&&typeof v=='object'?v:{}}
 function go(q){if(busy)return;busy=1;mnu=0;x('n','Отправляю…');
-W.request(q).then(null,function(e){return{result:{m:e&&e.code=='RATE_LIMITED'?'Слишком часто, подожди':'Не дошло до бота, ещё раз'}}}).then(function(r){busy=0;try{var o=typeof r=='object'&&r,v=o&&('result' in o)?o.result:r,a=pj(v);
-if(typeof a.sc=='string')a.sc=pj(a.sc);
+W.request(q).then(null,function(e){return{result:{m:e&&e.code=='RATE_LIMITED'?'Слишком часто':'Не дошло, ещё раз'}}}).then(function(r){busy=0;try{var o=typeof r=='object'&&r,v=o&&('result' in o)?o.result:r,a=pj(v);
 ask=a.t?a:null;if(a.sc)sc=a.sc;if(a.close||ask)sc=null;
 x('n',ask?ask.q:a.m||'');show()}catch(e){er(e)}})}
 function tap(c){if(c=='b'){sc=null;x('n','');show()}else if(c.slice(0,2)=='u:'){var u=c.slice(2);
@@ -157,8 +156,9 @@ if(!d||!W.request||W.isForward)return;
 if(ask){mk(a,ask.y,'y',function(){go('do:'+ask.a+':'+ask.t)});mk(a,'Отмена','',function(){ask=null;x('n','');show()});return}
 var b=d.b||'',mn=d.mn||[];
 [['P','⏸ Пауза','','ask:pause'],['R','▶️ Дальше','','ask:resume'],['S','⏹ Стоп','k','ask:stop'],['C','📷 Кадр','','snap']].forEach(function(i){if(b.indexOf(i[0])>=0)mk(a,i[1],i[2],function(){go(i[3])})});
-if(mn.length)mk(a,mnu?'✕ Скрыть':'⚙️ Ещё','',function(){mnu=!mnu;x('n','');show()});
-if(mnu)mn.forEach(function(i){mk(g,i[0],'',function(){go('c:'+i[1])})})}
+var t=function(){mnu=!mnu;x('n','');show()};
+if(mn.length)mk(a,'⚙️ Ещё','',t);
+if(mnu){mn.forEach(function(i){mk(g,i[0],'',function(){go('c:'+i[1])})});mk(g,'‹ Назад в главное','y',t)}}
 function cv(n){return getComputedStyle(document.documentElement).getPropertyValue(n)}
 function fig(g){var c=$('cz'),o=g&&g.s,m=g&&g.m,t,B=468,K=B/63,i,j,q,f,n,s,a,x,y,w,h,z,A='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';c.hidden=!(o||m);if(c.hidden)return;
 c.width=480;t=c.getContext('2d');
@@ -195,7 +195,7 @@ if(W){W.onEvent('chatDataChanged',draw);draw();setInterval(tick,15e3);if(W.ready
 # First 12 hex digits of sha256 of HTML. A card that is already in the chat
 # keeps the HTML it was sent with, so any change of HTML must bump VERSION; a
 # test compares this with the real hash and fails until both are updated.
-HTML_SHA = "0f2434a21058"
+HTML_SHA = "55af97a7d236"
 
 
 def html_fits(html=HTML):

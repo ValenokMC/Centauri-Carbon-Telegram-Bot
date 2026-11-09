@@ -658,7 +658,7 @@ def test_widget_reads_an_answer_whatever_shape_it_arrives_in():
     """The card parses defensively (a string, a string inside a string, an
     object) and says what it got when a screen comes in empty."""
     html = widget.HTML
-    assert "pj(" in html and "typeof a.sc=='string'" in html
+    assert "pj(" in html and "JSON.parse(v)" in html
     assert "пустой экран" not in html                      # the temporary diagnostic is gone
     assert "<canvas" in html and "pg:" in html and "localStorage" in html
     assert widget.html_fits()
@@ -808,7 +808,7 @@ def test_html_changes_must_come_with_a_new_version():
     import hashlib
     digest = hashlib.sha256(widget.HTML.encode("utf-8")).hexdigest()[:12]
     assert digest == widget.HTML_SHA, "HTML changed: bump VERSION and update HTML_SHA"
-    assert widget.KIND == "widget-%d" % widget.VERSION == "widget-8"
+    assert widget.KIND == "widget-%d" % widget.VERSION == "widget-9"
 
 
 # ------------------------------------------------------------ round 6
@@ -1048,3 +1048,14 @@ def test_a_jump_on_the_last_layer_freezes_before_95_percent(frame_bot):
     frame_bot.capture_print_frame(90, moon_status(80, 10.0, task="job-9", layer=5, total_layer=0))
     frame_bot.capture_print_frame(90, other)
     assert not frame_bot.frame_frozen
+
+
+def test_the_open_menu_ends_with_a_full_width_way_back():
+    """"⚙️ Ещё" stays what it is while the menu is open; the way back is its own
+    prominent full-width button, last in the grid."""
+    html = widget.HTML
+    assert "✕ Скрыть" not in html
+    assert "mk(a,'⚙️ Ещё','',t)" in html                     # the toggle's label never changes
+    assert "mk(g,'‹ Назад в главное','y',t)" in html          # the same handler closes the menu
+    assert html.index("mn.forEach(function(i){mk(g") < html.index("'‹ Назад в главное'")
+    assert ".g .y{grid-column:1/-1}" in html                 # across both columns, accent fill
