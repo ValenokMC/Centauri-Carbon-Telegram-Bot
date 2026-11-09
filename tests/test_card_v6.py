@@ -1006,3 +1006,45 @@ def test_stock_printer_behaviour_is_unchanged(frame_bot):
     step(frame_bot, status(13, "part.gcode", progress=100, CurrenCoord="0,0,45"), 15)
     assert not frame_bot.frame_frozen and frame_bot.z_max is None
     assert frame_bot.print_frame == frame_bot.taken[-1] == b"\xff\xd8C"
+
+
+def test_a_lift_in_the_middle_of_a_print_does_not_freeze_the_frame(frame_bot):
+    step(frame_bot, moon_status(30, 10.0))                      # frame A
+    step(frame_bot, moon_status(40, 40.0))                      # filament change: +30 mm
+    assert not frame_bot.frame_frozen and frame_bot.z_max == 10.0   # nor a raised threshold
+    step(frame_bot, moon_status(41, 10.2))                      # back to printing: frame B
+    step(frame_bot, moon_status(98, 10.4))                      # frame C
+    step(frame_bot, moon_status(100, 40.4), 15)                 # the real drop
+    step(frame_bot, moon_status(100, 40.4, code=9), 15)
+    # frames kept refreshing through the lift; the finish one is the late, pre-drop frame
+    assert len(frame_bot.taken) == 4
+    assert finish_picture(frame_bot) == frame_bot.taken[-1] == frame_bot.frames[3]
+
+
+def test_a_pause_park_is_ignored_for_z(frame_bot):
+    step(frame_bot, moon_status(40, 10.0))
+    step(frame_bot, moon_status(40, 60.0, code=6))              # paused, parked high
+    assert frame_bot.z_max == 10.0 and not frame_bot.frame_frozen
+    # (a paused status never even reaches the frame capture, and if one did:)
+    frame_bot.capture_print_frame(96, moon_status(96, 60.0, code=6))
+    assert not frame_bot.frame_frozen
+
+
+def test_a_jump_at_96_percent_freezes(frame_bot):
+    step(frame_bot, moon_status(90, 10.0))
+    step(frame_bot, moon_status(96, 40.0))
+    assert frame_bot.frame_frozen
+    n = len(frame_bot.taken)
+    step(frame_bot, moon_status(97, 40.0), 15)
+    assert len(frame_bot.taken) == n
+
+
+def test_a_jump_on_the_last_layer_freezes_before_95_percent(frame_bot):
+    step(frame_bot, moon_status(80, 10.0, layer=299, total_layer=300))
+    step(frame_bot, moon_status(90, 40.0, layer=300, total_layer=300))
+    assert frame_bot.frame_frozen
+    # an unknown layer count never makes "the last layer"
+    other = moon_status(90, 40.0, layer=5, total_layer=0, task="job-9")
+    frame_bot.capture_print_frame(90, moon_status(80, 10.0, task="job-9", layer=5, total_layer=0))
+    frame_bot.capture_print_frame(90, other)
+    assert not frame_bot.frame_frozen

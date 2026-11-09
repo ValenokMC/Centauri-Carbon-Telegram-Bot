@@ -35,6 +35,13 @@ from .telegram_api import TelegramAPI
 log = logging.getLogger(__name__)
 
 
+def _whole_number(value):
+    try:
+        return int(float(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 class ScreenCapture(object):
     """What one handler would have shown, taken instead of shown."""
 
@@ -616,8 +623,9 @@ class Bot(object):
         the bed goes down, and every later frame would replace the good one.
         The toolhead's Z (it grows as the bed goes down on this printer) tells
         when that starts: a jump of BED_DROP_MM over the highest Z seen, or
-        100 %, freezes the frame until the job changes. The jump itself is
-        not counted into the highest Z. The stock printer reports its finish
+        100 %, freezes the frame until the job changes, but a jump counts only near
+        the end (95 % or the last layer). The jump itself is never counted into
+        the highest Z. The stock printer reports its finish
         code before the bed moves, so its behaviour is the old one.
 
         Cost: a grab is about 0.3 s over the network and runs on the printer
@@ -638,13 +646,22 @@ class Bot(object):
                     z = float(coord.get("Z")) if isinstance(coord, dict) else None
                 except (TypeError, ValueError):
                     z = None
-                if progress >= 100:
+                total = _whole_number(info.get("TotalLayer"))
+                near_end = progress >= 95 or (
+                    total > 0 and _whole_number(info.get("CurrentLayer")) >= total)
+                if info.get("Status") != ps.STATUS_PRINTING:
+                    pass            # paused or parking: the toolhead is not the print's
+                elif progress >= 100:
                     self.frame_frozen = True
                 elif z is not None:
                     if self.z_max is None:
                         self.z_max = z
                     elif z > self.z_max + self.BED_DROP_MM:
-                        self.frame_frozen = True
+                        # Only the end of the job counts as the bed dropping: a
+                        # lift in the middle (filament change, a park, a
+                        # purge) neither freezes nor raises the threshold.
+                        if near_end:
+                            self.frame_frozen = True
                     else:
                         self.z_max = max(self.z_max, z)
             # Frozen with nothing kept yet would leave the finish without a picture.
