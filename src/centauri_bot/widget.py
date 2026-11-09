@@ -30,13 +30,16 @@ Telegram refuses it. That is app.py, which falls back to the ordinary message.
 """
 import html as _html
 import json
+import logging
 import re
 import zlib
 
 from . import printer_state as ps
 
 
-VERSION = 6
+log = logging.getLogger(__name__)
+
+VERSION = 7
 
 # storage.message_kind() of a card sent with this very HTML. A sent widget's
 # HTML can never be replaced, so a card from an older version is not ours to
@@ -144,7 +147,6 @@ function pj(v){for(var i=0;i<2&&typeof v=='string';i++){try{v=JSON.parse(v)}catc
 function go(q){if(busy)return;busy=1;mnu=0;x('n','Отправляю…');
 W.request(q).then(null,function(e){return{result:{m:e&&e.code=='RATE_LIMITED'?'Слишком часто, подожди':'Не дошло до бота, ещё раз'}}}).then(function(r){busy=0;try{var o=typeof r=='object'&&r,v=o&&('result' in o)?o.result:r,a=pj(v);
 if(typeof a.sc=='string')a.sc=pj(a.sc);
-if(a.sc&&!a.sc.t&&!(a.sc.k&&a.sc.k.length)){a.m='пустой экран: '+typeof r+'/'+typeof(o&&o.result)+'/'+Object.keys(a.sc);a.sc=null}
 ask=a.t?a:null;if(a.sc)sc=a.sc;if(a.close||ask)sc=null;
 x('n',ask?ask.q:a.m||'');show()}catch(e){er(e)}})}
 function tap(c){if(c=='b'){sc=null;x('n','');show()}else if(c.slice(0,2)=='u:'){var u=c.slice(2);
@@ -157,17 +159,18 @@ var b=d.b||'',mn=d.mn||[];
 if(mn.length)mk(a,mnu?'✕ Скрыть':'⚙️ Ещё','',function(){mnu=!mnu;x('n','');show()});
 if(mnu)mn.forEach(function(i){mk(g,i[0],'',function(){go('c:'+i[1])})})}
 function cv(n){return getComputedStyle(document.documentElement).getPropertyValue(n)}
-function fig(g){var c=$('cz'),o=g&&g.o,m=g&&g.m,t,B=468,K=4.68,i,j,q,f;c.hidden=!(o||m);if(c.hidden)return;
+function fig(g){var c=$('cz'),o=g&&g.s,m=g&&g.m,t,B=468,K=B/63,i,j,q,f,n,s,a,x,y,w,h,z,A='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';c.hidden=!(o||m);if(c.hidden)return;
 c.width=480;t=c.getContext('2d');
 if(m){for(i=0;i<m.h;i++)for(j=0;j<m.w;j++){q=m.z[i*m.w+j]/Math.max(1,(m.hi-m.lo)*1e3);
 t.fillStyle='hsl('+(q<.5?210:5)+',65%,'+(95-110*Math.abs(q-.5))+'%)';t.fillRect(6+j*B/m.w,6+i*B/m.h,B/m.w+.5,B/m.h+.5)}return}
 f=cv('--tg-theme-text-color');t.globalAlpha=.2;t.strokeStyle=f;t.lineWidth=3;t.strokeRect(6,6,B,B);
 for(i=1;i<8;i++){j=6+B*i/8;t.moveTo(j,6);t.lineTo(j,474);t.moveTo(6,j);t.lineTo(474,j)}t.stroke();
-o.forEach(function(v){var x=6+v[1]*K,y=6+v[2]*K,w=(v[3]-v[1])*K,h=(v[4]-v[2])*K,s=v[5];
+for(n=0;n<o.length;n++){s=+o[n];if(s>2)continue;
+a=g.b.substr(4*n,4).split('').map(function(k){return A.indexOf(k)*K});x=6+a[0];y=6+a[1];w=a[2]-a[0];h=a[3]-a[1];
 t.fillStyle=t.strokeStyle=cv(s==1?'--tg-theme-destructive-text-color':'--tg-theme-button-color');
 t.globalAlpha=s==1?.25:s==2?.85:.12;t.fillRect(x,y,w,h);t.globalAlpha=s==1?.6:1;t.strokeRect(x,y,w,h);
-t.fillStyle=s==2?'#fff':f;t.font='600 '+Math.max(18,Math.min(44,Math.min(w,h)*.5))+'px sans-serif';
-t.textAlign='center';t.textBaseline='middle';t.fillText(v[0],x+w/2,y+h/2)})}
+z=Math.min(44,Math.min(w,h)*.5);if(z>=10){t.fillStyle=s==2?'#fff':f;t.font='600 '+z+'px sans-serif';
+t.textAlign='center';t.textBaseline='middle';t.fillText(n+1,x+w/2,y+h/2)}}}
 function drawScreen(){try{x('vt',sc.t||'');fig(sc.g);var t=clr('vx');(sc.x||[]).forEach(function(s){el(t,'div',s)});
 var k=clr('vk');(sc.k||[]).forEach(function(r){var w=el(k,'div','');
 w.className='rw';
@@ -188,6 +191,11 @@ $('bk').onclick=function(){tap('b')};
 if(W){W.onEvent('chatDataChanged',draw);draw();setInterval(tick,15e3);if(W.ready)W.ready()}
 })();
 </script>"""
+
+# First 12 hex digits of sha256 of HTML. A card that is already in the chat
+# keeps the HTML it was sent with, so any change of HTML must bump VERSION; a
+# test compares this with the real hash and fails until both are updated.
+HTML_SHA = "9e0f4f1e4e97"
 
 
 def html_fits(html=HTML):
@@ -502,7 +510,17 @@ SCREENS_KEPT = 16
 MAX_LINES = 8
 MAX_ROWS = 9
 LINE_WIDTH = 60
-FIGURE_ON_EVERY_PAGE = 320     # bytes: a drawing this small is repeated on each page
+FIGURE_ON_EVERY_PAGE = 150     # bytes: only a drawing this small is repeated on each page
+
+
+def thin_figure(figure):
+    """The objects drawing without the excluded objects (state "1"), cut at
+    the last object that is still drawn. None if it holds no states."""
+    states = figure.get("s") if isinstance(figure, dict) else None
+    if not states:
+        return None
+    thin = states.replace("1", "3").rstrip("3")
+    return {"b": figure["b"][:4 * len(thin)], "s": thin} if thin else None
 
 
 def nav_row(tok, n, total):
@@ -575,8 +593,14 @@ def paginate(sc, tok, note=""):
             return False
         return _small_answer(_answer_text(build(x, k, first)))
 
-    if figure and not fits([], [], True):
-        figure, on_every = None, False       # the drawing alone is too big
+    if figure and not fits([], sc["k"][:1], True):
+        # No room for the drawing and one button: try it without the objects
+        # that are already gone, and only then give it up, loudly.
+        thin = thin_figure(figure)
+        figure = thin if thin and fits([], sc["k"][:1], True) else None
+        if figure is None:
+            log.info("screen drawing dropped: it does not fit an answer")
+        on_every = bool(figure) and len(_dump(figure)) <= FIGURE_ON_EVERY_PAGE
     units = [("x", line) for line in sc["x"]] + [("k", row) for row in sc["k"]]
     pages = [([], [])]
     for kind, unit in units:

@@ -76,6 +76,10 @@ class FakeMoonraker(object):
     def file_metadata(self, path):
         return {}
 
+    def set_light(self, on):
+        # the finish notice may switch the light off at night, whatever the hour of the test
+        self.calls["light"] += 1
+
 
 @pytest.fixture
 def mr_bot(card_bot):                                                  # noqa: F811
@@ -223,18 +227,39 @@ def test_kb_files_labels_keep_the_end_of_the_name():
 
 # ------------------------------------------------------------ 1b / 1c: figures
 
+def decode(fig):
+    """What the card's script does with the compact figure: (number, x0, y0,
+    x1, y1, state) in 4 mm cells, skipping what is not drawn."""
+    out = []
+    for n, state in enumerate(fig["s"]):
+        if state == "3":
+            continue
+        cells = [objectmap.ALPHABET.index(c) for c in fig["b"][4 * n:4 * n + 4]]
+        out.append((n + 1, *cells, int(state)))
+    return out
+
+
 def test_objects_figure_coordinates_and_states():
     names = ["A", "B", "C"]
     shapes = {"A": {"polygon": [(10, 10), (60, 10), (60, 60), (10, 60)]},
               "B": {"polygon": [(100, 100), (150, 100), (150, 150), (100, 150)]}}
     fig = objectmap.figure(names, shapes, excluded=["B"], current="A")
-    # numbers as on the buttons; y from the top (the back wall); no shape, not drawn
-    assert fig == {"o": [[1, 4, 77, 23, 96, 2], [2, 39, 41, 59, 61, 1]]}
-    assert objectmap.figure(["A"], {"A": shapes["A"]}, current="")["o"][0][5] == 0
+    assert fig["s"] == "213"                   # printing, excluded, not drawn
+    assert len(fig["b"]) == 4 * len(names)
+    # 4 mm cells (63 over the bed), y from the top (the back wall)
+    assert decode(fig) == [(1, 2, 48, 15, 61, 2), (2, 24, 26, 37, 39, 1)]
+    assert decode(objectmap.figure(["A"], {"A": shapes["A"]}))[0][-1] == 0
     far = {"A": {"polygon": [(-20, -5), (400, -5), (400, 400)]}}
-    assert objectmap.figure(["A"], far)["o"] == [[1, 0, 0, 100, 100, 0]]
+    assert decode(objectmap.figure(["A"], far)) == [(1, 0, 0, 63, 63, 0)]
+    tiny = {"A": {"polygon": [(100, 100), (101, 100), (101, 101)]}}
+    [(_, x0, y0, x1, y1, _)] = decode(objectmap.figure(["A"], tiny))
+    assert x1 > x0 and y1 > y0                             # never an empty box
     with pytest.raises(ValueError):
         objectmap.figure(["A"], {})
+
+
+def test_widget_alphabet_is_the_bots_alphabet():
+    assert "'%s'" % objectmap.ALPHABET in widget.HTML
 
 
 def test_objects_on_the_card_are_drawn_not_sent_as_a_picture(mr_bot, fake_telegram):
@@ -242,7 +267,7 @@ def test_objects_on_the_card_are_drawn_not_sent_as_a_picture(mr_bot, fake_telegr
     handlers.handle_widget_query(mr_bot, widget_query("c:objects"))
     sc = last_answer(fake_telegram)["sc"]
     assert fake_telegram.sent == []                       # no PNG
-    assert sc["g"]["o"][0][0] == 1 and sc["g"]["o"][0][5] == 2
+    assert decode(sc["g"])[0][0] == 1 and decode(sc["g"])[0][-1] == 2
     assert sc["t"] == "✂️ Убрать объект" and sc["x"] == ["Осталось 2 из 3"]
     codes = [b[1] for row in sc["k"] for b in row]
     assert sum(c.startswith("c:ask:exclude:") for c in codes) == 2
@@ -634,7 +659,7 @@ def test_widget_reads_an_answer_whatever_shape_it_arrives_in():
     object) and says what it got when a screen comes in empty."""
     html = widget.HTML
     assert "pj(" in html and "typeof a.sc=='string'" in html
-    assert "пустой экран" in html and "Object.keys" in html
+    assert "пустой экран" not in html                      # the temporary diagnostic is gone
     assert "<canvas" in html and "pg:" in html and "localStorage" in html
     assert widget.html_fits()
 
@@ -676,3 +701,111 @@ def test_html_keeps_a_safety_margin_under_the_sendwidget_limit():
     release over it."""
     import zlib
     assert len(zlib.compress(widget.HTML.encode("utf-8"), 9)) <= 3900
+
+
+# ------------------------------------------------------------ round 5
+
+def big_job(mr_bot, count=56, excluded=(3, 20, 41), current=10):
+    """A job of many small parts spread over the bed, with real-size outlines."""
+    names = ["Part_%02d.STL_ID_%d" % (i, i) for i in range(1, count + 1)]
+    shapes = {}
+    for i, name in enumerate(names):
+        x, y = 10 + 30 * (i % 8), 10 + 30 * (i // 8)
+        shapes[name] = {"polygon": [(x, y), (x + 20, y), (x + 20, y + 20), (x, y + 20)]}
+    state = {"Objects": names, "ExcludedObjects": [names[i - 1] for i in excluded],
+             "CurrentObject": names[current - 1], "PrintState": "printing",
+             "Filename": "x.gcode", "Shapes": shapes}
+    mr_bot.moonraker.exclude_object_state = lambda: state
+    return names, shapes, state
+
+
+def test_a_job_of_56_objects_keeps_its_drawing_on_page_one(mr_bot, fake_telegram):
+    names, shapes, state = big_job(mr_bot)
+    expected = objectmap.figure(names, shapes, state["ExcludedObjects"], names[9])
+    assert len(json.dumps(expected, separators=(",", ":"))) < 400      # was 1396 bytes
+    handlers.handle_widget_query(mr_bot, widget_query("c:objects"))
+    first = fake_telegram.widget_answers[-1][1]
+    assert len(first.encode("utf-8")) <= widget.ANSWER_LIMIT
+    page0 = json.loads(first)["sc"]
+    assert page0["g"] == expected                                      # not dropped
+    drawn = decode(page0["g"])
+    assert len(drawn) == 56
+    assert [d[-1] for d in drawn if d[0] in (3, 20, 41)] == [1, 1, 1]
+    assert [d[0] for d in drawn if d[-1] == 2] == [10]
+    # the first box: x 10..30 mm, y 10..30 mm -> cells, y from the top
+    assert drawn[0][:5] == (1, 2, 63 - 8, 8, 63 - 2)
+    pages = pages_of(mr_bot, fake_telegram, "c:objects")
+    assert len(pages) > 1 and "g" in pages[0] and all("g" not in p for p in pages[1:])
+    for sc in pages:
+        assert len(json.dumps({"sc": sc}, ensure_ascii=False,
+                              separators=(",", ":")).encode("utf-8")) <= widget.ANSWER_LIMIT
+        assert len(sc["k"]) <= widget.MAX_ROWS
+    exclude = [b for sc in pages for row in sc["k"] for b in row
+               if b[1].startswith("c:ask:exclude:")]
+    assert len(exclude) == 53                                          # 56 minus 3 gone
+    shown = labels(pages)
+    assert len(shown) == len(set(shown))
+
+
+def test_a_drawing_that_cannot_fit_is_thinned_then_dropped_with_a_log(caplog):
+    caplog.set_level(logging.INFO)
+    rows = [[["❌ 1 · деталь", "c:ask:exclude:abc", ""]]]
+    huge = {"b": "ABCD" * 300, "s": "0" * 300}
+    pages = widget.paginate({"t": "T", "x": [], "k": rows, "g": huge}, "tok")
+    assert pages and "g" not in json.loads(pages[0])["sc"]
+    assert "drawing dropped" in caplog.text
+    # the excluded ones are given up first
+    thin = widget.thin_figure({"b": "AAAABBBBCCCC", "s": "101"})
+    assert thin == {"b": "AAAABBBB", "s": "30"}
+    assert widget.thin_figure({"b": "AAAA", "s": "1"}) is None
+
+
+def test_macros_on_the_card_are_a_title_and_buttons(mr_bot, fake_telegram):
+    mr_bot.cfg["moonraker_macro_whitelist"] = ["PARK_NOZZLE", "CALIBRATE_BED_60"]
+    mr_bot.moonraker.list_macros = lambda: ["PARK_NOZZLE", "CALIBRATE_BED_60"]
+    handlers.handle_widget_query(mr_bot, widget_query("c:macros"))
+    sc = last_answer(fake_telegram)["sc"]
+    assert sc["t"] == "🧩 Макросы" and sc["x"] == []
+    codes = [b[1] for row in sc["k"] for b in row]
+    assert "c:bedcalib" in codes and any(c.startswith("c:ask:macro:") for c in codes)
+    # the explanation is on the screen that asks before running
+    ask = next(c for c in codes if c.startswith("c:ask:macro:"))
+    handlers.handle_widget_query(mr_bot, widget_query(ask, qid="wq-2"))
+    confirm = last_answer(fake_telegram)["sc"]
+    assert any("Что произойдёт" in line for line in confirm["x"])
+    handlers.handle_widget_query(mr_bot, widget_query("c:bedcalib", qid="wq-3"))
+    temps = last_answer(fake_telegram)["sc"]
+    assert temps["t"] == "📐 Калибровка стола" and temps["x"] == []
+    # outside card mode the text is what it was
+    mr_bot.cfg["status_widget"] = False
+    handlers.show_macros(mr_bot, OWNER, force_new=True)
+    assert "Что можно запустить" in fake_telegram.sent[-1][1]
+
+
+@pytest.mark.parametrize("kind", [{"type": "sign_data"}, {"type": "sent_transaction"},
+                                  {}, None, "data"])
+def test_only_a_buttons_own_data_is_acted_on(card_bot, fake_telegram, kind):
+    query = widget_query("ask:stop")
+    query.pop("type")
+    if kind is not None:
+        query["type"] = kind
+    answers_before = len(fake_telegram.widget_answers)
+    handlers.handle_widget_query(card_bot, query)
+    assert len(fake_telegram.widget_answers) == answers_before + 1
+    assert last_answer(fake_telegram) == {"m": "Неизвестная кнопка."}
+    assert card_bot.commands == [] and fake_telegram.sent == []
+
+
+def test_a_data_query_is_still_answered(card_bot, fake_telegram):
+    handlers.handle_widget_query(card_bot, widget_query("ask:stop"))
+    assert "t" in last_answer(fake_telegram)
+
+
+def test_html_changes_must_come_with_a_new_version():
+    """A sent widget keeps its HTML for good. The bot replaces an old card only
+    when the version in storage.message_kind() differs, so every change of the
+    HTML needs a new VERSION. The hash makes forgetting that impossible."""
+    import hashlib
+    digest = hashlib.sha256(widget.HTML.encode("utf-8")).hexdigest()[:12]
+    assert digest == widget.HTML_SHA, "HTML changed: bump VERSION and update HTML_SHA"
+    assert widget.KIND == "widget-%d" % widget.VERSION == "widget-7"

@@ -177,8 +177,11 @@ def show_macros(bot, chat, mid=None, is_photo=False, force_new=False):
         return
     enabled = ui.macro_order(name for name in names if bot.macro_allowed(name))
     refs = bot.prepare_macro_choices(enabled)
-    _show_readonly(bot, chat, mid, is_photo, force_new,
-                   ui.macros_text(names, enabled), ui.kb_macros(enabled, refs))
+    # On the card: the title and the buttons. What each macro does is said
+    # where it matters, on the screen that asks before running it.
+    text = ("<b>🧩 Макросы</b>" if enabled and _figures(bot, force_new)
+            else ui.macros_text(names, enabled))
+    _show_readonly(bot, chat, mid, is_photo, force_new, text, ui.kb_macros(enabled, refs))
 
 
 def show_bed_calibration(bot, chat, mid=None, is_photo=False, force_new=False):
@@ -196,8 +199,9 @@ def show_bed_calibration(bot, chat, mid=None, is_photo=False, force_new=False):
                        "CALIBRATE_BED_* не разрешён в настройках бота.", ui.kb_back())
         return
     refs = bot.prepare_macro_choices(enabled)
-    _show_readonly(bot, chat, mid, is_photo, force_new,
-                   ui.bed_calibration_text(), ui.kb_bed_temps(enabled, refs))
+    text = ("<b>📐 Калибровка стола</b>" if _figures(bot, force_new)
+            else ui.bed_calibration_text())
+    _show_readonly(bot, chat, mid, is_photo, force_new, text, ui.kb_bed_temps(enabled, refs))
 
 
 def show_objects(bot, chat, mid=None, is_photo=False, force_new=False):
@@ -829,6 +833,13 @@ def handle_widget_query(bot, query):
     def reply(**fields):
         raw(widget.answer(**fields))
     reply.raw = raw
+
+    # Only a button's own data is acted on: other kinds of widget query
+    # (signing, transactions) are not ours to answer with an action.
+    kind = query.get("type")
+    if not isinstance(kind, dict) or kind.get("type") != "data":
+        reply(m="Неизвестная кнопка.")
+        return
 
     if not _is_owner(bot, chat, sender):
         reply(m="Этот бот личный.")

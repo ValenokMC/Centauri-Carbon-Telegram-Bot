@@ -165,31 +165,43 @@ def render(names, shapes, excluded=(), current=""):
     return canvas.png()
 
 
+# The figure's coordinates are single characters of this alphabet, 0..63.
+# Keep it equal to the one in the widget's script (a test compares them).
+ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+CELLS = 63
+
+
 def figure(names, shapes, excluded=(), current=""):
     """The same picture as data, for the live card to draw on a canvas.
 
-    {"o": [[number, x0, y0, x1, y1, state], ...]} with the corners of each
-    object's bounding box in whole units of a hundredth of the bed, y counted
-    from the top of the picture (the back wall), the way a canvas wants it.
-    State 0 is still to print, 1 excluded, 2 printing now. An object without
-    an outline is left out: its button still carries the number.
-    Raises ValueError when no object has one, like render().
+    {"b": boxes, "s": states}: for the n-th object of ``names`` (the number
+    on its button, counting from one) four characters of ALPHABET in ``b``,
+    the corners x0 y0 x1 y1 of its bounding box in 4 mm cells of the bed, y
+    counted from the top of the picture (the back wall), the way a canvas
+    wants it; and one character in ``s``: "0" still to print, "1" excluded,
+    "2" printing now, "3" not drawn (it has no outline: its button still
+    carries the number). A job of 56 objects is about 300 bytes this way, and
+    a screen answer holds 1024. Raises ValueError when no object has an
+    outline, like render().
     """
     excluded = set(excluded or ())
-    out = []
+    boxes, states = [], []
 
-    def unit(value):
-        return max(0, min(100, int(round(value * 100.0 / BED_MM))))
+    def cells(low, high):
+        lo = max(0, min(CELLS - 1, int(low * CELLS / BED_MM)))
+        hi = max(lo + 1, min(CELLS, -int(-high * CELLS // BED_MM)))
+        return lo, hi
 
-    for number, name in enumerate(names, 1):
+    for name in names:
         points = (shapes.get(name) or {}).get("polygon") or ()
         if len(points) < 3:
+            boxes.append(ALPHABET[0] * 4)
+            states.append("3")
             continue
-        xs = [p[0] for p in points]
-        ys = [p[1] for p in points]
-        state = 1 if name in excluded else 2 if name == current else 0
-        out.append([number, unit(min(xs)), 100 - unit(max(ys)),
-                    unit(max(xs)), 100 - unit(min(ys)), state])
-    if not out:
+        x0, x1 = cells(min(p[0] for p in points), max(p[0] for p in points))
+        y0, y1 = cells(min(p[1] for p in points), max(p[1] for p in points))
+        boxes.append("".join(ALPHABET[v] for v in (x0, CELLS - y1, x1, CELLS - y0)))
+        states.append("1" if name in excluded else "2" if name == current else "0")
+    if all(state == "3" for state in states):
         raise ValueError("в задании нет контуров объектов")
-    return {"o": out}
+    return {"b": "".join(boxes), "s": "".join(states)}
