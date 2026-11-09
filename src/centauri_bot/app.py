@@ -11,6 +11,7 @@ Only one instance of this may run at a time: Telegram allows exactly one
 long-polling consumer per token, and a second one silently steals updates from
 the first.
 """
+import collections
 import copy
 import html as _html
 import logging
@@ -21,7 +22,9 @@ import time
 
 from . import backend
 from . import config as config_mod
+from . import heightmap
 from . import moonraker
+from . import objectmap
 from . import printer_state as ps
 from . import schedule
 from . import sdcp
@@ -189,6 +192,11 @@ class Bot(object):
         self.widget_retry_at = 0.0
         self.snapshot_checked_at = 0.0
         self.picture_kind = None   # what the picture slot holds: frame, objects, mesh
+        # Pictures made for a screen, by what they show: the PNG, and the file_id
+        # Telegram gave it, so that the next one is sent without an upload.
+        self.picture_cache = collections.OrderedDict()
+        self.prerender_key = None  # what the objects map was last asked for
+        self.prerender_pending = set()   # keys queued or being drawn
         self.card_upgraded = False  # an outdated card is replaced once per process
         # Screens the card shows by token (see widget.paginate): the answer to
         # a tap too big for one answer, and what the bot shows by itself.
@@ -286,6 +294,10 @@ class Bot(object):
     def set_note(self, text, ttl=30):
         with self.lock:
             self.note = (text, self.clock() + ttl)
+
+    def clear_note(self):
+        with self.lock:
+            self.note = None
 
     def _live_note(self):
         with self.lock:
@@ -895,7 +907,9 @@ class Bot(object):
         frame stays; the previous one is deleted at once. The message id is
         kept in state.json, so a restart still cleans up.
         """
+        grabbed = time.monotonic()
         shot = self.grab()
+        log.info("camera frame grabbed in %d ms", (time.monotonic() - grabbed) * 1000)
         if not shot or not self.post_picture(shot, "📷 %s" % time.strftime(
                 "%H:%M", time.localtime(self.clock()))):
             return False
@@ -907,17 +921,114 @@ class Bot(object):
             log.warning("status did not move under the frame: %r", e)
         return True
 
-    def post_picture(self, photo, title="🖼", kind="frame"):
+    PICTURES_KEPT = 8
+
+    def png_for(self, key, maker):
+        """The PNG for ``key`` (what a screen shows), made once. Raises what the
+        maker raises (ValueError for a map with nothing to draw)."""
+        with self.lock:
+            entry = self.picture_cache.get(key)
+            if entry and entry.get("png"):
+                return entry["png"]
+        png = maker()
+        with self.lock:
+            self.picture_cache.setdefault(key, {})["png"] = png
+            while len(self.picture_cache) > self.PICTURES_KEPT:
+                self.picture_cache.popitem(last=False)
+        return png
+
+    def objects_picture(self, state):
+        """(key, maker) of the objects map for ``state``: the key changes with the
+        job and the excluded set, and so does the picture. The part printing now
+        is not on it: it changes every few seconds in a big job, and the card's
+        grid marks it anyway ("▶ n"); drawn with it, the picture could not be
+        made ahead or sent again by its file_id."""
+        names = list(state.get("Objects") or [])
+        excluded = set(state.get("ExcludedObjects") or [])
+        shapes = state.get("Shapes") or {}
+        key = ("objects", state.get("Filename") or "", tuple(names), tuple(sorted(excluded)))
+        return key, lambda: objectmap.render(names, shapes, excluded, "")
+
+    def mesh_picture(self, mesh):
+        points = mesh.get("points") or []
+        key = ("mesh", str(mesh.get("profile") or ""),
+               tuple(tuple(row) for row in points))
+        return key, lambda: heightmap.render(points)
+
+    def _maybe_prerender_objects(self, status):
+        """Make the objects map in the background as soon as the job's parts
+        are known, and again when a part is excluded or the printing one
+        changes, so that the tap that wants it does not wait for the drawing."""
+        if (self.backend_name != backend.MOONRAKER or self.moonraker is None
+                or not self.action_allowed(backend.EXCLUDE_OBJECT)):
+            return
+        info = status.get("PrintInfo") or {}
+        if info.get("Status") != ps.STATUS_PRINTING:
+            return
+        parts = status.get("ExcludeObject") or {}
+        names = tuple(parts.get("Objects") or ())
+        if len(names) < 2:
+            return
+        key = (info.get("Filename"), names, tuple(sorted(parts.get("ExcludedObjects") or ())))
+        # once per key: not again while it is the last one asked for, and not
+        # again while a render for it is still queued or running
+        with self.lock:
+            if key == self.prerender_key or key in self.prerender_pending:
+                return
+            self.prerender_key = key
+            self.prerender_pending.add(key)
+        self.defer(lambda: self._prerender_objects(key))
+
+    def _prerender_objects(self, key):
+        try:
+            ok, state = self.exclude_objects()
+            if not ok or state.get("PrintState") not in ("printing", "paused"):
+                return
+            picture_key, maker = self.objects_picture(state)
+            try:
+                self.png_for(picture_key, maker)
+            except (KeyError, TypeError, ValueError) as e:
+                log.debug("objects map not made ahead: %s", e)
+        finally:
+            with self.lock:
+                self.prerender_pending.discard(key)
+
+    def post_picture(self, photo, title="🖼", kind="frame", key=None, maker=None):
         """A picture beside the card: the camera frame, or a screen that is a
         picture (the bed map, the objects). A widget cannot show one. Only the
         newest stays, and it goes away after SNAPSHOT_TTL_SEC. ``kind`` says
-        what it is: "frame", or "objects" / "mesh", which also go away when the
-        owner leaves the screen they belong to (drop_picture)."""
-        answer = self.api._api.send_message(
-            self.owner, "%s · уберу через %d мин" % (title, self.SNAPSHOT_TTL_SEC // 60),
-            photo=photo)
+        what it is: "frame", "finish", or "objects" / "mesh", which also go away
+        when the owner leaves the screen they belong to (drop_picture).
+
+        With ``key`` (what the picture shows) and ``maker``, the picture is made
+        at most once, and once Telegram has it, it is sent again by its file_id."""
+        started = time.monotonic()
+        caption = "%s · уберу через %d мин" % (title, self.SNAPSHOT_TTL_SEC // 60)
+        entry = None
+        if key is not None:
+            with self.lock:
+                entry = self.picture_cache.setdefault(key, {})
+        answer = None
+        if entry and entry.get("file_id"):
+            answer = self.api._api.send_message(self.owner, caption, photo=entry["file_id"])
+            if not answer.get("ok"):
+                entry.pop("file_id", None)          # Telegram no longer knows it: upload
+                answer = None
+        if answer is None:
+            if photo is None and key is not None:
+                try:
+                    photo = self.png_for(key, maker)
+                except (KeyError, TypeError, ValueError) as e:
+                    log.info("picture %s not made: %s", kind, e)
+                    return False
+            answer = self.api._api.send_message(self.owner, caption, photo=photo)
         if not answer.get("ok"):
             return False
+        log.info("picture %s sent in %d ms", kind, (time.monotonic() - started) * 1000)
+        if entry is not None:
+            sizes = (answer.get("result") or {}).get("photo") or []
+            if sizes and sizes[-1].get("file_id"):
+                entry["file_id"] = sizes[-1]["file_id"]      # the largest size
         old = storage.load_state().get("snapshot_message")
         storage.update_state(snapshot_message=[answer["result"]["message_id"],
                                                self.clock() + self.SNAPSHOT_TTL_SEC])
@@ -949,13 +1060,27 @@ class Bot(object):
                 and self.caption_seen != (mid, self.render("", compact=True))):
             self.refresh_main()
 
-    def open_picture_screen(self, photo, title, kind, text, keyboard):
+    def open_picture_screen(self, photo, title, kind, text, keyboard, key=None, maker=None):
         """A screen that has a picture: the picture goes in first, then the
         card is sent again under it (quietly) already showing the screen, so
         the picture is on top and the buttons are under the thumb. Without a
         picture (it could not be drawn) only the screen is shown."""
-        if photo:
-            self.post_picture(photo, title, kind)
+        if photo or key is not None:
+            # the card says so while the picture is made and sent, and what became of it
+            self.set_note("🖼 Готовлю картинку…", ttl=90)
+            try:
+                self.push_now()
+            except Exception as e:
+                log.debug("note not pushed: %r", e)
+            try:
+                posted = self.post_picture(photo, title, kind, key, maker)
+            except Exception as e:
+                log.warning("picture did not go out: %r", e)
+                posted = False
+            if posted:
+                self.clear_note()
+            else:
+                self.set_note("Картинку отправить не вышло", ttl=30)
         try:
             self.refresh_main(force_new=True, quiet=True, text=text, keyboard=keyboard)
         except Exception as e:
@@ -1454,7 +1579,7 @@ class Bot(object):
             # text (note and link included) is a screen the card opens.
             head = self._first_line(text)
             if photo:
-                self.post_picture(photo, text if len(text) <= 700 else head)
+                self.post_picture(photo, text if len(text) <= 700 else head, kind="finish")
             if keyboard is None:
                 text, header = None, head + "\n"
             photo = None
@@ -1724,6 +1849,10 @@ class Bot(object):
             self.expire_snapshot()
         except Exception as e:
             log.debug("camera frame not taken down: %r", e)
+        try:
+            self._maybe_prerender_objects(status)
+        except Exception as e:
+            log.debug("objects map not queued: %r", e)
         self.log_stats()
 
     def keepalive_loop(self):

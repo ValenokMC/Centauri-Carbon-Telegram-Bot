@@ -1595,3 +1595,236 @@ def test_back_from_a_menu_screen_does_not_touch_the_caption(mr_bot, fake_telegra
     edits = len(fake_telegram.edited)
     handlers.handle_widget_query(mr_bot, widget_query("lv", qid="lv"))
     assert len(fake_telegram.edited) == edits                # the caption never changed: no call
+
+
+# ------------------------------------------------------------ round 11: a photo that took 40 s
+
+class FakeConn(object):
+    """A fake HTTPS connection. The first request on a connection works; one made
+    on a connection that has been used already fails, like a keep-alive
+    connection Telegram has closed."""
+    made = []
+    reused_fails = True
+
+    def __init__(self, *args, **kwargs):
+        self.timeout = None
+        self.sock = None
+        self.requests = 0
+        FakeConn.made.append(self)
+
+    def request(self, *args, **kwargs):
+        self.requests += 1
+        if self.requests > 1 and FakeConn.reused_fails:
+            raise ConnectionResetError("closed by the far side")
+
+    def getresponse(self):
+        return self
+
+    def read(self):
+        return b'{"ok":true,"result":{"message_id":5}}'
+
+    def close(self):
+        pass
+
+
+@pytest.fixture
+def fake_https(monkeypatch):
+    FakeConn.made = []
+    FakeConn.reused_fails = True
+    monkeypatch.setattr("http.client.HTTPSConnection", FakeConn)
+    monkeypatch.setattr("time.sleep", lambda s: pytest.fail("a retry must not sleep"))
+    return FakeConn
+
+
+def test_a_dead_reused_connection_is_retried_at_once_on_a_fresh_one_and_logged(
+        fake_https, caplog):
+    caplog.set_level(logging.INFO)
+    api = offline_api()
+    assert api.call("getMe")["ok"]                      # the first call opens a connection
+    assert api.call("sendPhoto")["ok"]                  # the second finds it dead
+    assert len(fake_https.made) == 2
+    line = next(r.getMessage() for r in caplog.records if "attempt 1 failed" in r.getMessage())
+    assert "sendPhoto" in line and "ConnectionResetError" in line and re.search(r"after \d+ ms", line)
+    assert "123:fake" not in caplog.text                # never the token or the URL
+    assert api.take_counts() == {"getMe": 1, "sendPhoto": 1}
+
+
+def test_a_connection_idle_for_more_than_ten_seconds_is_not_reused(fake_https):
+    fake_https.reused_fails = False
+    api = offline_api()
+    assert TelegramAPI.IDLE_RECONNECT_SEC == 10
+    api.call("getMe")
+    api.call("getMe")
+    assert len(fake_https.made) == 1                    # fresh: reused
+    api._tls.last_used -= TelegramAPI.IDLE_RECONNECT_SEC + 1
+    api.call("getMe")
+    assert len(fake_https.made) == 2                    # idle: a new one, no failed attempt first
+
+
+def test_an_attempt_that_uploads_a_file_gets_20_seconds_and_an_ordinary_one_10(fake_https):
+    fake_https.reused_fails = False
+    api = offline_api()
+    api.call("getMe")
+    assert fake_https.made[-1].timeout == 10
+    api.call("sendPhoto", {"chat_id": "1"}, files={"photo": ("a.png", b"x")})
+    assert fake_https.made[-1].timeout == TelegramAPI.FILE_TIMEOUT_SEC == 20
+
+
+def test_send_message_takes_a_file_id_and_uploads_nothing():
+    calls = []
+
+    class Rec(object):
+        def call(self, method, params=None, files=None, timeout=10):
+            calls.append((method, params, files))
+            return {"ok": True}
+    TelegramAPI.send_message(Rec(), "555", "подпись", photo="FILE_ID")
+    [(method, params, files)] = calls
+    assert method == "sendPhoto" and params["photo"] == "FILE_ID" and params["caption"] == "подпись"
+    assert files is None
+
+
+@pytest.fixture
+def photo_spy(mr_bot, fake_telegram):
+    """Every picture the bot sends, as it was given (bytes or a file_id), and
+    a sendPhoto answer that carries Telegram's two sizes."""
+    sent = []
+    real = fake_telegram.send_message
+
+    def spy(chat, text, keyboard=None, photo=None):
+        if photo is None:
+            return real(chat, text, keyboard=keyboard)
+        sent.append(photo)
+        answer = real(chat, text, keyboard=keyboard, photo=photo)
+        answer["result"]["photo"] = [{"file_id": "SMALL"}, {"file_id": "BIG_%d" % len(sent)}]
+        return answer
+    fake_telegram.send_message = spy
+    mr_bot.sent_photos = sent
+    return mr_bot
+
+
+def test_the_second_tap_sends_the_picture_by_file_id(photo_spy, fake_telegram, monkeypatch):
+    bot = photo_spy
+    names, shapes, state = copies_job(bot, [("МОДЕЛЬ А", 5), ("МОДЕЛЬ Б", 4)], current=2)
+    renders = []
+    real = objectmap.render
+    monkeypatch.setattr(objectmap, "render", lambda *a, **k: (renders.append(1), real(*a, **k))[1])
+    handlers.handle_widget_query(bot, widget_query("c:objects", qid="o1"))
+    assert bot.sent_photos[0].startswith(bytes([137]) + b"PNG") and len(renders) == 1
+    handlers.handle_widget_query(bot, widget_query("lv", qid="lv"))
+    state["CurrentObject"] = names[3]                         # the printing part moved on
+    bot.forget_read("objects")
+    handlers.handle_widget_query(bot, widget_query("c:objects", qid="o2"))
+    assert bot.sent_photos[1] == "BIG_1"                      # the largest size's file_id, no upload
+    assert len(renders) == 1                                  # and nothing was drawn again
+    # a part excluded: the picture shows something else, so it is made and uploaded again
+    state["ExcludedObjects"] = [names[4]]
+    bot.forget_read("objects")
+    handlers.handle_widget_query(bot, widget_query("c:objects", qid="o3"))
+    assert isinstance(bot.sent_photos[2], bytes) and len(renders) == 2
+    handlers.handle_widget_query(bot, widget_query("c:objects", qid="o4"))
+    assert bot.sent_photos[3] == "BIG_3"
+    # a file_id Telegram has forgotten falls back to an upload
+    bot.picture_cache[next(reversed(bot.picture_cache))]["file_id"] = "STALE"
+    real_send = bot.api._api.send_message
+
+    def refuse_ids(chat, text, keyboard=None, photo=None):
+        if isinstance(photo, str):
+            return {"ok": False, "description": "Bad Request: wrong file identifier"}
+        return real_send(chat, text, keyboard=keyboard, photo=photo)
+    bot.api._api.send_message = refuse_ids
+    handlers.handle_widget_query(bot, widget_query("c:objects", qid="o5"))
+    assert isinstance(bot.sent_photos[-1], bytes)
+
+
+def test_the_mesh_picture_is_cached_the_same_way(photo_spy, fake_telegram):
+    bot = photo_spy
+    handlers.handle_widget_query(bot, widget_query("c:mesh", qid="m1"))
+    handlers.handle_widget_query(bot, widget_query("lv", qid="lv"))
+    handlers.handle_widget_query(bot, widget_query("c:mesh", qid="m2"))
+    assert isinstance(bot.sent_photos[0], bytes) and bot.sent_photos[1] == "BIG_1"
+    bot.moonraker.bed_mesh = lambda: {"points": [[0.0, 0.2], [0.2, 0.0]], "profile": "default"}
+    bot.forget_read("mesh")
+    handlers.handle_widget_query(bot, widget_query("c:mesh", qid="m3"))      # another mesh
+    assert isinstance(bot.sent_photos[2], bytes)
+
+
+def test_the_picture_is_made_ahead_in_the_background_and_again_when_it_changes(mr_bot, monkeypatch):
+    names, shapes, state = copies_job(mr_bot, [("МОДЕЛЬ А", 5), ("МОДЕЛЬ Б", 4)], current=2)
+    renders = []
+    real = objectmap.render
+    monkeypatch.setattr(objectmap, "render", lambda *a, **k: (renders.append(1), real(*a, **k))[1])
+
+    def running(excluded=(), current=names[1], code=13):
+        return status(code, "x.gcode", progress=30, ExcludeObject={
+            "Objects": names, "ExcludedObjects": list(excluded), "CurrentObject": current})
+    mr_bot._handle_status(running())
+    assert len(renders) == 1                                  # made before anybody asked
+    mr_bot._handle_status(running())
+    mr_bot._handle_status(running())
+    assert len(renders) == 1                                  # nothing changed: nothing drawn
+    state["ExcludedObjects"] = [names[0]]
+    mr_bot.forget_read("objects")
+    mr_bot._handle_status(running(excluded=[names[0]]))
+    assert len(renders) == 2                                  # a part went: a new picture
+    for part in (2, 3, 4, 2):                                 # the printing part moves every few seconds
+        state["CurrentObject"] = names[part]
+        mr_bot.forget_read("objects")
+        mr_bot._handle_status(running(excluded=[names[0]], current=names[part]))
+    assert len(renders) == 2                                  # ... and costs no drawing
+    # and the tap that wants it draws nothing
+    handlers.handle_widget_query(mr_bot, widget_query("c:objects", qid="o"))
+    assert len(renders) == 2
+    # not while paused
+    mr_bot._handle_status(running(excluded=[names[0], names[1]], current=names[3], code=6))
+    assert len(renders) == 2
+
+
+def test_the_background_render_runs_once_per_key_and_not_while_queued(mr_bot, monkeypatch):
+    import queue
+    names, shapes, state = copies_job(mr_bot, [("МОДЕЛЬ А", 5), ("МОДЕЛЬ Б", 4)])
+    renders = []
+    real = objectmap.render
+    monkeypatch.setattr(objectmap, "render", lambda *a, **k: (renders.append(1), real(*a, **k))[1])
+    mr_bot.work = queue.Queue()                               # a worker that is behind
+    parts = {"Objects": names, "ExcludedObjects": [], "CurrentObject": names[0]}
+    for _ in range(5):
+        mr_bot._handle_status(status(13, "x.gcode", ExcludeObject=dict(parts)))
+    assert mr_bot.work.qsize() == 1 and renders == []         # queued once, nothing drawn yet
+    other = dict(parts, ExcludedObjects=[names[0]])
+    mr_bot._handle_status(status(13, "x.gcode", ExcludeObject=other))
+    mr_bot._handle_status(status(13, "x.gcode", ExcludeObject=dict(parts)))   # back to the first
+    assert mr_bot.work.qsize() == 2                           # the first key is still queued
+    while not mr_bot.work.empty():
+        mr_bot.work.get()()
+    assert mr_bot.prerender_pending == set()
+    assert len(renders) <= 1                                  # the job ran against one state
+
+
+def test_the_card_says_the_picture_is_being_made_and_what_became_of_it(photo_spy, fake_telegram):
+    bot = photo_spy
+    copies_job(bot, [("МОДЕЛЬ А", 5), ("МОДЕЛЬ Б", 4)])
+    handlers.handle_widget_query(bot, widget_query("c:objects", qid="o1"))
+    notes = [card_of(data).get("n") for _mid, data in fake_telegram.widget_edits]
+    assert "🖼 Готовлю картинку…" in notes                    # pushed while it was prepared
+    assert "n" not in card_of(fake_telegram.widgets[-1]["chat_data"])   # gone with the picture
+    assert bot._live_note() == ""
+    # a picture that cannot be sent: the note says so, and the screen opens all the same
+    handlers.handle_widget_query(bot, widget_query("lv", qid="lv"))
+    bot.picture_cache.clear()
+    bot.api._api.send_message = lambda *a, **k: {"ok": False, "description": "timeout"}
+    handlers.handle_widget_query(bot, widget_query("c:objects", qid="o2"))
+    data = card_of(fake_telegram.widgets[-1]["chat_data"])
+    assert data["n"] == "Картинку отправить не вышло" and data["go"]
+
+
+def test_picture_timings_are_logged(photo_spy, caplog):
+    caplog.set_level(logging.INFO)
+    bot = photo_spy
+    copies_job(bot, [("МОДЕЛЬ А", 3), ("МОДЕЛЬ Б", 2)])
+    handlers.handle_widget_query(bot, widget_query("c:objects", qid="o"))
+    assert re.search(r"picture objects sent in \d+ ms", caplog.text)
+    bot.cfg["send_photo"] = True
+    bot.grab = lambda max_age=0: bytes([255, 216]) + b"frame"
+    handlers.handle_widget_query(bot, widget_query("snap", qid="s"))
+    assert re.search(r"camera frame grabbed in \d+ ms", caplog.text)
+    assert re.search(r"picture frame sent in \d+ ms", caplog.text)

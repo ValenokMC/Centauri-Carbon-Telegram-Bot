@@ -7,6 +7,17 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A picture beside the live card (camera frame, bed picture, mesh) could take
+  about 40 seconds: a send on a connection Telegram had already closed waited
+  for the full timeout before a silent retry. Connections idle for more than
+  10 s are reopened, an upload attempt gives up after 20 s and is retried at
+  once on a fresh connection, and every retry and every picture send is logged
+  with its time. The bed picture for removing a part is drawn ahead in the
+  background and re-sent by Telegram's file id, so a tap does not upload it
+  again; the card says "🖼 Готовлю картинку…" while it waits.
+
 ## [1.2.0] — 2026-11-10
 
 ### Added

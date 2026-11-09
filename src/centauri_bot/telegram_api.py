@@ -52,8 +52,15 @@ class TelegramAPI:
     # -- connection ------------------------------------------------------
 
     # A connection idle for longer than this is probably dead on the far side
-    # (a NAT or the server dropped it) and would only fail after its timeout.
-    IDLE_RECONNECT_SEC = 30
+    # (Telegram or a NAT closes a quiet keep-alive connection within seconds)
+    # and would only fail after its timeout: a photo sent on such a connection
+    # once took 40 s, one 30 s timeout and then a retry. A new connection costs
+    # a TLS handshake, far less than that.
+    IDLE_RECONNECT_SEC = 10
+
+    # How long one attempt may take when it uploads a file (an ordinary call:
+    # the ``timeout`` argument, 10 s).
+    FILE_TIMEOUT_SEC = 20
 
     def _conn(self, reset=False, timeout=None):
         conn = getattr(self._tls, "conn", None)
@@ -99,18 +106,19 @@ class TelegramAPI:
         with self._counts_lock:
             self._counts[method] += 1
         if files:
-            timeout = max(timeout, 30)     # a picture takes longer to upload
+            timeout = max(timeout, self.FILE_TIMEOUT_SEC)   # a picture takes longer to upload
         params = {k: v for k, v in (params or {}).items() if v is not None}
         body, ctype = self._encode(params, files)
         headers = {"Content-Type": ctype, "Content-Length": str(len(body)),
                    "Connection": "keep-alive"}
 
         # Three attempts: the connection may have gone stale while the bot was
-        # idle (the second attempt opens a fresh one), and on 429 we wait for
-        # exactly as long as Telegram asks before trying again.
+        # idle (every retry opens a fresh one, at once, without a pause), and on
+        # 429 we wait for exactly as long as Telegram asks before trying again.
         for attempt in (1, 2, 3):
+            started = time.monotonic()
             try:
-                conn = self._conn(reset=(attempt == 2), timeout=timeout)
+                conn = self._conn(reset=(attempt > 1), timeout=timeout)
                 conn.request("POST", path, body=body, headers=headers)
                 raw = conn.getresponse().read()
                 self._tls.last_used = time.monotonic()
@@ -126,8 +134,15 @@ class TelegramAPI:
             except Exception as e:
                 # repr(e) on a connection error carries the host, not the path,
                 # so the token cannot leak here.
+                elapsed = int((time.monotonic() - started) * 1000)
                 if attempt == 3:
                     log.warning("telegram unreachable for %s: %r", method, e)
+                else:
+                    # Said every time: a stale connection that costs a timeout
+                    # and then works leaves no other trace.
+                    log.info("telegram %s attempt %d failed after %d ms (%s), "
+                             "retrying on a fresh connection", method, attempt, elapsed,
+                             type(e).__name__)
         return {"ok": False}
 
     @staticmethod
@@ -173,6 +188,11 @@ class TelegramAPI:
         p = {"chat_id": chat, "parse_mode": "HTML"}
         if keyboard:
             p["reply_markup"] = {"inline_keyboard": keyboard}
+        if photo and isinstance(photo, str):
+            # a picture Telegram already has: its file_id, no upload
+            p["photo"] = photo
+            p["caption"] = text
+            return self.call("sendPhoto", p)
         if photo:
             p["caption"] = text
             is_png = bytes(photo).startswith(b"\x89PNG\r\n\x1a\n")

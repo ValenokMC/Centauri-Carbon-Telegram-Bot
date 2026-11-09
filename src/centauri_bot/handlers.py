@@ -155,12 +155,18 @@ def show_mesh(bot, chat, mid=None, is_photo=False, force_new=False):
         return
     on_card = _figures(bot, force_new)
     try:
-        photo = heightmap.render(result["points"])
+        if on_card:
+            key, maker = bot.mesh_picture(result)
+            maker()           # a mesh the map cannot draw is said now, not after the tap
+            photo = None
+        else:
+            photo = heightmap.render(result["points"])
         text = ui.height_map_text(result, compact=on_card)
     except (KeyError, TypeError, ValueError) as e:
         photo, on_card, text = None, False, "⚠️ Сохранённая сетка стола некорректна: %s" % e
     if on_card:
-        _open_with_picture(bot, photo, "🗺 Карта стола", "mesh", text, ui.kb_back())
+        _open_with_picture(bot, photo, "🗺 Карта стола", "mesh", text, ui.kb_back(),
+                           key=key, maker=maker)
         return
     _show_readonly(bot, chat, mid, is_photo, force_new, text, ui.kb_back(), photo=photo)
 
@@ -204,13 +210,14 @@ def show_bed_calibration(bot, chat, mid=None, is_photo=False, force_new=False):
 GRID_PER_ROW = 8
 
 
-def _open_with_picture(bot, photo, title, kind, text, keyboard):
+def _open_with_picture(bot, photo, title, kind, text, keyboard, key=None, maker=None):
     """A screen on the card that goes with a picture. The picture is a message
     of its own and must end up above the card, so the card is sent again below
     it. During a tap that waits for its answer nothing is sent: the screen is
     kept for _card_screen, which answers first and then does it."""
     cap = bot.capturing()
-    args = dict(photo=photo, title=title, kind=kind, text=text, keyboard=keyboard)
+    args = dict(photo=photo, title=title, kind=kind, text=text, keyboard=keyboard,
+                key=key, maker=maker)
     if cap is not None:
         cap.reopen = args
     else:
@@ -284,14 +291,12 @@ def show_objects(bot, chat, mid=None, is_photo=False, force_new=False, picture=T
     elif _figures(bot, force_new):
         text, rows = _objects_grid(bot, state, names, excluded)
         if picture:
-            # the picture of the bed, numbered: above the card, which comes back under it
-            try:
-                photo = objectmap.render(names, state.get("Shapes") or {},
-                                         excluded, state.get("CurrentObject") or "")
-            except (KeyError, TypeError, ValueError) as e:
-                log.info("object map not drawn: %s", e)
-                photo = None
-            _open_with_picture(bot, photo, "✂️ Номера деталей", "objects", text, rows)
+            # the picture of the bed, numbered: above the card, which comes back
+            # under it. Made ahead in the background when it could be, and sent
+            # by file_id when Telegram has it already.
+            key, maker = bot.objects_picture(state)
+            _open_with_picture(bot, None, "✂️ Номера деталей", "objects", text, rows,
+                               key=key, maker=maker)
             return
         photo = None
     else:
