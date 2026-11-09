@@ -808,4 +808,77 @@ def test_html_changes_must_come_with_a_new_version():
     import hashlib
     digest = hashlib.sha256(widget.HTML.encode("utf-8")).hexdigest()[:12]
     assert digest == widget.HTML_SHA, "HTML changed: bump VERSION and update HTML_SHA"
-    assert widget.KIND == "widget-%d" % widget.VERSION == "widget-7"
+    assert widget.KIND == "widget-%d" % widget.VERSION == "widget-8"
+
+
+# ------------------------------------------------------------ round 6
+
+def test_action_row_never_cuts_a_label():
+    """At 320 px four buttons got ~65 px each and "⏸ Пауза" was clipped. The
+    row now wraps, its buttons keep their full label, and below 400 px (a
+    phone's bubble) it is two by two; wider, one row of four."""
+    css = widget.HTML.split("</style>")[0]
+    assert re.search(r"\.a,\.wr\{flex-wrap:wrap\}", css)
+    assert re.search(r"\.a button,\.wr button\{min-width:max-content;", css)
+    assert re.search(r"@media\(max-width:399px\)\{\.a button\{flex:1 1 40%\}\}", css)
+    # rows of three or more short buttons (speed, fans, pager) wrap too
+    assert "'rw'+(r.length>2?' wr':'')" in widget.HTML
+    # nothing clips the four of them: no ellipsis rule beats min-width on .a
+    assert not re.search(r"\.a button\{[^}]*text-overflow", css)
+
+
+def test_toast_of_a_screen_stays_off_the_note_line(mr_bot, fake_telegram):
+    handlers.handle_widget_query(mr_bot, widget_query("c:files"))
+    answer = last_answer(fake_telegram)
+    assert "sc" in answer and "m" not in answer              # no "Читаю список…"
+    # a result is kept when the tap closes back to the card
+    handlers.handle_widget_query(mr_bot, widget_query("c:maint:done", qid="wq-2"))
+    done = last_answer(fake_telegram)
+    assert done.get("close") == 1 and "Счётчик" in done["m"]
+
+
+def test_history_lines_start_with_the_state_and_the_time(mr_bot, fake_telegram):
+    mr_bot.moonraker.history = lambda: [
+        {"filename": "dir/Очень_длинное_имя_модели_для_проверки_обрезки.gcode",
+         "status": "completed", "total_duration": 4800},
+        {"filename": "b.gcode", "status": "cancelled", "total_duration": 600},
+        {"filename": "c.gcode", "status": "klippy_shutdown", "total_duration": 60}]
+    handlers.handle_widget_query(mr_bot, widget_query("c:history"))
+    sc = last_answer(fake_telegram)["sc"]
+    assert sc["x"][0].startswith("✅ 1 ч 20 мин · Очень_длинное")
+    assert sc["x"][1] == "⏹ 10 мин · b.gcode" and sc["x"][2].startswith("⚠️ 1 мин · c")
+    # outside the card the line is what it was
+    assert "• <i>b.gcode</i> · cancelled · 10 мин" in ui.history_text(
+        [{"filename": "b.gcode", "status": "cancelled", "total_duration": 600}])
+
+
+def test_files_header_says_how_many_are_shown(mr_bot, fake_telegram):
+    handlers.handle_widget_query(mr_bot, widget_query("c:files"))
+    assert last_answer(fake_telegram)["sc"]["t"] == "📂 Файлы на принтере · 8"
+    mr_bot.moonraker.paths = ["/local/f%02d.gcode" % i for i in range(18)]
+    mr_bot.clock_control.now += 20                           # past the 15 s read cache
+    handlers.handle_widget_query(mr_bot, widget_query("c:files", qid="wq-2"))
+    assert last_answer(fake_telegram)["sc"]["t"] == "📂 Файлы на принтере · последние 8 из 18"
+
+
+def test_outdated_card_is_replaced_while_the_printer_is_idle(live_bot, fake_telegram):
+    live_bot.status = status(0)
+    storage.set_message_id(500, kind="widget-6")
+    live_bot.push_widget()
+    [sent] = fake_telegram.widgets
+    assert sent["silent"] is True and (live_bot.owner, 500) in fake_telegram.deleted
+    assert storage.message_kind() == widget.KIND and storage.message_id() != 500
+    live_bot.clock_control.now += 30
+    live_bot.push_widget()
+    assert len(fake_telegram.widgets) == 1                  # not replaced again
+
+
+def test_outdated_card_is_tried_once_and_not_in_a_loop(live_bot, fake_telegram):
+    live_bot.status = status(0)
+    fake_telegram.widget_answer = {"ok": False, "description": "Bad Request: METHOD_INVALID"}
+    storage.set_message_id(500, kind="widget-6")
+    for _ in range(4):
+        live_bot.clock_control.now += 30
+        live_bot.push_widget()
+    assert len(fake_telegram.widgets) == 1
+    assert storage.message_id() == 500                       # the old card is kept

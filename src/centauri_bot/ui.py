@@ -679,7 +679,22 @@ def height_map_text(mesh, compact=False):
                else "лежит сохранённым, в память не загружен"))
 
 
-def history_text(jobs):
+HISTORY_ICONS = {"completed": "✅", "cancelled": "⏹", "klippy_shutdown": "⚠️",
+                 "error": "⚠️", "interrupted": "⚠️", "klippy_disconnect": "⚠️"}
+
+
+def history_text(jobs, compact=False):
+    if compact and jobs:
+        # On the card a line is cut at the right: the state and the time come
+        # first, the file name, which may be long, last.
+        lines = ["<b>🧾 История печатей</b>"]
+        for job in jobs:
+            status = str(job.get("status") or "—")
+            icon = HISTORY_ICONS.get(status.lower(), html.escape(status))
+            seconds = int(float(job.get("total_duration") or job.get("print_duration") or 0))
+            filename = html.escape(str(job.get("filename") or "без имени").rsplit("/", 1)[-1])
+            lines.append("%s %s · %s" % (icon, hhmm(seconds) if seconds else "—", filename))
+        return "\n".join(lines)
     if not jobs:
         return "<b>🧾 История печатей</b>\n\nMoonraker пока не сохранил завершённых заданий."
     lines = ["<b>🧾 История печатей</b> — последние %d" % len(jobs)]

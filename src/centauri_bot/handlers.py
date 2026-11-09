@@ -82,6 +82,7 @@ def show_files(bot, chat, mid=None, is_photo=False, force_new=False):
             bot.api.send_message(chat, text)
         return
     body = ui.files_text(files, info=file_info)
+    shown = min(8, len(files))
     can_start = bot.action_allowed(backend.START)
     refs = bot.prepare_file_choices(files[:8]) if can_start else None
     can_delete = bot.action_allowed(backend.DELETE)
@@ -92,7 +93,8 @@ def show_files(bot, chat, mid=None, is_photo=False, force_new=False):
                       if can_delete and len(files) > 1 else None)
     if _figures(bot, force_new):
         # On the card: a header and one row per file, [🖨 name] [🗑].
-        body = "<b>📂 Файлы на принтере · %d</b>" % len(files)
+        body = ("<b>📂 Файлы на принтере · последние %d из %d</b>" % (shown, len(files))
+                if len(files) > shown else "<b>📂 Файлы на принтере · %d</b>" % shown)
         rows = ui.kb_files_card(files, can_start=can_start, refs=refs,
                                 can_delete=can_delete, delete_refs=delete_refs,
                                 delete_all_ref=delete_all_ref)
@@ -145,7 +147,8 @@ def _show_readonly(bot, chat, mid, is_photo, force_new, text, keyboard, photo=No
 
 def show_history(bot, chat, mid=None, is_photo=False, force_new=False):
     ok, result = bot.history()
-    text = ui.history_text(result) if ok else "⚠️ Историю получить не вышло: %s" % result
+    text = (ui.history_text(result, compact=_figures(bot, force_new)) if ok
+            else "⚠️ Историю получить не вышло: %s" % result)
     _show_readonly(bot, chat, mid, is_photo, force_new, text, ui.kb_back())
 
 
@@ -971,7 +974,9 @@ def _card_screen(bot, query, target, reply):
     else:
         title = next((t for prefix, t in SCREEN_TITLES if target.startswith(prefix)), None)
         sc = widget.screen(cap.text, cap.keyboard, title=title, figure=cap.figure)
-        pages = widget.paginate(sc, lambda: bot.store_screen(sc), note)
+        # "Читаю список…" was said while the screen was prepared; under the
+        # finished screen it would only stay behind. Results are kept (above).
+        pages = widget.paginate(sc, lambda: bot.store_screen(sc))
         if pages:
             reply.raw(pages[0])
         else:

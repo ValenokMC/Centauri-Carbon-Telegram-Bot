@@ -174,6 +174,7 @@ class Bot(object):
         self.widget_sent_at = 0.0
         self.widget_retry_at = 0.0
         self.snapshot_checked_at = 0.0
+        self.card_upgraded = False  # an outdated card is replaced once per process
         # Screens the card shows by token (see widget.paginate): the answer to
         # a tap too big for one answer, and what the bot shows by itself.
         self.screens = {}          # token -> (screen, expires)
@@ -916,12 +917,23 @@ class Bot(object):
         # up to date itself, and the printer thread must not wait for it.
         if not self.main_lock.acquire(blocking=False):
             return
+        upgrade = False
         try:
             mid = storage.message_id()
-            if mid and storage.message_kind() == widget.KIND:
+            kind = storage.message_kind() if mid else None
+            if mid and kind == widget.KIND:
                 self._push_widget_locked(mid)
+            elif (mid and widget.is_card(kind) and not self.card_upgraded
+                    and self._widget_wanted()):
+                # A card from before an update keeps its old HTML for good, and
+                # only a print used to replace it. Whatever the printer is
+                # doing: once per start, so a refused widget is not retried in
+                # a loop (_widget_wanted also waits out widget_retry_at).
+                self.card_upgraded = upgrade = True
         finally:
             self.main_lock.release()
+        if upgrade:
+            self.refresh_main(quiet=True)
 
     def push_now(self):
         """Write the card's state at once (a note that must not wait for the

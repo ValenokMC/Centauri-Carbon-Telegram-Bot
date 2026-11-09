@@ -39,7 +39,7 @@ from . import printer_state as ps
 
 log = logging.getLogger(__name__)
 
-VERSION = 7
+VERSION = 8
 
 # storage.message_kind() of a card sent with this very HTML. A sent widget's
 # HTML can never be replaced, so a card from an older version is not ours to
@@ -111,15 +111,16 @@ button{background:var(--b);border:1px solid var(--l);color:inherit;border-radius
 button:active{background:var(--l)}
 .rw .k:not(:only-child){flex:none;padding:9px 14px}
 .rw button:disabled{flex:2;padding:9px 6px 0}
+.a,.wr{flex-wrap:wrap}.a button,.wr button{min-width:max-content;padding-inline:4px}
+@media(max-width:399px){.a button{flex:1 1 40%}}
 #cz{width:100%;height:auto;display:block;margin-top:8px;border-radius:12px;background:var(--g)}
-button.k{color:var(--tg-theme-destructive-text-color)}
+.z,button.k{color:var(--tg-theme-destructive-text-color)}
 button.y{background:var(--tg-theme-button-color);color:var(--tg-theme-button-text-color);border-color:transparent}
 button:disabled{background:none;border-color:transparent;padding:4px 6px 0}
 .hd{gap:8px}.hd button{flex:none;padding:6px 12px}
 .hd b{flex:1;min-width:0;font-size:1.08em}
 .tx{margin-top:8px;font-size:.92em;line-height:1.4}.tx div{min-height:.6em}
 .n{font-size:.84em;margin-top:6px}.u{font-size:.75em;margin-top:6px;text-align:right}
-.z{color:var(--tg-theme-destructive-text-color)}
 </style>
 <div id=c class=cd><div id=cv><div class=top><div class=rg id=rg><b id=p></b></div>
 <div class=mn><div class=s><i class=dt>●</i><span id=s></span></div><div class=f id=f></div>
@@ -173,11 +174,10 @@ z=Math.min(44,Math.min(w,h)*.5);if(z>=10){t.fillStyle=s==2?'#fff':f;t.font='600 
 t.textAlign='center';t.textBaseline='middle';t.fillText(n+1,x+w/2,y+h/2)}}}
 function drawScreen(){try{x('vt',sc.t||'');fig(sc.g);var t=clr('vx');(sc.x||[]).forEach(function(s){el(t,'div',s)});
 var k=clr('vk');(sc.k||[]).forEach(function(r){var w=el(k,'div','');
-w.className='rw';
+w.className='rw'+(r.length>2?' wr':'');
 r.forEach(function(b){mk(w,b[0],b[2],b[1]?function(){tap(b[1])}:null)})})}catch(e){er(e)}}
 function show(){$('cv').hidden=!!sc;$('v').hidden=!sc;try{if(sc)drawScreen();else btns()}catch(e){er(e)}}
-function draw(){try{drw()}catch(e){er(e)}}
-function drw(){d=null;try{d=JSON.parse(W.chatData)}catch(e){}
+function draw(){try{d=null;try{d=JSON.parse(W.chatData)}catch(e){}
 var ok=!!(d&&d.v);$('c').hidden=!ok;$('q').hidden=ok;if(!ok)return;
 $('c').className='cd k-'+d.k;x('s',d.s);x('f',d.f||'');
 var p=Math.max(0,Math.min(100,+d.p||0));x('p',Math.floor(p)+'%');
@@ -186,7 +186,7 @@ x('l',d.l||'');var m=clr('m');(d.m||'').split(' · ').forEach(function(s){if(s)e
 if(!busy)show();tick();
 if(d.n&&d.n!=ln&&!busy&&!ask){ln=d.n;x('n',d.n)}if(!d.n)ln='';
 if(d.go&&!busy&&W.request&&!W.isForward){var l='';try{l=localStorage.getItem('go')}catch(e){}
-if(l!=d.go){try{localStorage.setItem('go',d.go)}catch(e){}go('pg:'+d.go+':0')}}}
+if(l!=d.go){try{localStorage.setItem('go',d.go)}catch(e){}go('pg:'+d.go+':0')}}}catch(e){er(e)}}
 $('bk').onclick=function(){tap('b')};
 if(W){W.onEvent('chatDataChanged',draw);draw();setInterval(tick,15e3);if(W.ready)W.ready()}
 })();
@@ -195,7 +195,7 @@ if(W){W.onEvent('chatDataChanged',draw);draw();setInterval(tick,15e3);if(W.ready
 # First 12 hex digits of sha256 of HTML. A card that is already in the chat
 # keeps the HTML it was sent with, so any change of HTML must bump VERSION; a
 # test compares this with the real hash and fails until both are updated.
-HTML_SHA = "9e0f4f1e4e97"
+HTML_SHA = "0f2434a21058"
 
 
 def html_fits(html=HTML):
