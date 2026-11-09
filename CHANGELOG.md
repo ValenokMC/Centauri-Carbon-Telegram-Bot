@@ -7,26 +7,26 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [1.2.0] — 2026-11-09
+## [1.2.0] — 2026-11-10
 
 ### Added
 
-- Live print card, opt-in with `status_widget`. While a print runs, the status
-  message is an HTML widget (Telegram Bot API 10.4) that shows the state,
-  progress, layer, temperatures and time left and is kept current with
-  `editMessageWidgetData`: silent, no "edited" mark, and the time left counts
-  down on the phone between updates. Pause or resume, Stop and a camera frame
-  are buttons on the card itself: Pause and Stop ask for confirmation on the
-  card with a one-use token, and the frame arrives as its own message that is
-  taken down after five minutes, with the card moving down under it. Every
-  other screen of the bot opens on the card as well (files, fans, speed,
-  heating, macros, history, their confirmations), behind "⚙️ Ещё": the bot
-  runs the same handler an inline button would and draws its result on the
-  card, so there are no buttons under the message at all. A picture screen
-  (the bed map, the objects) sends its picture beside the card. The card is
-  also the panel while the printer is idle. A refused widget, a group chat or
-  a screen over the widget's 1 KB answer falls back to the ordinary message. New settings:
-  `status_widget`, `widget_refresh_sec`.
+- Live print card, opt-in with `status_widget` (Telegram Bot API 10.4 widgets,
+  private chats). The status message is one HTML widget that redraws itself
+  silently, with no "edited" mark: three rings in a row for the print progress,
+  the nozzle and the bed (filled towards the target temperature, blue when cold,
+  amber to red when hot, pulsing while heating), the state, the file, the layer
+  and the time left. Every button is on the card, drawn with its own thin-line
+  icon, and nothing hangs under the message: pause or resume, stop and a camera
+  frame in a row, everything else behind "⚙️ Ещё", which opens on the card. Each
+  screen of the bot (files, fans, speed, heating, macros, history, diagnostics,
+  confirmations) is the same handler an inline button runs, drawn on the card,
+  with the same one-use confirmations; screens that do not fit are paged.
+  Pictures go above the card and are taken down again: the camera frame after
+  five minutes, and for removing a part the numbered bed picture, with a grid
+  of the same numbers on the card ("Убрать деталь №n из печати?"). A refused
+  widget, a group chat or an old Telegram app gets the ordinary message or the
+  card's caption. New settings: `status_widget`, `widget_refresh_sec`.
 - Delayed print start on COSMOS. A `.gcode` sent into the chat is uploaded to
   the printer and offered for printing now or at a set time: quick choices
   ("in 2 h", "tomorrow 07:00") or a typed time in the owner's zone. A reminder
@@ -83,6 +83,10 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- On COSMOS the finish photo showed the bed already lowered, because the end
+  G-code that drops the bed runs while the job still reads as printing. The
+  bot now keeps the last frame taken before the bed starts to drop (a Z jump
+  near the end of the job) and sends that one.
 - Object removal was never offered for models whose names are not in Latin
   letters. Orca names objects after the model file, so a Cyrillic file name
   hid the button. Any alphabet is now accepted; whitespace and the characters

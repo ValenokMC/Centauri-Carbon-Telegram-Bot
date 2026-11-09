@@ -17,17 +17,17 @@ starts, and an optional live print card that redraws itself in the chat.
   now or at a set time, only if the printer is idle, the file is still there
   and the filament sensor sees filament. Otherwise the bot asks.
 - **"Delete all files"** on the COSMOS file screen, behind its own opt-in.
-- **Live print card** (opt-in, `"status_widget": true`). While a print runs,
-  the status is a Telegram Bot API 10.4 widget with the state, progress,
-  layer, temperatures and time left. It updates itself silently, with no
-  "edited" mark. Every button is on the card: Pause, Stop and 📷 in a row
-  (Pause and Stop confirm on the card first), the rest behind ⚙️ Ещё. Needs a
-  current Telegram app; an older one shows only the short caption, and
-  commands such as `/files` still work there. If Telegram refuses the widget,
-  the usual message goes out.
+- **Live print card** (opt-in, `"status_widget": true`). The status is one
+  Telegram Bot API 10.4 widget that updates itself silently: three rings for
+  print progress, nozzle and bed, the state and the time left. Every button is
+  on the card with its own icon; the rest of the panel opens on the card behind
+  ⚙️ Ещё. Removing a part shows the numbered bed picture above the card and a
+  grid of the same numbers on it. Needs a current Telegram app; an older one
+  shows the card's caption, and commands such as `/files` still work there.
 
 ## Fixes
 
+- The finish photo on COSMOS shows the part again, not the lowered bed.
 - The status message stays one message at the bottom of the chat, even after
   Telegram's 48-hour limit on deleting a bot's messages.
 - Object removal works for models with Cyrillic names.
@@ -47,8 +47,8 @@ starts, and an optional live print card that redraws itself in the chat.
 - Centauri Carbon 2, macOS and Linux have not yet been verified.
 - One bot installation controls one printer.
 - The live print card works in private chats only (Telegram's rule) and
-  cannot show a picture: its 📷 button sends the frame as a separate message
-  above the card, deleted after five minutes.
+  cannot show a picture itself: frames and the bed picture come as separate
+  messages above the card and are deleted again.
 
 ## Updating from v1.1.x
 
