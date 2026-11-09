@@ -7,6 +7,12 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- The live print card from 1.2.0 (Bot API 10.4 widget, `status_widget`) is
+  reverted: the bot is back to the ordinary status message of 1.1.x. What was
+  tried and why it was rolled back: [docs/live-card-experiment.md](docs/live-card-experiment.md).
+
 ### Changed
 
 - The "Support the author" button now opens CloudTips instead of Tribute: a
