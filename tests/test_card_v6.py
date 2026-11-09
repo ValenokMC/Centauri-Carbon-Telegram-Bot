@@ -646,3 +646,24 @@ def test_a_note_never_changes_where_the_pages_break():
     plain = [json.loads(p)["sc"] for p in widget.paginate(sc, "tok")]
     noted = [json.loads(p)["sc"] for p in widget.paginate(sc, "tok", "Читаю список…")]
     assert plain == noted
+
+
+def test_script_is_one_closure_and_has_no_global_named_like_a_window_property():
+    """window.screen, window.status, window.menu... are built in: a global
+    function of that name does not replace them in every sandbox, and the
+    card's screens were drawn by a call that threw."""
+    script = widget.HTML.split("<script>")[1].split("</script>")[0].strip()
+    assert script.startswith("(function(){") and script.endswith("})();")
+    assert not re.search(r"\bfunction\s+screen\b|\bscreen\s*\(", script)
+    assert "drawScreen" in script
+    top = {"screen", "status", "name", "close", "open", "print", "history", "location",
+           "top", "parent", "frames", "length", "origin", "event", "menu", "keys"}
+    declared = set(re.findall(r"\bfunction\s+([A-Za-z_$][\w$]*)", script))
+    declared |= set(re.findall(r"\bvar\s+([A-Za-z_$][\w$]*)", script))
+    assert not declared & top, declared & top
+    # errors are shown in the note line, not swallowed by the promise
+    assert "'ошибка: '" in script and script.count("catch(e){er(e)}") >= 4
+    # no inline handlers in the markup: everything is attached by the script
+    markup = widget.HTML.split("<script>")[0]
+    assert not re.search(r"\son\w+\s*=", markup)
+    assert widget.html_fits()

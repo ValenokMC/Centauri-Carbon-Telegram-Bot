@@ -123,10 +123,11 @@ button:disabled{color:var(--tg-theme-hint-color);background:none;border-color:tr
 <div id=v hidden><div class=hd><button id=bk>‹ Назад</button><b id=vt></b></div><canvas id=cz width=480 height=480 hidden></canvas><div class=tx id=vx></div><div id=vk></div></div>
 <div class=n id=n></div><div class=u id=u></div></div>
 <p id=q hidden>⬇️ Статус — ниже</p>
-<script>
-var W=window.TelegramWidget,d=null,ask=null,busy=0,menu=0,sc=null,ln='';
+<script>(function(){
+var W=window.TelegramWidget,d=null,ask=null,busy=0,mnu=0,sc=null,ln='';
 function $(i){return document.getElementById(i)}
 function x(i,v){$(i).textContent=v}
+function er(e){x('n','ошибка: '+e.name+': '+String(e.message).slice(0,100))}
 function clr(i){var a=$(i);while(a.firstChild)a.removeChild(a.firstChild);return a}
 function el(p,t,v){var e=document.createElement(t);e.textContent=v;p.appendChild(e);return e}
 function dur(s){var m=Math.max(1,Math.round(s/60)),h=Math.floor(m/60);m%=60;
@@ -139,16 +140,16 @@ var age=now-d.u;$('u').className=age>600?'u z':'u';
 x('u',(d.sp?'скорость '+d.sp+'% · ':'')+(age>600?'нет обновлений '+dur(age):'обновлено '+clock(d.u)))}
 function mk(p,t,c,f){var e=el(p,'button',t);if(c)e.className=c;if(f)e.onclick=f;else e.disabled=true;return e}
 function pj(v){for(var i=0;i<2&&typeof v=='string';i++){try{v=JSON.parse(v)}catch(e){return{m:v}}}return v&&typeof v=='object'?v:{}}
-function go(q){if(busy)return;busy=1;menu=0;x('n','Отправляю…');
-W.request(q).then(function(r){busy=0;var o=typeof r=='object'&&r,v=o&&('result' in o)?o.result:r,a=pj(v);
+function go(q){if(busy)return;busy=1;mnu=0;x('n','Отправляю…');
+W.request(q).then(function(r){busy=0;try{var o=typeof r=='object'&&r,v=o&&('result' in o)?o.result:r,a=pj(v);
 if(typeof a.sc=='string')a.sc=pj(a.sc);
 if(a.sc&&!a.sc.t&&!(a.sc.k&&a.sc.k.length)){a.m='пустой экран: '+typeof r+'/'+typeof(o&&o.result)+'/'+String(v).length+'/'+Object.keys(a.sc).join();a.sc=null}
 ask=a.t?a:null;if(a.sc)sc=a.sc;if(a.close||ask)sc=null;
-x('n',ask?ask.q:a.m||'');show()},
-function(e){busy=0;ask=null;x('n',e&&e.code=='RATE_LIMITED'?'Слишком часто, подожди немного':'Не дошло до бота, попробуй ещё раз');show()})}
+x('n',ask?ask.q:a.m||'');show()}catch(e){er(e)}},
+function(e){busy=0;ask=null;try{x('n',e&&e.code=='RATE_LIMITED'?'Слишком часто, подожди немного':'Не дошло до бота, попробуй ещё раз');show()}catch(f){er(f)}})}
 function tap(c){if(c=='b'){sc=null;x('n','');show()}else if(c.slice(0,2)=='u:'){var u=c.slice(2);
 try{if(/^https:\/\/t\.me\//.test(u))W.openTelegramLink(u);else W.openLink(u)}catch(e){}}else go(c)}
-function keys(){var a=clr('a'),g=clr('g');g.hidden=!menu;
+function btns(){var a=clr('a'),g=clr('g');g.hidden=!mnu;
 if(!d||!W.request||W.isForward)return;
 if(ask){mk(a,ask.y,'y',function(){go('do:'+ask.a+':'+ask.t)});mk(a,'Отмена','',function(){ask=null;x('n','');show()});return}
 var b=d.b||'',mn=d.mn||[];
@@ -156,8 +157,8 @@ if(b.indexOf('P')>=0)mk(a,'⏸ Пауза','',function(){go('ask:pause')});
 if(b.indexOf('R')>=0)mk(a,'▶️ Дальше','',function(){go('ask:resume')});
 if(b.indexOf('S')>=0)mk(a,'⏹ Стоп','k',function(){go('ask:stop')});
 if(b.indexOf('C')>=0)mk(a,'📷 Кадр','',function(){go('snap')});
-if(mn.length)mk(a,menu?'✕ Скрыть':'⚙️ Ещё','',function(){menu=!menu;x('n','');show()});
-if(menu)mn.forEach(function(i){mk(g,i[0],'',function(){go('c:'+i[1])})})}
+if(mn.length)mk(a,mnu?'✕ Скрыть':'⚙️ Ещё','',function(){mnu=!mnu;x('n','');show()});
+if(mnu)mn.forEach(function(i){mk(g,i[0],'',function(){go('c:'+i[1])})})}
 function cv(n,f){try{return getComputedStyle(document.documentElement).getPropertyValue(n).trim()||f}catch(e){return f}}
 function fig(g){var c=$('cz'),o=g&&g.o,m=g&&g.m;c.hidden=!(o||m);if(c.hidden)return;
 var S=c.width,t=c.getContext('2d'),fg=cv('--tg-theme-text-color','#888'),ac=cv('--tg-theme-button-color','#3390ec'),
@@ -173,12 +174,13 @@ t.globalAlpha=s==1?.25:s==2?.85:.12;t.fillStyle=c;t.fillRect(x,y,w,h);
 t.globalAlpha=s==1?.6:1;t.strokeStyle=c;t.lineWidth=3;t.strokeRect(x,y,w,h);
 t.fillStyle=s==2?'#fff':fg;t.font='600 '+Math.max(18,Math.min(44,Math.min(w,h)*.5))+'px sans-serif';
 t.textAlign='center';t.textBaseline='middle';t.fillText(v[0],x+w/2,y+h/2)})}
-function screen(){x('vt',sc.t||'');fig(sc.g);var t=clr('vx');(sc.x||[]).forEach(function(s){el(t,'div',s)});
+function drawScreen(){try{x('vt',sc.t||'');fig(sc.g);var t=clr('vx');(sc.x||[]).forEach(function(s){el(t,'div',s)});
 var k=clr('vk');(sc.k||[]).forEach(function(r){var w=el(k,'div','');
 w.className='rw'+(r.some(function(b){return /^pg:/.test(b[1])})?' pg':'');
-r.forEach(function(b){mk(w,b[0],b[2],b[1]?function(){tap(b[1])}:null)})})}
-function show(){$('cv').hidden=!!sc;$('v').hidden=!sc;if(sc)screen();else keys()}
-function draw(){d=null;try{d=JSON.parse(W.chatData)}catch(e){}
+r.forEach(function(b){mk(w,b[0],b[2],b[1]?function(){tap(b[1])}:null)})})}catch(e){er(e)}}
+function show(){$('cv').hidden=!!sc;$('v').hidden=!sc;try{if(sc)drawScreen();else btns()}catch(e){er(e)}}
+function draw(){try{drw()}catch(e){er(e)}}
+function drw(){d=null;try{d=JSON.parse(W.chatData)}catch(e){}
 var ok=!!(d&&d.v);$('c').hidden=!ok;$('q').hidden=ok;if(!ok)return;
 $('c').className='cd k-'+d.k;x('s',d.s);x('f',d.f||'');
 var p=Math.max(0,Math.min(100,+d.p||0));x('p',Math.floor(p)+'%');
@@ -190,6 +192,7 @@ if(d.go&&!busy&&W.request&&!W.isForward){var l='';try{l=localStorage.getItem('go
 if(l!=d.go){try{localStorage.setItem('go',d.go)}catch(e){}go('pg:'+d.go+':0')}}}
 $('bk').onclick=function(){sc=null;x('n','');show()};
 if(W){W.onEvent('chatDataChanged',draw);draw();setInterval(tick,15e3);if(W.ready)W.ready()}
+})();
 </script>"""
 
 
