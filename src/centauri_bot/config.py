@@ -51,11 +51,6 @@ DEFAULTS = {
     "keepalive_sec": 20,            # the printer drops a silent connection
     "offline_grace_sec": 60,        # stay quiet until a dropout really lasts
     "status_refresh_sec": 120,      # how often to refresh the message while printing
-    # Live print card (Telegram Bot API 10.4 widgets): while a print runs the
-    # status message is an HTML widget that redraws itself. Off by default
-    # while widgets are new; a refused widget falls back to the usual message.
-    "status_widget": False,
-    "widget_refresh_sec": 10,       # how often the card's numbers are pushed
     "notify_cooldown": True,
     "cooldown_temp_c": 50,
     # Rail lubrication reminder. Elegoo's wiki documents the procedure but

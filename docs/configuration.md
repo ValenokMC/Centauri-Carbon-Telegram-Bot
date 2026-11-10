@@ -74,8 +74,6 @@ than this first backend can safely infer.
 | `keepalive_sec` | `20` | How often to poke the printer so it does not drop an idle connection. Raising it much causes disconnect-reconnect cycles. |
 | `offline_grace_sec` | `60` | How long a dropout must last before you are told. Lower it and a Wi-Fi hiccup wakes you at 3am; that is why it exists. |
 | `status_refresh_sec` | `120` | How often the status message is refreshed while printing. Minimum 30, enforced in code — Telegram rate-limits edits. |
-| `status_widget` | `false` | Live print card (Telegram Bot API 10.4 widgets, private chats only). The status message becomes a card that redraws itself silently: rings for the print progress, nozzle and bed, the state, the file and the time left. Every button is on the card with its own icon: Pause or resume, Stop and 📷 in a row (Pause and Stop ask first), everything else behind ⚙️ Ещё, which opens on the card. Pictures (the camera frame, the numbered bed picture for removing a part, the bed mesh) are posted above the card and deleted again. If Telegram refuses the card, the ordinary message goes out and the card is not tried again for 10 minutes; a Telegram app too old for widgets shows the card's caption, and commands such as `/files` still work there. |
-| `widget_refresh_sec` | `10` | How often the card's numbers are rewritten. Minimum 3. Unchanged numbers are not resent, except once every two minutes so the card can tell it is still being updated. |
 
 ## Night and light
 

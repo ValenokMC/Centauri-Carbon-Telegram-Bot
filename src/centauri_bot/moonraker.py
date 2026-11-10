@@ -27,7 +27,7 @@ QUERY_OBJECTS = (
 )
 
 # A file comes from Telegram (20 MB at most), but the client should not trust
-# its caller for that. Uploads over the network to a small board can be slow, so
+# its caller for that. Uploads over a VPN tunnel to a small board are slow, so
 # they get their own, much longer, timeout.
 MAX_UPLOAD_BYTES = 64_000_000
 UPLOAD_TIMEOUT_SEC = 180
@@ -366,7 +366,7 @@ class Client(object):
         """Replace "slicer total minus elapsed" with the file-profile estimate.
 
         The profile is built from the job's G-code in a thread of its own - a
-        tens-of-megabytes download over the network must not stall the status
+        tens-of-megabytes download over the tunnel must not stall the status
         poll. Until it is ready, or if the file has no M73 marks, the old
         estimate stays.
         """

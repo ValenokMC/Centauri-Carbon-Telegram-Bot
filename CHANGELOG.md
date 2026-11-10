@@ -7,26 +7,20 @@ this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [1.2.0] — 2026-11-10
+### Removed
+
+- The live print card from 1.2.0 (Bot API 10.4 widget, `status_widget`) is
+  reverted: the bot is back to the ordinary status message of 1.1.x. What was
+  tried and why it was rolled back: [docs/live-card-experiment.md](docs/live-card-experiment.md).
+
+### Changed
+
+- The "Support the author" button now opens CloudTips instead of Tribute: a
+  lower fee, and it takes SBP and any Russian bank card. Tribute stays in the
+  README and the GitHub Sponsor button for paying with a foreign card.
 
 ### Added
 
-- Live print card, opt-in with `status_widget` (Telegram Bot API 10.4 widgets,
-  private chats). The status message is one HTML widget that redraws itself
-  silently, with no "edited" mark: three rings in a row for the print progress,
-  the nozzle and the bed (filled towards the target temperature, blue when cold,
-  amber to red when hot, pulsing while heating), the state, the file, the layer
-  and the time left. Every button is on the card, drawn with its own thin-line
-  icon, and nothing hangs under the message: pause or resume, stop and a camera
-  frame in a row, everything else behind "⚙️ Ещё", which opens on the card. Each
-  screen of the bot (files, fans, speed, heating, macros, history, diagnostics,
-  confirmations) is the same handler an inline button runs, drawn on the card,
-  with the same one-use confirmations; screens that do not fit are paged.
-  Pictures go above the card and are taken down again: the camera frame after
-  five minutes, and for removing a part the numbered bed picture, with a grid
-  of the same numbers on the card ("Убрать деталь №n из печати?"). A refused
-  widget, a group chat or an old Telegram app gets the ordinary message or the
-  card's caption. New settings: `status_widget`, `widget_refresh_sec`.
 - Delayed print start on COSMOS. A `.gcode` sent into the chat is uploaded to
   the printer and offered for printing now or at a set time: quick choices
   ("in 2 h", "tomorrow 07:00") or a typed time in the owner's zone. A reminder
@@ -42,11 +36,13 @@ this project uses [Semantic Versioning](https://semver.org/).
   the list as it was shown, so a file uploaded meanwhile is kept; the file being
   printed is always kept, and planned starts that would lose their file are
   counted in the question.
+
 - Firmware auto-detection. The setup wizard now asks the printer which firmware
   it runs instead of making the user pick, and `backend: "auto"` repeats that
   probe on every start. Moonraker answering `/printer/info` is positive proof of
   OpenCentauri/COSMOS; the stock SDCP port is only consulted when it stays
   silent, and an unanswered printer is reported rather than guessed at.
+
 - OpenCentauri/COSMOS support through a dependency-free Moonraker polling
   backend for status, files, webcam snapshots and explicitly enabled job
   controls.
@@ -55,6 +51,7 @@ this project uses [Semantic Versioning](https://semver.org/).
 - A confirmed "exclude object" control for multi-object COSMOS prints. The bot
   binds the confirmation to the exact object and print file, then rechecks both
   against Moonraker immediately before sending the fixed Klipper command.
+
 - A finish time next to the time left on COSMOS ("done ≈ tomorrow at 01:26").
   The time left now comes from the job's own G-code: the slicer's per-minute
   `M73` marks and the `EXCLUDE_OBJECT` markers give the slicer time still ahead
@@ -68,25 +65,8 @@ this project uses [Semantic Versioning](https://semver.org/).
   copies of one model can be told apart. The model being printed is outlined in
   blue, removed ones are hatched red. Drawn without third-party libraries.
 
-### Changed
-
-- The "Support the author" button now opens CloudTips instead of Tribute: a
-  lower fee, and it takes SBP and any Russian bank card. Tribute stays in the
-  README and the GitHub Sponsor button for paying with a foreign card.
-- Object removal has its own ✂️ icon instead of sharing 🧩 with macros.
-- The "printer cooled down" notice repeats the frame taken when the print
-  ended, with the bed still up, instead of a fresh frame of the lowered bed.
-  "Refresh" still shows the live camera.
-- The five owner-approved COSMOS macros now use clear Russian action names in
-  Telegram. The macro screen and confirmation explain what each action does;
-  the original Klipper name remains visible only as a technical identifier.
-
 ### Fixed
 
-- On COSMOS the finish photo showed the bed already lowered, because the end
-  G-code that drops the bed runs while the job still reads as printing. The
-  bot now keeps the last frame taken before the bed starts to drop (a Z jump
-  near the end of the job) and sends that one.
 - Object removal was never offered for models whose names are not in Latin
   letters. Orca names objects after the model file, so a Cyrillic file name
   hid the button. Any alphabet is now accepted; whitespace and the characters
@@ -95,10 +75,16 @@ this project uses [Semantic Versioning](https://semver.org/).
   in the confirmation message, which the refresh loop does not track: it froze
   while the loop kept editing the older one. The result now goes into the one
   tracked status message and the confirmation is removed.
-- The status message stays one message and stays at the bottom of the chat
-  after Telegram's 48-hour limit on deleting a bot's messages. The new status
-  goes out at the bottom anyway, and the old one, which can no longer be
-  deleted, shrinks to a buttonless "⬇️ Статус — ниже".
+
+### Changed
+
+- Object removal has its own ✂️ icon instead of sharing 🧩 with macros.
+- The "printer cooled down" notice repeats the frame taken when the print
+  ended, with the bed still up, instead of a fresh frame of the lowered bed.
+  "Refresh" still shows the live camera.
+- The five owner-approved COSMOS macros now use clear Russian action names in
+  Telegram. The macro screen and confirmation explain what each action does;
+  the original Klipper name remains visible only as a technical identifier.
 
 ### Security
 
@@ -206,8 +192,7 @@ personal is baked into the code.
 - `config.json` cannot reach the repository: it is not there, it is gitignored,
   and `tools/check_public_safety.py` fails the build if one appears.
 
-[Unreleased]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.2.0...HEAD
-[1.2.0]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.3...v1.2.0
+[Unreleased]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.3...HEAD
 [1.1.3]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/ValenokMC/Centauri-Carbon-Telegram-Bot/compare/v1.1.0...v1.1.1

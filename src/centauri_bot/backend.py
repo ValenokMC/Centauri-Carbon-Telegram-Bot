@@ -111,14 +111,11 @@ class ConfirmationStore(object):
             oldest = min(self._items, key=lambda key: self._items[key][2])
             self._items.pop(oldest, None)
 
-    def issue(self, kind, value, size=6):
-        """A one-use token for ``value``; ``size`` bytes of randomness (8
-        characters by default). Fifty-odd buttons on one screen use shorter
-        ones: every character is paid for in each of them."""
+    def issue(self, kind, value):
         self._prune()
-        token = secrets.token_urlsafe(size)
+        token = secrets.token_urlsafe(6)
         while token in self._items:
-            token = secrets.token_urlsafe(size)
+            token = secrets.token_urlsafe(6)
         self._items[token] = (str(kind), value, self.clock() + self.ttl)
         return token
 

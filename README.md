@@ -111,9 +111,6 @@ they left on your computer. Details: [PRIVACY.md](PRIVACY.md).
 - Live status: state, file, progress, layer, time remaining and — on COSMOS —
   the finish time on the clock, nozzle and bed
 - A camera frame with the status, and `/snap` for one on demand
-- Optional live print card (`status_widget`): while a print runs, the status
-  is a small card that redraws itself every few seconds, silently and without
-  an "edited" mark; the buttons stay under it
 - Brief and detailed views — chamber temperature, fans, light, position
 - Notifications: started · paused · resumed · finished · stopped · connection
   lost · connection restored
